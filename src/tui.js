@@ -14,11 +14,10 @@ const PANELS = [
   { id: "goals", label: "目标", key: "G" },
   { id: "skills", label: "技能", key: "S" },
   { id: "tools", label: "工具", key: "T" },
-  { id: "projects", label: "项目", key: "P" },
-  { id: "logs", label: "日志", key: "L" }
+  { id: "projects", label: "项目", key: "P" }
 ];
 
-const MAX_LOGS = 12;
+const MAX_LOGS = 6;
 
 function trimText(value, length) {
   const text = String(value || "");
@@ -32,7 +31,6 @@ function pushLogs(current, messages) {
 
 function commandForPanel(panelId, option) {
   if (!option) return null;
-  if (panelId === "logs") return null;
   return option.command;
 }
 
@@ -101,14 +99,7 @@ async function startTui() {
     return [];
   }
 
-  function MainPanel({ activePanel, options, selectedIndex, logs }) {
-    if (activePanel === "logs") {
-      return h(Box, { borderStyle: "round", paddingX: 1, flexDirection: "column", minHeight: 12 },
-        h(Text, { bold: true }, "日志"),
-        ...(logs.length ? logs : ["暂无日志。"]).map((log, index) => h(Text, { key: `${index}-${log}` }, trimText(log, 96)))
-      );
-    }
-
+  function MainPanel({ activePanel, options, selectedIndex }) {
     return h(Box, { borderStyle: "round", paddingX: 1, flexDirection: "column", minHeight: 12 },
       ...options.map((option, index) => {
         const selected = index === selectedIndex;
@@ -131,6 +122,13 @@ async function startTui() {
           )
         );
       })
+    );
+  }
+
+  function LogPanel({ logs }) {
+    return h(Box, { borderStyle: "single", paddingX: 1, flexDirection: "column", minHeight: 5 },
+      h(Text, { bold: true }, "日志"),
+      ...(logs.length ? logs : ["暂无日志。"]).map((log, index) => h(Text, { key: `${index}-${log}` }, trimText(log, 110)))
     );
   }
 
@@ -215,7 +213,8 @@ async function startTui() {
       h(Header, { view, paused }),
       h(ResourcePanel, { view }),
       h(TabBar, { activePanel }),
-      h(MainPanel, { activePanel, options, selectedIndex, logs }),
+      h(MainPanel, { activePanel, options, selectedIndex }),
+      h(LogPanel, { logs }),
       h(Footer, { paused })
     );
   }
