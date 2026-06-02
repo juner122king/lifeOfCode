@@ -1,0 +1,17 @@
+{
+  "name": "life-of-code",
+  "version": "0.1.0",
+  "description": "纯文字放置类 Node CLI 游戏原型：代码人生",
+  "main": "src/game.js",
+  "scripts": {
+    "start": "node src/game.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "cli",
+    "game",
+    "idle"
+  ],
+  "author": "",
+  "license": "MIT"
+}
