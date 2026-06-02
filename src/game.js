@@ -38,6 +38,14 @@ const RESOURCE_NAMES = {
   leads: "线索"
 };
 const RESOURCE_ORDER = ["codeLines", "exp", "money", "knowledge", "tests", "docs", "architecture", "leads", "energy", "pressure", "bugs", "techDebt", "reputation"];
+const MULTIPLIER_NAMES = {
+  code: "代码产出",
+  exp: "经验获取",
+  money: "金钱获取",
+  bug: "Bug 风险",
+  debt: "技术债风险",
+  pressure: "压力增长"
+};
 
 function roleById(id) {
   return content.roles.find((role) => role.id === id);
@@ -316,6 +324,13 @@ function formatResourceList(values = {}) {
   const entries = Object.entries(values)
     .filter(([, value]) => value)
     .map(([key, value]) => `${RESOURCE_NAMES[key] || key} ${value > 0 ? "+" : ""}${formatNumber(value)}`);
+  return entries.length ? entries.join("，") : "无";
+}
+
+function formatMultiplierList(multipliers = {}) {
+  const entries = Object.entries(multipliers)
+    .filter(([, value]) => value && value !== 1)
+    .map(([key, value]) => `${MULTIPLIER_NAMES[key] || key} x${Number(value).toFixed(2)}`);
   return entries.length ? entries.join("，") : "无";
 }
 
@@ -636,6 +651,25 @@ function formatGoalSummary(state) {
   return `目标：可领取 ${claimable.length} 个；当前主线 [${getGoalStatus(state, current)}] ${current.name} - ${formatGoalProgress(state, current)}`;
 }
 
+function getGoalOptions(state) {
+  return (content.goals || []).map((goal) => {
+    const status = getGoalStatus(state, goal);
+    return {
+      id: goal.id,
+      name: goal.name,
+      description: goal.description,
+      type: goal.type,
+      status,
+      claimable: status === "可领取",
+      claimed: status === "已领取",
+      locked: status === "未解锁",
+      progress: formatGoalProgress(state, goal),
+      rewards: formatGoalRewards(goal.rewards),
+      command: status === "可领取" ? `claim ${goal.id}` : null
+    };
+  });
+}
+
 function formatGoals(state) {
   return formatLines([
     "目标：",
@@ -758,6 +792,196 @@ function listContent(type) {
     }).join("\n");
   }
   return "可查看：list skills、list tools、list projects";
+}
+
+function getResourceEntries(state) {
+  return RESOURCE_ORDER.map((id) => ({
+    id,
+    name: RESOURCE_NAMES[id] || id,
+    value: Math.floor(Number(state.resources[id]) || 0)
+  }));
+}
+
+function getAttributeEntries(state) {
+  return ATTRIBUTE_IDS.map((id) => ({
+    id,
+    name: ATTRIBUTE_NAMES[id],
+    value: Math.floor(getBaseAttribute(state, id)),
+    breakthrough: Math.floor(getBreakthrough(state, id)),
+    effective: getEffectiveAttribute(state, id),
+    exp: state.attributeExp[id] || 0
+  }));
+}
+
+function getActivityOptions(state) {
+  return content.activities.map((activity) => {
+    const progress = getActivityProgress(state, activity.id);
+    const unlocked = activityUnlocked(state, activity);
+    const active = state.activeActivityId === activity.id;
+    return {
+      id: activity.id,
+      name: activity.name,
+      description: activity.description,
+      tier: activity.tier,
+      primaryAttribute: activity.primaryAttribute,
+      primaryAttributeName: ATTRIBUTE_NAMES[activity.primaryAttribute] || activity.primaryAttribute,
+      active,
+      unlocked,
+      locked: !unlocked,
+      status: active ? "进行中" : unlocked ? "可开始" : "未解锁",
+      level: progress.level,
+      exp: progress.exp,
+      nextExp: progress.next,
+      progressPercent: progress.next > 0 ? Math.min(100, Math.floor(progress.exp / progress.next * 100)) : 100,
+      requirements: formatActivityRequirements(activity.requirements),
+      output: formatResourceList(activity.effectsPerSecond || {}),
+      command: unlocked ? `start ${activity.id}` : null
+    };
+  });
+}
+
+function getSkillLevelEntries(state) {
+  return content.activities.map((activity) => {
+    const progress = getActivityProgress(state, activity.id);
+    return {
+      id: activity.id,
+      name: activity.name,
+      level: progress.level,
+      exp: progress.exp,
+      nextExp: progress.next,
+      unlocked: activityUnlocked(state, activity),
+      active: state.activeActivityId === activity.id
+    };
+  });
+}
+
+function getManagementOptions(state, type) {
+  if (type === "skills") {
+    return content.skills.map((skill) => {
+      const owned = state.unlockedSkills.includes(skill.id);
+      const affordable = canAfford(state.resources, skill.cost);
+      const attributeExp = formatAttributeExpRewards(skill.attributeExp);
+      return {
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        status: owned ? "已学习" : affordable ? "可学习" : "资源不足",
+        done: owned,
+        available: !owned && affordable,
+        cost: formatResourceList(skill.cost),
+        effects: [formatMultiplierList(skill.multipliers), attributeExp].filter((text) => text && text !== "无").join("；") || "无",
+        missing: owned || affordable ? "" : formatShortfall(state.resources, skill.cost),
+        command: !owned ? `learn ${skill.id}` : null
+      };
+    });
+  }
+
+  if (type === "tools") {
+    return content.tools.map((tool) => {
+      const owned = state.ownedTools.includes(tool.id);
+      const affordable = canAfford(state.resources, tool.cost);
+      return {
+        id: tool.id,
+        name: tool.name,
+        description: tool.description,
+        status: owned ? "已拥有" : affordable ? "可购买" : "金钱不足",
+        done: owned,
+        available: !owned && affordable,
+        cost: formatResourceList(tool.cost),
+        effects: formatMultiplierList(tool.multipliers),
+        missing: owned || affordable ? "" : formatShortfall(state.resources, tool.cost),
+        command: !owned ? `buy ${tool.id}` : null
+      };
+    });
+  }
+
+  if (type === "projects") {
+    const projectOptions = content.projects.map((project) => {
+      const completed = state.completedProjects.includes(project.id);
+      const missing = missingProjectRequirements(state, project);
+      return {
+        id: project.id,
+        name: project.name,
+        description: `奖励：${formatResourceList(project.rewards)}`,
+        status: completed ? "已完成" : missing.length ? "条件不足" : "可提交",
+        done: completed,
+        available: !completed && missing.length === 0,
+        cost: formatResourceList(project.requirements.resources || {}),
+        missing: missing.join("、"),
+        command: !completed ? `project ${project.id}` : null
+      };
+    });
+
+    return [
+      {
+        id: "promote",
+        name: "申请晋升",
+        description: "检查当前职位晋升条件。",
+        status: "可尝试",
+        done: false,
+        available: true,
+        cost: "无",
+        missing: "",
+        command: "promote"
+      },
+      ...projectOptions
+    ];
+  }
+
+  return [];
+}
+
+function getGameViewModel(state) {
+  const role = roleById(state.currentRole);
+  const active = activityById(state.activeActivityId);
+  const claimableGoals = getClaimableGoals(state);
+  const currentMainGoal = getCurrentMainGoal(state);
+
+  return {
+    title: "代码人生",
+    role: {
+      id: state.currentRole,
+      name: role ? role.name : state.currentRole,
+      maxEnergy: role ? role.maxEnergy : 0
+    },
+    activeActivity: active ? {
+      id: active.id,
+      name: active.name,
+      level: getActivityLevel(state, active.id)
+    } : null,
+    resources: getResourceEntries(state),
+    attributes: getAttributeEntries(state),
+    goals: {
+      claimableCount: claimableGoals.length,
+      claimable: claimableGoals.map((goal) => ({ id: goal.id, name: goal.name })),
+      currentMain: currentMainGoal ? {
+        id: currentMainGoal.id,
+        name: currentMainGoal.name,
+        status: getGoalStatus(state, currentMainGoal),
+        progress: formatGoalProgress(state, currentMainGoal)
+      } : null,
+      options: getGoalOptions(state)
+    },
+    collections: {
+      skills: [...state.unlockedSkills],
+      tools: [...state.ownedTools],
+      projects: [...state.completedProjects]
+    },
+    skillLevels: getSkillLevelEntries(state),
+    stats: {
+      totalCodeLines: Math.floor(state.stats.totalCodeLines || 0),
+      totalBugsFixed: Math.floor(state.stats.totalBugsFixed || 0),
+      totalProjects: Math.floor(state.stats.totalProjects || 0),
+      totalActiveSeconds: Math.floor(state.activityStats.totalActiveSeconds || 0)
+    },
+    nextAdvice: formatNextAdvice(state),
+    actions: {
+      claimAll: claimableGoals.length > 0 ? "claim all" : null,
+      stopActivity: state.activeActivityId ? "stop" : null,
+      save: "save",
+      quit: "quit"
+    }
+  };
 }
 
 function canAfford(resources, cost) {
@@ -1084,10 +1308,14 @@ module.exports = {
   formatLiveStatus,
   formatState,
   getActivityLevel,
+  getActivityOptions,
   getActivityProgress,
   getBaseAttribute,
   getBreakthrough,
   getEffectiveAttribute,
+  getGameViewModel,
+  getGoalOptions,
+  getManagementOptions,
   getMultipliers,
   getProductionRisk,
   helpText,

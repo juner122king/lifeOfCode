@@ -12,8 +12,12 @@ const {
   formatLiveStatus,
   formatState,
   getActivityLevel,
+  getActivityOptions,
   getActivityProgress,
   getEffectiveAttribute,
+  getGameViewModel,
+  getGoalOptions,
+  getManagementOptions,
   learnSkill,
   normalizeState,
   processCommand,
@@ -423,4 +427,71 @@ test("buyTool 仍作为管理动作购买工具", () => {
 
   assert.match(message, /买到了 二手笔记本/);
   assert.deepEqual(state.ownedTools, ["used-laptop"]);
+});
+
+test("view model 提供结构化资源、属性、目标摘要和可执行动作", () => {
+  const state = createNewState();
+  state.activityStats.totalActiveSeconds = 30;
+  const view = getGameViewModel(state);
+
+  assert.equal(view.role.name, "实习程序员");
+  assert.equal(view.activeActivity, null);
+  assert.equal(view.resources.find((item) => item.id === "money").value, 30);
+  assert.equal(view.attributes.find((item) => item.id === "focus").name, "专注");
+  assert.equal(view.goals.claimableCount, 1);
+  assert.equal(view.goals.currentMain.id, "choose-work");
+  assert.equal(view.actions.claimAll, "claim all");
+  assert.equal(view.actions.save, "save");
+  assert.equal(view.skillLevels.find((item) => item.id === "feature-coding").level, 1);
+});
+
+test("activity options 标出锁定、当前活动、等级和命令", () => {
+  const state = createNewState();
+  startActivity(state, "feature-coding");
+
+  const options = getActivityOptions(state);
+  const active = options.find((item) => item.id === "feature-coding");
+  const locked = options.find((item) => item.id === "architecture");
+
+  assert.equal(active.status, "进行中");
+  assert.equal(active.active, true);
+  assert.equal(active.command, "start feature-coding");
+  assert.equal(active.level, 1);
+  assert.equal(locked.status, "未解锁");
+  assert.equal(locked.command, null);
+});
+
+test("goal options 标出可领取状态和 claim 命令", () => {
+  const state = createNewState();
+  state.activityStats.totalActiveSeconds = 30;
+
+  const options = getGoalOptions(state);
+  const goal = options.find((item) => item.id === "choose-work");
+
+  assert.equal(goal.status, "可领取");
+  assert.equal(goal.claimable, true);
+  assert.equal(goal.command, "claim choose-work");
+  assert.match(goal.rewards, /经验/);
+});
+
+test("management options 标出技能、工具和项目动作状态", () => {
+  const state = createNewState();
+  state.resources.knowledge = 20;
+  state.resources.exp = 30;
+  state.resources.money = 100;
+
+  const skill = getManagementOptions(state, "skills").find((item) => item.id === "html-css");
+  const tool = getManagementOptions(state, "tools").find((item) => item.id === "used-laptop");
+  const project = getManagementOptions(state, "projects").find((item) => item.id === "homepage");
+  const promoteAction = getManagementOptions(state, "projects")[0];
+
+  assert.equal(skill.status, "可学习");
+  assert.equal(skill.command, "learn html-css");
+  assert.match(skill.effects, /代码产出 x1\.06/);
+  assert.equal(tool.status, "可购买");
+  assert.equal(tool.command, "buy used-laptop");
+  assert.match(tool.effects, /代码产出 x1\.12/);
+  assert.equal(project.status, "条件不足");
+  assert.equal(project.command, "project homepage");
+  assert.equal(promoteAction.command, "promote");
 });
