@@ -1,4 +1,7 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 const content = require("../src/content");
 const {
@@ -7,7 +10,9 @@ const {
   addAttributeExp,
   buyTool,
   claimGoal,
+  createProfile,
   createNewState,
+  deleteProfile,
   formatActivities,
   formatGoals,
   formatLiveStatus,
@@ -19,10 +24,12 @@ const {
   getGameViewModel,
   getGoalOptions,
   getManagementOptions,
+  getProfileOptions,
   getProjectProgress,
   getProjectSuccessRate,
   getSkillProgress,
   learnSkill,
+  listProfiles,
   normalizeState,
   processCommand,
   promote,
@@ -30,12 +37,17 @@ const {
   startActivity,
   stopActivity,
   submitProject,
+  loadProfile,
   upgradeSkill
 } = require("../src/game");
 
 function unlockSkill(state, id, level = 1, exp = 0) {
   state.skillProgress[id] = { level, exp };
   if (!state.unlockedSkills.includes(id)) state.unlockedSkills.push(id);
+}
+
+function createTempSaveRoot() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "life-of-code-save-"));
 }
 
 test("新存档默认没有活动，并初始化职业资源和活动等级", () => {
@@ -77,6 +89,78 @@ test("旧存档会补齐活动字段、职业资源和目标领取记录", () =>
   assert.equal(state.attributes.learning, DEFAULT_ATTRIBUTES.learning);
   assert.equal(getEffectiveAttribute(state, "logic"), 104);
 });
+
+test("旧单存档作为 default 档案兼容加载", () => {
+  const saveRoot = createTempSaveRoot();
+  const savePath = path.join(saveRoot, "code-life.json");
+  fs.writeFileSync(savePath, JSON.stringify({
+    resources: { exp: 42, money: 99 },
+    lastTick: 1_700_000_000_000
+  }));
+
+  const state = loadProfile("default", 1_700_000_100_000, { saveRoot });
+  const profiles = listProfiles({ saveRoot, currentProfileId: state.profileId });
+
+  assert.equal(state.profileId, "default");
+  assert.equal(state.profileName, "默认档案");
+  assert.equal(state.resources.exp, 42);
+  assert.equal(state.resources.money, 99);
+  assert.equal(profiles.find((item) => item.id === "default").exists, true);
+});
+
+test("角色档案创建、读取和状态隔离", () => {
+  const saveRoot = createTempSaveRoot();
+  const alpha = createProfile("alpha", "前端角色", 1_700_000_000_000, { saveRoot });
+  alpha.resources.money = 321;
+  processCommand(alpha, "save", { saveRoot, now: 1_700_000_010_000 });
+
+  const beta = createProfile("beta", "AI 角色", 1_700_000_020_000, { saveRoot });
+  beta.resources.money = 654;
+  processCommand(beta, "save", { saveRoot, now: 1_700_000_030_000 });
+
+  assert.equal(loadProfile("alpha", 1_700_000_040_000, { saveRoot }).resources.money, 321);
+  assert.equal(loadProfile("beta", 1_700_000_040_000, { saveRoot }).resources.money, 654);
+  assert.deepEqual(listProfiles({ saveRoot }).map((item) => item.id), ["default", "alpha", "beta"]);
+});
+
+test("profile 命令可创建、切换、重命名和保存当前档案", () => {
+  const saveRoot = createTempSaveRoot();
+  const state = loadProfile("default", 1_700_000_000_000, { saveRoot });
+  state.resources.money = 111;
+
+  let message = processCommand(state, "profile new dev 开发者档案", { saveRoot, now: 1_700_000_010_000 }).messages.join("\n");
+  assert.match(message, /已创建并切换到档案：dev - 开发者档案/);
+  assert.equal(state.profileId, "dev");
+  state.resources.money = 222;
+  processCommand(state, "save", { saveRoot, now: 1_700_000_020_000 });
+
+  message = processCommand(state, "profile load default", { saveRoot, now: 1_700_000_030_000 }).messages.join("\n");
+  assert.match(message, /已切换到档案：default - 默认档案/);
+  assert.equal(state.resources.money, 111);
+
+  message = processCommand(state, "profile rename dev 新名字", { saveRoot, now: 1_700_000_040_000 }).messages.join("\n");
+  assert.match(message, /已重命名档案：dev - 新名字/);
+  assert.equal(loadProfile("dev", 1_700_000_050_000, { saveRoot }).profileName, "新名字");
+});
+
+test("删除档案需要确认且不能删除 default 或当前档案", () => {
+  const saveRoot = createTempSaveRoot();
+  const state = createProfile("side", "副档案", 1_700_000_000_000, { saveRoot });
+
+  assert.throws(() => deleteProfile("default", { saveRoot, confirm: true }), /default 档案不能删除/);
+  assert.throws(() => deleteProfile("side", { saveRoot, currentProfileId: "side", confirm: true }), /不能删除当前/);
+  assert.throws(() => deleteProfile("side", { saveRoot, currentProfileId: "default" }), /需要确认/);
+
+  replaceCurrentProfileForTest(state, "default");
+  const message = processCommand(state, "profile delete side confirm", { saveRoot, now: 1_700_000_010_000 }).messages.join("\n");
+  assert.match(message, /已删除档案：side/);
+  assert.throws(() => loadProfile("side", 1_700_000_020_000, { saveRoot }), /没有这个档案/);
+});
+
+function replaceCurrentProfileForTest(state, id) {
+  state.profileId = id;
+  state.profileName = id === "default" ? "默认档案" : id;
+}
 
 test("没有当前活动时，时间结算不会默认写代码", () => {
   const now = 1_700_000_000_000;
@@ -726,6 +810,8 @@ test("view model 提供结构化资源、属性、目标摘要和可执行动作
   const view = getGameViewModel(state);
 
   assert.equal(view.role.name, "实习程序员");
+  assert.equal(view.profile.id, "default");
+  assert.equal(view.profile.name, "默认档案");
   assert.equal(view.activeActivity, null);
   assert.equal(view.activeProject, null);
   assert.deepEqual(view.resources.map((item) => item.id), [
@@ -803,4 +889,21 @@ test("management options 标出技能、工具和项目动作状态", () => {
   assert.match(project.effects, /难度 1/);
   assert.match(project.effects, /成功率/);
   assert.equal(promoteAction.command, "promote");
+});
+
+test("profile options 为 TUI 提供新建、保存和切换动作", () => {
+  const saveRoot = createTempSaveRoot();
+  createProfile("work", "工作档案", 1_700_000_000_000, { saveRoot });
+  const state = loadProfile("default", 1_700_000_010_000, { saveRoot });
+
+  const options = getProfileOptions(state, { saveRoot, now: 1_700_000_020_000 });
+  const createOption = options.find((item) => item.id === "profile-new");
+  const saveOption = options.find((item) => item.id === "profile-save");
+  const work = options.find((item) => item.id === "work");
+
+  assert.match(createOption.command, /profile new profile-/);
+  assert.equal(saveOption.command, "save");
+  assert.equal(work.status, "可加载");
+  assert.equal(work.command, "profile load work");
+  assert.equal(work.deleteCommand, "profile delete work confirm");
 });

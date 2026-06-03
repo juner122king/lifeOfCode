@@ -3,7 +3,10 @@ const path = require("node:path");
 const readline = require("node:readline");
 const content = require("./content");
 
+const DEFAULT_PROFILE_ID = "default";
+const DEFAULT_PROFILE_NAME = "默认档案";
 const SAVE_PATH = path.join(process.cwd(), ".save", "code-life.json");
+const PROFILE_DIR = path.join(process.cwd(), ".save", "profiles");
 const OFFLINE_CAP_SECONDS = 8 * 60 * 60;
 const ATTRIBUTE_IDS = ["logic", "focus", "learning", "communication", "resilience", "creativity"];
 const ATTRIBUTE_NAMES = {
@@ -80,9 +83,32 @@ function createActivityMap(valueFactory) {
   return Object.fromEntries(content.activities.map((activity) => [activity.id, valueFactory(activity)]));
 }
 
+function normalizeProfileId(id) {
+  if (typeof id !== "string") return "";
+  const trimmed = id.trim();
+  return /^[A-Za-z0-9_-]+$/.test(trimmed) ? trimmed : "";
+}
+
+function normalizeProfileName(name, fallbackId = DEFAULT_PROFILE_ID) {
+  if (typeof name === "string" && name.trim()) return name.trim().slice(0, 40);
+  const id = normalizeProfileId(fallbackId) || DEFAULT_PROFILE_ID;
+  return id === DEFAULT_PROFILE_ID ? DEFAULT_PROFILE_NAME : id;
+}
+
+function normalizeTimestamp(value, fallback) {
+  if (typeof value !== "string") return fallback;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? new Date(time).toISOString() : fallback;
+}
+
 function createNewState(now = Date.now()) {
   const role = content.roles[0];
+  const timestamp = new Date(now).toISOString();
   return {
+    profileId: DEFAULT_PROFILE_ID,
+    profileName: DEFAULT_PROFILE_NAME,
+    createdAt: timestamp,
+    updatedAt: timestamp,
     resources: {
       codeLines: 0,
       exp: 0,
@@ -132,6 +158,10 @@ function normalizeState(raw, now = Date.now()) {
   const normalized = {
     ...fresh,
     ...raw,
+    profileId: normalizeProfileId(raw && raw.profileId) || DEFAULT_PROFILE_ID,
+    profileName: normalizeProfileName(raw && raw.profileName, raw && raw.profileId),
+    createdAt: normalizeTimestamp(raw && raw.createdAt, fresh.createdAt),
+    updatedAt: normalizeTimestamp(raw && raw.updatedAt, raw && raw.lastTick ? new Date(raw.lastTick).toISOString() : fresh.updatedAt),
     resources: { ...fresh.resources, ...(raw && raw.resources) },
     activeActivityId: activityById(raw && raw.activeActivityId) ? raw.activeActivityId : null,
     activeProjectId: projectById(raw && raw.activeProjectId) ? raw.activeProjectId : null,
@@ -1126,6 +1156,7 @@ function formatState(state) {
   const skillLearningProgress = activeSkill ? getSkillLearningProgress(state, activeSkill) : null;
   const learnedSkills = content.skills.filter((skill) => getSkillLevel(state, skill.id) > 0).map((skill) => formatSkillProgress(state, skill.id));
   return [
+    `档案：${state.profileId} - ${state.profileName}`,
     `职位：${role ? role.name : state.currentRole}`,
     `当前活动：${active ? `${active.name} Lv.${getActivityLevel(state, active.id)}` : "无"}`,
     `当前项目：${activeProject ? `${activeProject.name} ${projectProgress.progressPercent}%（成功率 ${formatPercent(getProjectSuccessRate(state, activeProject))}）` : "无"}`,
@@ -1161,6 +1192,12 @@ function helpText() {
     "  promote                申请晋升",
     "  goals                  查看目标链",
     "  claim [id|all]         领取已完成目标奖励",
+    "  profiles               查看角色档案",
+    "  profile new <id> [name] 创建档案并切换",
+    "  profile load <id>      保存当前并切换档案",
+    "  profile save [id]      保存当前档案或另存为档案",
+    "  profile rename <id> <name> 重命名档案",
+    "  profile delete <id> confirm 删除档案",
     "  wait <seconds>         快进调试",
     "  list skills|tools|projects 查看可购买/可提交内容",
     "  save                   保存",
@@ -1395,6 +1432,12 @@ function getGameViewModel(state) {
 
   return {
     title: "代码人生",
+    profile: {
+      id: state.profileId,
+      name: state.profileName,
+      createdAt: state.createdAt,
+      updatedAt: state.updatedAt
+    },
     role: {
       id: state.currentRole,
       name: role ? role.name : state.currentRole,
@@ -1656,13 +1699,232 @@ function removedCommandHint(command) {
   return hints[command] || "旧命令已移除。输入 activities 查看可开始的活动。";
 }
 
+function getSaveRoot(saveRoot) {
+  return saveRoot || path.dirname(SAVE_PATH);
+}
+
+function resolveProfilePath(profileId = DEFAULT_PROFILE_ID, saveRoot) {
+  const id = normalizeProfileId(profileId);
+  if (!id) throw new Error(`非法档案 ID：${profileId}`);
+  if (id === DEFAULT_PROFILE_ID) return path.join(getSaveRoot(saveRoot), path.basename(SAVE_PATH));
+  return path.join(getSaveRoot(saveRoot), "profiles", `${id}.json`);
+}
+
+function applyProfileMetadata(state, profileId, profileName, now = Date.now()) {
+  const id = normalizeProfileId(profileId) || DEFAULT_PROFILE_ID;
+  const timestamp = new Date(now).toISOString();
+  state.profileId = id;
+  state.profileName = normalizeProfileName(profileName, id);
+  state.createdAt = normalizeTimestamp(state.createdAt, timestamp);
+  state.updatedAt = normalizeTimestamp(state.updatedAt, timestamp);
+  return state;
+}
+
+function readProfileState(profileId, now = Date.now(), saveRoot) {
+  const id = normalizeProfileId(profileId);
+  if (!id) throw new Error(`非法档案 ID：${profileId}`);
+  const savePath = resolveProfilePath(id, saveRoot);
+  if (!fs.existsSync(savePath)) {
+    if (id !== DEFAULT_PROFILE_ID) throw new Error(`没有这个档案：${id}`);
+    return applyProfileMetadata(createNewState(now), DEFAULT_PROFILE_ID, DEFAULT_PROFILE_NAME, now);
+  }
+  const raw = JSON.parse(fs.readFileSync(savePath, "utf8"));
+  return applyProfileMetadata(normalizeState(raw, now), id, raw.profileName, now);
+}
+
+function profileSummaryFromFile(profileId, savePath, currentProfileId, now = Date.now()) {
+  const id = normalizeProfileId(profileId);
+  if (!fs.existsSync(savePath)) {
+    return {
+      id,
+      name: id === DEFAULT_PROFILE_ID ? DEFAULT_PROFILE_NAME : id,
+      current: id === currentProfileId,
+      exists: false,
+      createdAt: null,
+      updatedAt: null,
+      command: `profile load ${id}`
+    };
+  }
+  const raw = JSON.parse(fs.readFileSync(savePath, "utf8"));
+  const state = applyProfileMetadata(normalizeState(raw, now), id, raw.profileName, now);
+  return {
+    id,
+    name: state.profileName,
+    current: id === currentProfileId,
+    exists: true,
+    createdAt: state.createdAt,
+    updatedAt: state.updatedAt,
+    command: id === currentProfileId ? null : `profile load ${id}`
+  };
+}
+
+function listProfiles(options = {}) {
+  const saveRoot = getSaveRoot(options.saveRoot);
+  const currentProfileId = normalizeProfileId(options.currentProfileId) || DEFAULT_PROFILE_ID;
+  const profiles = [profileSummaryFromFile(DEFAULT_PROFILE_ID, resolveProfilePath(DEFAULT_PROFILE_ID, saveRoot), currentProfileId, options.now)];
+  const profilesDir = path.join(saveRoot, "profiles");
+  if (fs.existsSync(profilesDir)) {
+    for (const entry of fs.readdirSync(profilesDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      const id = normalizeProfileId(path.basename(entry.name, ".json"));
+      if (!id || id === DEFAULT_PROFILE_ID) continue;
+      profiles.push(profileSummaryFromFile(id, path.join(profilesDir, entry.name), currentProfileId, options.now));
+    }
+  }
+  return profiles.sort((a, b) => {
+    if (a.id === DEFAULT_PROFILE_ID) return -1;
+    if (b.id === DEFAULT_PROFILE_ID) return 1;
+    return a.id.localeCompare(b.id);
+  });
+}
+
+function formatProfiles(profiles) {
+  return formatLines([
+    "档案：",
+    ...profiles.map((profile) => {
+      const marker = profile.current ? "*" : " ";
+      const status = profile.exists ? "已创建" : "未创建";
+      const updatedAt = profile.updatedAt ? `，更新 ${profile.updatedAt}` : "";
+      return `${marker} ${profile.id} - ${profile.name} [${status}]${updatedAt}`;
+    })
+  ]);
+}
+
+function saveProfile(state, options = {}) {
+  const now = options.now ?? Date.now();
+  const id = normalizeProfileId(state.profileId) || DEFAULT_PROFILE_ID;
+  state.profileId = id;
+  state.profileName = normalizeProfileName(state.profileName, id);
+  state.updatedAt = new Date(now).toISOString();
+  saveGame(state, resolveProfilePath(id, options.saveRoot));
+  return state;
+}
+
+function loadProfile(profileId = DEFAULT_PROFILE_ID, now = Date.now(), options = {}) {
+  return readProfileState(profileId, now, options.saveRoot);
+}
+
+function createProfile(profileId, profileName, now = Date.now(), options = {}) {
+  const id = normalizeProfileId(profileId);
+  if (!id) throw new Error(`非法档案 ID：${profileId}`);
+  const savePath = resolveProfilePath(id, options.saveRoot);
+  if (fs.existsSync(savePath)) throw new Error(`档案已存在：${id}`);
+  const state = applyProfileMetadata(createNewState(now), id, profileName || id, now);
+  saveProfile(state, { saveRoot: options.saveRoot, now });
+  return state;
+}
+
+function deleteProfile(profileId, options = {}) {
+  const id = normalizeProfileId(profileId);
+  if (!id) throw new Error(`非法档案 ID：${profileId}`);
+  if (id === DEFAULT_PROFILE_ID) throw new Error("default 档案不能删除。");
+  if (id === normalizeProfileId(options.currentProfileId)) throw new Error("不能删除当前正在使用的档案。");
+  if (!options.confirm) throw new Error(`删除档案 ${id} 需要确认：profile delete ${id} confirm`);
+  const savePath = resolveProfilePath(id, options.saveRoot);
+  if (!fs.existsSync(savePath)) throw new Error(`没有这个档案：${id}`);
+  fs.unlinkSync(savePath);
+}
+
+function replaceStateContents(target, source) {
+  for (const key of Object.keys(target)) delete target[key];
+  Object.assign(target, source);
+  return target;
+}
+
+function getProfileOptions(state, options = {}) {
+  const profiles = listProfiles({ saveRoot: options.saveRoot, currentProfileId: state.profileId, now: options.now });
+  const nextId = `profile-${new Date(options.now ?? Date.now()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}`;
+  return [
+    {
+      id: "profile-new",
+      name: "新建档案",
+      description: `创建并切换到 ${nextId}。CLI 可用 profile new <id> <name> 自定义。`,
+      status: "可创建",
+      command: `profile new ${nextId} 新档案`
+    },
+    {
+      id: "profile-save",
+      name: "保存当前档案",
+      description: `${state.profileId} - ${state.profileName}`,
+      status: "可保存",
+      command: "save"
+    },
+    ...profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      description: `${profile.id}${profile.updatedAt ? `，更新 ${profile.updatedAt}` : ""}`,
+      status: profile.current ? "当前" : profile.exists ? "可加载" : "未创建",
+      command: profile.current ? null : `profile load ${profile.id}`,
+      deleteCommand: profile.id !== DEFAULT_PROFILE_ID && !profile.current ? `profile delete ${profile.id} confirm` : null,
+      current: profile.current
+    }))
+  ];
+}
+
+function processProfileCommand(state, args, options = {}) {
+  const [subcommand, id, ...rest] = args;
+  const now = options.now ?? Date.now();
+  try {
+    switch (subcommand) {
+      case "list":
+      case undefined:
+        return formatProfiles(listProfiles({ saveRoot: options.saveRoot, currentProfileId: state.profileId, now }));
+      case "new": {
+        if (!id) return "用法：profile new <id> [name]";
+        saveProfile(state, { saveRoot: options.saveRoot, now });
+        const profileName = rest.join(" ") || id;
+        const next = createProfile(id, profileName, now, { saveRoot: options.saveRoot });
+        replaceStateContents(state, next);
+        return `已创建并切换到档案：${state.profileId} - ${state.profileName}。`;
+      }
+      case "load": {
+        if (!id) return "用法：profile load <id>";
+        if (id === state.profileId) return `已经在档案 ${state.profileId}。`;
+        saveProfile(state, { saveRoot: options.saveRoot, now });
+        const next = loadProfile(id, now, { saveRoot: options.saveRoot });
+        replaceStateContents(state, next);
+        return `已切换到档案：${state.profileId} - ${state.profileName}。`;
+      }
+      case "save": {
+        if (id) {
+          state.profileId = id;
+          if (rest.length) state.profileName = rest.join(" ");
+        }
+        saveProfile(state, { saveRoot: options.saveRoot, now });
+        return `已保存档案：${state.profileId} - ${state.profileName}。`;
+      }
+      case "rename": {
+        if (!id || !rest.length) return "用法：profile rename <id> <name>";
+        const target = loadProfile(id, now, { saveRoot: options.saveRoot });
+        target.profileName = rest.join(" ");
+        saveProfile(target, { saveRoot: options.saveRoot, now });
+        if (state.profileId === target.profileId) state.profileName = target.profileName;
+        return `已重命名档案：${target.profileId} - ${target.profileName}。`;
+      }
+      case "delete": {
+        if (!id) return "用法：profile delete <id> confirm";
+        const confirm = rest[0] === "confirm";
+        deleteProfile(id, { saveRoot: options.saveRoot, currentProfileId: state.profileId, confirm });
+        return `已删除档案：${id}。`;
+      }
+      default:
+        return "用法：profiles 或 profile list|new|load|save|rename|delete";
+    }
+  } catch (error) {
+    return error && error.message ? error.message : String(error);
+  }
+}
+
 function processCommand(state, input, options = {}) {
   const now = options.now ?? Date.now();
   const messages = [];
   const trimmed = input.trim();
   if (!trimmed) return { messages, exit: false };
 
-  const [command, arg] = trimmed.split(/\s+/, 2);
+  const parts = trimmed.split(/\s+/);
+  const command = parts[0];
+  const args = parts.slice(1);
+  const arg = args[0];
   if (!trimmed.startsWith("wait ")) {
     messages.push(...settleTime(state, now, { randomEvents: options.randomEvents, rng: options.rng }).messages);
   }
@@ -1701,6 +1963,12 @@ function processCommand(state, input, options = {}) {
     case "claim":
       messages.push(claimGoal(state, arg));
       break;
+    case "profiles":
+      messages.push(formatProfiles(listProfiles({ saveRoot: options.saveRoot, currentProfileId: state.profileId, now })));
+      break;
+    case "profile":
+      messages.push(processProfileCommand(state, args, { ...options, now }));
+      break;
     case "wait": {
       const seconds = Number(arg);
       if (!Number.isFinite(seconds) || seconds <= 0) {
@@ -1720,13 +1988,13 @@ function processCommand(state, input, options = {}) {
       messages.push(helpText());
       break;
     case "save":
-      saveGame(state, options.savePath);
-      messages.push("已保存。");
+      saveProfile(state, { saveRoot: options.saveRoot, now });
+      messages.push(`已保存档案：${state.profileId} - ${state.profileName}。`);
       break;
     case "quit":
     case "exit":
-      saveGame(state, options.savePath);
-      messages.push("已保存，下次继续写。");
+      saveProfile(state, { saveRoot: options.saveRoot, now });
+      messages.push(`已保存档案 ${state.profileId}，下次继续写。`);
       return { messages, exit: true };
     case "code":
     case "fix":
@@ -1753,11 +2021,12 @@ function saveGame(state, savePath = SAVE_PATH) {
 }
 
 function startCli() {
-  const state = loadGame();
+  const state = loadProfile(DEFAULT_PROFILE_ID);
   const offline = settleTime(state, Date.now(), { randomEvents: true });
-  saveGame(state);
+  saveProfile(state);
 
   console.log("《代码人生》CLI");
+  console.log(`当前档案：${state.profileId} - ${state.profileName}`);
   console.log("输入 help 查看命令。");
   if (offline.seconds > 0) {
     console.log(`离线结算 ${offline.seconds} 秒。`);
@@ -1789,7 +2058,7 @@ function startCli() {
         if (!state.activeActivityId) return;
         const result = settleTime(state, Date.now(), { randomEvents: true });
         liveTicks += 1;
-        if (liveTicks % 10 === 0) saveGame(state);
+        if (liveTicks % 10 === 0) saveProfile(state);
         if (rl.line.length > 0) return;
         if (!result.messages.length) return;
         readline.clearLine(process.stdout, 0);
@@ -1814,7 +2083,7 @@ function startCli() {
   rl.on("close", () => {
     closed = true;
     if (liveTicker) clearInterval(liveTicker);
-    saveGame(state);
+    saveProfile(state);
   });
 }
 
@@ -1832,6 +2101,8 @@ module.exports = {
   buyTool,
   claimGoal,
   createNewState,
+  createProfile,
+  deleteProfile,
   formatActivities,
   formatChangedResources,
   formatGoals,
@@ -1849,18 +2120,24 @@ module.exports = {
   getManagementOptions,
   getMultipliers,
   getProductionRisk,
+  getProfileOptions,
   getProjectProgress,
   getProjectSuccessRate,
   getSkillProgress,
   helpText,
   learnSkill,
   listContent,
+  listProfiles,
   loadGame,
+  loadProfile,
   normalizeState,
   processCommand,
   promote,
   qualityPenalty,
+  replaceStateContents,
+  resolveProfilePath,
   saveGame,
+  saveProfile,
   settleTime,
   startActivity,
   stopActivity,

@@ -3,13 +3,15 @@ const {
   getGameViewModel,
   getGoalOptions,
   getManagementOptions,
-  loadGame,
+  getProfileOptions,
+  loadProfile,
   processCommand,
-  saveGame,
+  saveProfile,
   settleTime
 } = require("./game");
 
 const PANELS = [
+  { id: "profiles", label: "档案", key: "F" },
   { id: "activities", label: "活动", key: "A" },
   { id: "goals", label: "目标", key: "G" },
   { id: "skills", label: "技能", key: "S" },
@@ -36,10 +38,11 @@ function commandForPanel(panelId, option) {
 
 async function startTui() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    const state = loadGame();
+    const state = loadProfile();
     const offline = settleTime(state, Date.now(), { randomEvents: true });
-    saveGame(state);
+    saveProfile(state);
     console.log("《代码人生》TUI 需要 TTY 环境。已完成离线结算并保存。");
+    console.log(`当前档案：${state.profileId} - ${state.profileName}`);
     if (offline.seconds > 0) console.log(`离线结算 ${offline.seconds} 秒。`);
     for (const message of offline.messages) console.log(message);
     return;
@@ -56,7 +59,7 @@ async function startTui() {
     const project = view.activeProject ? `${view.activeProject.name} ${view.activeProject.progressPercent}% 成功率 ${Math.round(view.activeProject.successRate * 100)}%` : "无";
     const learning = view.activeSkillLearning ? `${view.activeSkillLearning.name} ${view.activeSkillLearning.progressPercent}%` : "无";
     return h(Box, { borderStyle: "round", paddingX: 1, flexDirection: "column" },
-      h(Text, { bold: true }, `《${view.title}》  ${view.role.name}  当前活动：${active}  当前项目：${project}  当前学习：${learning}  ${paused ? "已暂停" : "自动结算中"}`),
+      h(Text, { bold: true }, `《${view.title}》  ${view.profile.id}/${view.profile.name}  ${view.role.name}  当前活动：${active}  当前项目：${project}  当前学习：${learning}  ${paused ? "已暂停" : "自动结算中"}`),
       h(Text, null, view.nextAdvice)
     );
   }
@@ -102,6 +105,7 @@ async function startTui() {
   }
 
   function getPanelOptions(state, activePanel) {
+    if (activePanel === "profiles") return getProfileOptions(state);
     if (activePanel === "activities") return getActivityOptions(state);
     if (activePanel === "goals") return getGoalOptions(state);
     if (["skills", "tools", "projects"].includes(activePanel)) return getManagementOptions(state, activePanel);
@@ -143,22 +147,23 @@ async function startTui() {
 
   function Footer({ paused }) {
     return h(Box, { borderStyle: "single", paddingX: 1 },
-      h(Text, null, `Tab 切换  ↑/↓ 选择  Enter 执行  Space ${paused ? "恢复" : "暂停"}  Q 保存退出`)
+      h(Text, null, `Tab 切换  ↑/↓ 选择  Enter 执行/加载  D 两次删除档案  Space ${paused ? "恢复" : "暂停"}  Q 保存退出`)
     );
   }
 
   function App() {
-    const stateRef = useRef(loadGame());
+    const stateRef = useRef(loadProfile());
     const [activePanel, setActivePanel] = useState("activities");
     const [selected, setSelected] = useState({});
     const [paused, setPaused] = useState(false);
+    const [pendingDeleteProfileId, setPendingDeleteProfileId] = useState(null);
     const [logs, setLogs] = useState([]);
     const [revision, refresh] = useReducer((value) => value + 1, 0);
     const { exit } = useApp();
 
     useEffect(() => {
       const offline = settleTime(stateRef.current, Date.now(), { randomEvents: true });
-      saveGame(stateRef.current);
+      saveProfile(stateRef.current);
       if (offline.seconds > 0 || offline.messages.length) {
         setLogs((current) => pushLogs(current, [`离线结算 ${offline.seconds} 秒。`, ...offline.messages]));
       }
@@ -170,7 +175,7 @@ async function startTui() {
         if (paused) return;
         const result = settleTime(stateRef.current, Date.now(), { randomEvents: true });
         if (result.messages.length) setLogs((current) => pushLogs(current, result.messages));
-        saveGame(stateRef.current);
+        saveProfile(stateRef.current);
         refresh();
       }, 3000);
       return () => clearInterval(timer);
@@ -182,7 +187,7 @@ async function startTui() {
 
     useInput((input, key) => {
       if (input.toLowerCase() === "q") {
-        saveGame(stateRef.current);
+        saveProfile(stateRef.current);
         exit();
         return;
       }
@@ -193,19 +198,23 @@ async function startTui() {
       if (key.tab) {
         const currentIndex = PANELS.findIndex((panel) => panel.id === activePanel);
         setActivePanel(PANELS[(currentIndex + 1) % PANELS.length].id);
+        setPendingDeleteProfileId(null);
         return;
       }
       const shortcut = PANELS.find((panel) => panel.key.toLowerCase() === input.toLowerCase());
       if (shortcut) {
         setActivePanel(shortcut.id);
+        setPendingDeleteProfileId(null);
         return;
       }
       if (key.upArrow) {
         setSelected((current) => ({ ...current, [activePanel]: Math.max(0, selectedIndex - 1) }));
+        setPendingDeleteProfileId(null);
         return;
       }
       if (key.downArrow) {
         setSelected((current) => ({ ...current, [activePanel]: Math.min(Math.max(0, options.length - 1), selectedIndex + 1) }));
+        setPendingDeleteProfileId(null);
         return;
       }
       if (key.return) {
@@ -214,6 +223,20 @@ async function startTui() {
         const result = processCommand(stateRef.current, command, { randomEvents: true });
         setLogs((current) => pushLogs(current, [`> ${command}`, ...result.messages]));
         if (result.exit) exit();
+        refresh();
+      }
+      if (input.toLowerCase() === "d" && activePanel === "profiles") {
+        const option = options[selectedIndex];
+        const command = option && option.deleteCommand;
+        if (!command) return;
+        if (pendingDeleteProfileId !== option.id) {
+          setPendingDeleteProfileId(option.id);
+          setLogs((current) => pushLogs(current, [`再次按 D 删除档案：${option.id}`]));
+          return;
+        }
+        const result = processCommand(stateRef.current, command, { randomEvents: true });
+        setLogs((current) => pushLogs(current, [`> ${command}`, ...result.messages]));
+        setPendingDeleteProfileId(null);
         refresh();
       }
     });
