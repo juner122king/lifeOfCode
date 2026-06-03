@@ -161,6 +161,58 @@ const activities = [
     attributeExpPerMinute: { logic: 3, creativity: 1 }
   },
   {
+    id: "code-review",
+    name: "代码评审",
+    description: "LGTM 不是结论，是一段复杂人际关系的开始。",
+    tier: 3,
+    primaryAttribute: "communication",
+    requirements: { skills: ["git"], activityLevels: { "feature-coding": 3, testing: 2 } },
+    activityExpPerSecond: 0.38,
+    energyCostPerSecond: 0.035,
+    effectsPerSecond: { bugs: -0.12, techDebt: -0.07, docs: 0.03, exp: 0.06 },
+    risksPerSecond: { pressure: 0.002 },
+    attributeExpPerMinute: { communication: 2, logic: 1 }
+  },
+  {
+    id: "performance-tuning",
+    name: "性能调优",
+    description: "把 P99 从玄学指标调成老板看得懂的 KPI。",
+    tier: 4,
+    primaryAttribute: "logic",
+    requirements: { skills: ["sql"], activityLevels: { refactoring: 4, architecture: 2 } },
+    activityExpPerSecond: 0.34,
+    energyCostPerSecond: 0.045,
+    effectsPerSecond: { codeLines: 0.18, architecture: 0.06, money: 0.04, exp: 0.06, techDebt: -0.04 },
+    risksPerSecond: { bugs: 0.003, pressure: 0.005 },
+    attributeExpPerMinute: { logic: 3, resilience: 1 }
+  },
+  {
+    id: "prompt-engineering",
+    name: "提示词工程",
+    description: "把“帮我写个功能”包装成结构化上下文和验收标准。",
+    tier: 3,
+    primaryAttribute: "learning",
+    requirements: { activityLevels: { study: 3, documentation: 2 } },
+    activityExpPerSecond: 0.4,
+    energyCostPerSecond: 0.03,
+    effectsPerSecond: { knowledge: 0.08, docs: 0.05, codeLines: 0.12, exp: 0.07 },
+    risksPerSecond: { techDebt: 0.004, pressure: 0.004 },
+    attributeExpPerMinute: { learning: 2, creativity: 1 }
+  },
+  {
+    id: "incident-response",
+    name: "线上救火",
+    description: "先止血，再复盘，最后把 TODO 留给未来的自己。",
+    tier: 3,
+    primaryAttribute: "resilience",
+    requirements: { activityLevels: { "bug-hunting": 3, testing: 3 } },
+    activityExpPerSecond: 0.36,
+    energyCostPerSecond: 0.055,
+    effectsPerSecond: { bugs: -0.22, tests: 0.03, reputation: 0.003, exp: 0.08 },
+    risksPerSecond: { pressure: 0.03, techDebt: 0.004 },
+    attributeExpPerMinute: { resilience: 3, logic: 1 }
+  },
+  {
     id: "rest",
     name: "休息恢复",
     description: "恢复精力并降低压力，是所有产出活动的机会成本。",
@@ -173,55 +225,65 @@ const activities = [
   }
 ];
 
+const skillTierDefaults = {
+  1: { cost: { knowledge: 120, exp: 160, money: 80 }, learningSeconds: 600 },
+  2: { cost: { knowledge: 300, exp: 420, money: 220 }, learningSeconds: 1200 },
+  3: { cost: { knowledge: 650, exp: 900, money: 520 }, learningSeconds: 2100 },
+  4: { cost: { knowledge: 1100, exp: 1500, money: 900 }, learningSeconds: 3300 },
+  5: { cost: { knowledge: 1700, exp: 2400, money: 1600 }, learningSeconds: 5400 }
+};
+
+function roundCost(cost, multiplier) {
+  return Object.fromEntries(Object.entries(cost).map(([key, value]) => [key, Math.round(value * multiplier / 10) * 10]));
+}
+
+function skill(config) {
+  const defaults = skillTierDefaults[config.tier];
+  return {
+    ...config,
+    cost: config.cost || defaults.cost,
+    learningSeconds: config.learningSeconds || defaults.learningSeconds,
+    attributeRequirements: config.attributeRequirements || {},
+    upgradeResourceBase: config.upgradeResourceBase || { docs: 10, tests: 10 },
+    multipliers: config.multipliers || {}
+  };
+}
+
 const skills = [
-  {
-    id: "html-css",
-    name: "HTML/CSS",
-    description: "页面终于不会像调试日志一样朴素。",
-    cost: { knowledge: 18, exp: 25, money: 10 },
-    multipliers: { code: 1.06, exp: 1.02 },
-    attributeExp: { creativity: 18, learning: 12 }
-  },
-  {
-    id: "javascript",
-    name: "JavaScript",
-    description: "开始理解为什么 undefined 不是 bug。",
-    cost: { knowledge: 38, exp: 50, money: 25 },
-    multipliers: { code: 1.12, exp: 1.04, bug: 1.04 },
-    attributeExp: { logic: 24, learning: 16 }
-  },
-  {
-    id: "git",
-    name: "Git",
-    description: "至少知道 push 前要 pull。",
-    cost: { knowledge: 70, exp: 90, money: 50 },
-    multipliers: { code: 1.06, bug: 0.9, debt: 0.9 },
-    attributeExp: { logic: 24, resilience: 16 }
-  },
-  {
-    id: "sql",
-    name: "SQL",
-    description: "能把需求翻译成 SELECT，也能把 SELECT 翻译成加班。",
-    cost: { knowledge: 110, exp: 140, money: 90 },
-    multipliers: { money: 1.1, exp: 1.06 },
-    attributeExp: { logic: 28, learning: 18 }
-  },
-  {
-    id: "docker",
-    name: "Docker",
-    description: "本地能跑，线上也有机会能跑。",
-    cost: { knowledge: 240, exp: 320, money: 240 },
-    multipliers: { code: 1.08, debt: 0.78, bug: 0.88 },
-    attributeExp: { resilience: 34, logic: 24 }
-  },
-  {
-    id: "communication",
-    name: "沟通能力",
-    description: "把“这个做不了”说成“我们换个更稳的方案”。",
-    cost: { knowledge: 220, exp: 360, money: 180 },
-    multipliers: { money: 1.14, exp: 1.08, debt: 0.86, pressure: 0.82 },
-    attributeExp: { communication: 44, resilience: 20 }
-  }
+  skill({ id: "html-css", name: "HTML/CSS", tier: 1, description: "页面终于不会像调试日志一样朴素。", cost: roundCost({ knowledge: 18, exp: 25, money: 10 }, 2), attributeRequirements: { creativity: 16, learning: 22 }, upgradeResourceBase: { codeLines: 70, docs: 10 }, multipliers: { code: 1.018, exp: 1.006 } }),
+  skill({ id: "javascript", name: "JavaScript", tier: 1, description: "开始理解为什么 undefined 不是 bug。", cost: roundCost({ knowledge: 38, exp: 50, money: 25 }, 2), attributeRequirements: { logic: 22, learning: 24 }, upgradeResourceBase: { codeLines: 90, tests: 10 }, multipliers: { code: 1.024, exp: 1.01, bug: 1.008 } }),
+  skill({ id: "git", name: "Git", tier: 1, description: "至少知道 push 前要 pull。", cost: roundCost({ knowledge: 70, exp: 90, money: 50 }, 2), attributeRequirements: { logic: 22, resilience: 20 }, upgradeResourceBase: { docs: 12, tests: 10 }, multipliers: { code: 1.012, bug: 0.976, debt: 0.976 } }),
+  skill({ id: "linux", name: "Linux", tier: 1, description: "能在终端里解决问题，而不是只会重启 IDE。", attributeRequirements: { resilience: 24, logic: 24 }, upgradeResourceBase: { docs: 10, tests: 15 }, multipliers: { exp: 1.008, pressure: 0.986 } }),
+  skill({ id: "http-networking", name: "HTTP/网络协议", tier: 1, description: "看懂请求、响应、缓存和那些藏在 header 里的真相。", attributeRequirements: { logic: 24, learning: 24 }, upgradeResourceBase: { docs: 10, tests: 10 }, multipliers: { bug: 0.984, exp: 1.008 } }),
+
+  skill({ id: "sql", name: "SQL", tier: 2, description: "能把需求翻译成 SELECT，也能把 SELECT 翻译成加班。", cost: roundCost({ knowledge: 110, exp: 140, money: 90 }, 3), attributeRequirements: { logic: 28, learning: 24 }, upgradeResourceBase: { docs: 12, architecture: 10 }, multipliers: { money: 1.018, exp: 1.012 } }),
+  skill({ id: "typescript", name: "TypeScript", tier: 2, description: "给 any 戴上镣铐，从此报错提前到编译期。", cost: roundCost({ knowledge: 80, exp: 110, money: 60 }, 3), attributeRequirements: { logic: 26, learning: 24 }, upgradeResourceBase: { codeLines: 90, tests: 15 }, multipliers: { code: 1.016, bug: 0.978, debt: 0.984 } }),
+  skill({ id: "react", name: "React", tier: 2, description: "学会和 useEffect 依赖数组进行长期拉扯。", cost: roundCost({ knowledge: 120, exp: 170, money: 80 }, 3), attributeRequirements: { creativity: 26, focus: 24 }, upgradeResourceBase: { codeLines: 100, docs: 12 }, multipliers: { code: 1.022, exp: 1.008, pressure: 1.006 } }),
+  skill({ id: "vue", name: "Vue", tier: 2, description: "用响应式状态把页面拆成更安静的组件。", attributeRequirements: { creativity: 26, focus: 24 }, upgradeResourceBase: { codeLines: 90, docs: 12 }, multipliers: { code: 1.02, exp: 1.006 } }),
+  skill({ id: "communication", name: "沟通能力", tier: 2, description: "把“这个做不了”说成“我们换个更稳的方案”。", cost: roundCost({ knowledge: 220, exp: 360, money: 180 }, 3), attributeRequirements: { communication: 24, resilience: 22 }, upgradeResourceBase: { docs: 25, leads: 4 }, multipliers: { money: 1.02, exp: 1.012, debt: 0.984, pressure: 0.98 } }),
+  skill({ id: "postgresql", name: "PostgreSQL", tier: 2, description: "把数据建模、约束和事务当成后端的地基。", attributeRequirements: { logic: 30, learning: 26 }, upgradeResourceBase: { docs: 12, architecture: 12 }, multipliers: { money: 1.014, debt: 0.986 } }),
+  skill({ id: "testing-automation", name: "测试自动化", tier: 2, description: "让测试从手工祈祷变成可重复反馈。", attributeRequirements: { focus: 30, logic: 28 }, upgradeResourceBase: { tests: 40, docs: 10 }, multipliers: { bug: 0.972, debt: 0.988 } }),
+  skill({ id: "accessibility", name: "可访问性", tier: 2, description: "让界面不仅能看，还能被更多人真正使用。", attributeRequirements: { communication: 28, creativity: 26 }, upgradeResourceBase: { docs: 25, tests: 12 }, multipliers: { exp: 1.008, money: 1.01 } }),
+
+  skill({ id: "node-api", name: "Node API", tier: 3, description: "把接口写成 REST，再把 REST 写成需求变更。", cost: roundCost({ knowledge: 150, exp: 190, money: 90 }, 4.5), attributeRequirements: { logic: 30, communication: 24 }, upgradeResourceBase: { codeLines: 110, tests: 18 }, multipliers: { code: 1.016, money: 1.012, exp: 1.01 } }),
+  skill({ id: "redis", name: "Redis", tier: 3, description: "缓存一时爽，缓存击穿火葬场，但你至少知道要加锁。", cost: roundCost({ knowledge: 190, exp: 240, money: 120 }, 4.5), attributeRequirements: { logic: 32, resilience: 28 }, upgradeResourceBase: { architecture: 15, tests: 18 }, multipliers: { money: 1.01, bug: 0.988, pressure: 0.986 } }),
+  skill({ id: "ci-cd", name: "CI/CD", tier: 3, description: "让机器替你羞辱没跑测试就提交的人。", cost: roundCost({ knowledge: 210, exp: 280, money: 140 }, 4.5), attributeRequirements: { focus: 30, resilience: 28 }, upgradeResourceBase: { tests: 28, docs: 16 }, multipliers: { bug: 0.97, debt: 0.984, pressure: 0.986 } }),
+  skill({ id: "docker", name: "Docker", tier: 3, description: "本地能跑，线上也有机会能跑。", cost: roundCost({ knowledge: 240, exp: 320, money: 240 }, 4.5), attributeRequirements: { resilience: 30, logic: 28 }, upgradeResourceBase: { architecture: 18, docs: 16 }, multipliers: { code: 1.012, debt: 0.97, bug: 0.982 } }),
+  skill({ id: "nextjs", name: "Next.js", tier: 3, description: "把路由、缓存、渲染和部署压进同一套前端工程。", attributeRequirements: { creativity: 34, logic: 32 }, upgradeResourceBase: { codeLines: 120, docs: 20 }, multipliers: { code: 1.018, money: 1.012, pressure: 1.004 } }),
+  skill({ id: "state-management", name: "状态管理", tier: 3, description: "让页面状态从散落的变量变成可推理的数据流。", attributeRequirements: { logic: 32, focus: 30 }, upgradeResourceBase: { codeLines: 90, tests: 15 }, multipliers: { bug: 0.982, debt: 0.978 } }),
+  skill({ id: "web-performance", name: "Web 性能", tier: 3, description: "把等待时间从用户体感里抠出来。", attributeRequirements: { logic: 34, focus: 32 }, upgradeResourceBase: { codeLines: 80, architecture: 12 }, multipliers: { money: 1.014, exp: 1.008, pressure: 0.99 } }),
+  skill({ id: "graphql", name: "GraphQL", tier: 3, description: "把多端数据需求聚合成一张可协商的 schema。", attributeRequirements: { logic: 34, communication: 28 }, upgradeResourceBase: { codeLines: 110, docs: 15 }, multipliers: { code: 1.012, debt: 0.986 } }),
+  skill({ id: "auth-security", name: "认证与安全", tier: 3, description: "让登录、权限和密钥少一点侥幸。", attributeRequirements: { logic: 36, resilience: 32 }, upgradeResourceBase: { tests: 30, docs: 20 }, multipliers: { bug: 0.966, pressure: 0.988 } }),
+  skill({ id: "message-queue", name: "消息队列", tier: 3, description: "把同步压力拆成可靠的异步边界。", attributeRequirements: { logic: 34, resilience: 32 }, upgradeResourceBase: { architecture: 20, tests: 20 }, multipliers: { pressure: 0.984, debt: 0.988 } }),
+  skill({ id: "database-indexing", name: "索引与查询优化", tier: 3, description: "让数据库少扫几座山，多走几条路。", attributeRequirements: { logic: 36, focus: 32 }, upgradeResourceBase: { architecture: 18, tests: 15 }, multipliers: { money: 1.016, bug: 0.99 } }),
+  skill({ id: "vector-db", name: "向量数据库", tier: 3, description: "把语义相似度变成可检索的工程资产。", attributeRequirements: { learning: 34, logic: 32 }, upgradeResourceBase: { architecture: 18, tests: 20 }, multipliers: { code: 1.012, exp: 1.012 } }),
+
+  skill({ id: "observability", name: "可观测性", tier: 4, description: "从“线上炸了”进化到“P95 在 14:03 开始抖”。", cost: roundCost({ knowledge: 320, exp: 460, money: 260 }, 6), attributeRequirements: { logic: 38, resilience: 34 }, upgradeResourceBase: { docs: 24, architecture: 24 }, multipliers: { bug: 0.964, pressure: 0.978, exp: 1.008 } }),
+  skill({ id: "kubernetes", name: "Kubernetes", tier: 4, description: "把一个进程部署问题升级成一堆 YAML 组织行为学。", cost: roundCost({ knowledge: 360, exp: 520, money: 360 }, 6), attributeRequirements: { resilience: 40, logic: 38 }, upgradeResourceBase: { architecture: 28, docs: 22 }, multipliers: { code: 1.01, bug: 0.984, debt: 0.974, pressure: 1.008 } }),
+  skill({ id: "terraform", name: "Terraform", tier: 4, description: "把云资源变成可以 review 的声明式代码。", attributeRequirements: { logic: 42, resilience: 38 }, upgradeResourceBase: { architecture: 30, docs: 20 }, multipliers: { debt: 0.976, pressure: 0.988 } }),
+  skill({ id: "llm-evaluation", name: "LLM 评测", tier: 4, description: "把模型表现从感觉不错变成可比较、可回归。", attributeRequirements: { logic: 42, learning: 40 }, upgradeResourceBase: { docs: 30, tests: 30 }, multipliers: { exp: 1.014, bug: 0.988 } }),
+
+  skill({ id: "llm-agent", name: "LLM Agent", tier: 5, description: "把复制粘贴升级成多轮工具调用，幻觉也开始自动化。", cost: roundCost({ knowledge: 420, exp: 620, money: 520 }, 8), attributeRequirements: { creativity: 44, learning: 42 }, upgradeResourceBase: { architecture: 35, tests: 30 }, multipliers: { code: 1.032, exp: 1.018, bug: 1.006, debt: 1.01, pressure: 1.008 } })
 ];
 
 const tools = [
@@ -252,67 +314,130 @@ const tools = [
     description: "产出更快，但 code review 还是要自己扛。",
     cost: { money: 900 },
     multipliers: { code: 1.32, exp: 1.08, debt: 1.1, pressure: 1.06 }
+  },
+  {
+    id: "api-client",
+    name: "API 调试套件",
+    description: "不是接口错了，是你少传了那个没人写进文档的 header。",
+    cost: { money: 240 },
+    multipliers: { bug: 0.94, exp: 1.02 }
+  },
+  {
+    id: "cloud-ide",
+    name: "云端开发环境",
+    description: "本地环境再也不会坏了，因为坏的是云端环境。",
+    cost: { money: 360 },
+    multipliers: { code: 1.09, exp: 1.03, pressure: 0.98 }
+  },
+  {
+    id: "github-actions",
+    name: "流水线会员",
+    description: "红灯不是失败，是自动化给你的即时反馈。",
+    cost: { money: 640 },
+    multipliers: { bug: 0.88, debt: 0.9, pressure: 0.95 }
+  },
+  {
+    id: "status-page",
+    name: "监控大屏",
+    description: "只要图够多，事故复盘就显得很专业。",
+    cost: { money: 960 },
+    multipliers: { bug: 0.86, pressure: 0.82 }
   }
 ];
 
+const projectTemplates = {
+  1: { resources: { codeLines: 120, docs: 8, tests: 8 }, minWorkHours: 0.35, maxSuccessRate: 0.97, rewards: { exp: 90, money: 120, reputation: 2 } },
+  2: { resources: { codeLines: 320, docs: 25, tests: 40, architecture: 10 }, minWorkHours: 0.75, maxSuccessRate: 0.94, rewards: { exp: 220, money: 300, reputation: 3 } },
+  3: { resources: { codeLines: 650, docs: 45, tests: 80, architecture: 40 }, minWorkHours: 1.25, maxSuccessRate: 0.9, rewards: { exp: 500, money: 650, reputation: 5 } },
+  4: { resources: { codeLines: 1100, docs: 70, tests: 130, architecture: 90, leads: 6 }, minWorkHours: 1.8, maxSuccessRate: 0.84, rewards: { exp: 900, money: 1100, reputation: 8 } },
+  5: { resources: { codeLines: 1600, docs: 100, tests: 180, architecture: 140, leads: 10 }, minWorkHours: 2.4, maxSuccessRate: 0.8, rewards: { exp: 1450, money: 1900, reputation: 13 } }
+};
+
+function splitSkillExp(skills, amount) {
+  return Object.fromEntries(skills.map((id) => [id, Math.ceil(amount / skills.length)]));
+}
+
+function project(config) {
+  const template = projectTemplates[config.difficulty];
+  const skills = config.skills || [];
+  return {
+    id: config.id,
+    name: config.name,
+    difficulty: config.difficulty,
+    maxSuccessRate: config.maxSuccessRate || template.maxSuccessRate,
+    minWorkHours: config.minWorkHours || template.minWorkHours,
+    requirements: {
+      resources: config.resources || template.resources,
+      skills,
+      activityLevels: config.activityLevels || {}
+    },
+    rewards: config.rewards || template.rewards,
+    skillExpRewards: config.skillExpRewards || splitSkillExp(skills, config.skillExp || (config.difficulty * 90)),
+    attributeExp: config.attributeExp || {}
+  };
+}
+
+function trainingProject(id, name, skillId) {
+  return project({
+    id,
+    name,
+    difficulty: 1,
+    skills: [skillId],
+    skillExpRewards: { [skillId]: 70 },
+    activityLevels: { "feature-coding": 1 },
+    attributeExp: { learning: 8 }
+  });
+}
+
 const projects = [
-  {
-    id: "homepage",
-    name: "个人主页",
-    requirements: {
-      resources: { codeLines: 80, docs: 8 },
-      skills: ["html-css"],
-      activityLevels: { "feature-coding": 2, documentation: 1 }
-    },
-    rewards: { exp: 60, money: 80, reputation: 2 },
-    creative: true,
-    attributeExp: { creativity: 24, communication: 12 }
-  },
-  {
-    id: "todo",
-    name: "Todo App",
-    requirements: {
-      resources: { codeLines: 180, tests: 20 },
-      skills: ["javascript"],
-      activityLevels: { "feature-coding": 4, testing: 2 }
-    },
-    rewards: { exp: 135, money: 170, reputation: 3 },
-    attributeExp: { focus: 28, logic: 18 }
-  },
-  {
-    id: "blog",
-    name: "博客系统",
-    requirements: {
-      resources: { codeLines: 420, docs: 35, architecture: 12 },
-      skills: ["git", "sql"],
-      activityLevels: { documentation: 4, refactoring: 4 }
-    },
-    rewards: { exp: 300, money: 420, reputation: 5 },
-    creative: true,
-    attributeExp: { communication: 32, creativity: 28 }
-  },
-  {
-    id: "admin",
-    name: "电商后台",
-    requirements: {
-      resources: { codeLines: 900, tests: 90, architecture: 55, leads: 8 },
-      skills: ["sql", "communication"],
-      activityLevels: { freelancing: 4, architecture: 4, testing: 5 }
-    },
-    rewards: { exp: 700, money: 980, reputation: 8 },
-    attributeExp: { communication: 42, resilience: 30 }
-  },
-  {
-    id: "flash-sale",
-    name: "秒杀系统",
-    requirements: {
-      resources: { codeLines: 1600, tests: 180, architecture: 120 },
-      skills: ["docker", "sql"],
-      activityLevels: { architecture: 7, refactoring: 7, "open-source": 4 }
-    },
-    rewards: { exp: 1350, money: 1900, reputation: 14 },
-    attributeExp: { logic: 54, resilience: 48 }
-  }
+  project({ id: "homepage", name: "个人主页", difficulty: 1, maxSuccessRate: 0.98, minWorkHours: 0.17, resources: { codeLines: 80, docs: 8 }, skills: ["html-css"], activityLevels: { "feature-coding": 2, documentation: 1 }, rewards: { exp: 60, money: 80, reputation: 2 }, skillExpRewards: { "html-css": 80 }, attributeExp: { creativity: 24, communication: 12 } }),
+  project({ id: "todo", name: "Todo App", difficulty: 2, maxSuccessRate: 0.95, minWorkHours: 0.5, resources: { codeLines: 180, tests: 20 }, skills: ["javascript"], activityLevels: { "feature-coding": 4, testing: 2 }, rewards: { exp: 135, money: 170, reputation: 3 }, skillExpRewards: { javascript: 120 }, attributeExp: { focus: 28, logic: 18 } }),
+  project({ id: "blog", name: "博客系统", difficulty: 3, maxSuccessRate: 0.92, minWorkHours: 1, resources: { codeLines: 420, docs: 35, architecture: 12 }, skills: ["git", "sql"], activityLevels: { documentation: 4, refactoring: 4 }, rewards: { exp: 300, money: 420, reputation: 5 }, skillExpRewards: { git: 120, sql: 140 }, attributeExp: { communication: 32, creativity: 28 } }),
+  project({ id: "admin", name: "电商后台", difficulty: 4, maxSuccessRate: 0.88, minWorkHours: 1.5, resources: { codeLines: 900, tests: 90, architecture: 55, leads: 8 }, skills: ["sql", "communication"], activityLevels: { freelancing: 4, architecture: 4, testing: 5 }, rewards: { exp: 700, money: 980, reputation: 8 }, skillExpRewards: { sql: 180, communication: 180 }, attributeExp: { communication: 42, resilience: 30 } }),
+  project({ id: "flash-sale", name: "秒杀系统", difficulty: 5, maxSuccessRate: 0.84, minWorkHours: 2, resources: { codeLines: 1600, tests: 180, architecture: 120 }, skills: ["docker", "sql"], activityLevels: { architecture: 7, refactoring: 7, "open-source": 4 }, rewards: { exp: 1350, money: 1900, reputation: 14 }, skillExpRewards: { docker: 240, sql: 220 }, attributeExp: { logic: 54, resilience: 48 } }),
+  project({ id: "component-library", name: "组件库内卷", difficulty: 2, maxSuccessRate: 0.94, minWorkHours: 0.65, resources: { codeLines: 260, docs: 18, tests: 25 }, skills: ["typescript", "react"], activityLevels: { "feature-coding": 4, documentation: 2, testing: 2 }, rewards: { exp: 180, money: 220, reputation: 3 }, skillExpRewards: { typescript: 90, react: 90 }, attributeExp: { creativity: 28, focus: 20 } }),
+  project({ id: "api-gateway", name: "接口网关", difficulty: 3, maxSuccessRate: 0.91, minWorkHours: 1.1, resources: { codeLines: 500, tests: 60, architecture: 30 }, skills: ["node-api", "sql"], activityLevels: { refactoring: 4, testing: 3 }, rewards: { exp: 380, money: 500, reputation: 5 }, skillExpRewards: { "node-api": 150, sql: 120 }, attributeExp: { logic: 32, communication: 18 } }),
+  project({ id: "ci-pipeline", name: "祖传项目流水线改造", difficulty: 3, maxSuccessRate: 0.9, minWorkHours: 1, resources: { codeLines: 360, tests: 80, docs: 35, architecture: 20 }, skills: ["git", "ci-cd", "docker"], activityLevels: { testing: 4, documentation: 3 }, rewards: { exp: 420, money: 520, reputation: 5 }, skillExpRewards: { git: 90, "ci-cd": 120, docker: 120 }, attributeExp: { focus: 30, resilience: 22 } }),
+  project({ id: "legacy-rescue", name: "祖传单体抢救", difficulty: 4, maxSuccessRate: 0.78, minWorkHours: 1.7, resources: { codeLines: 700, tests: 70, docs: 40, architecture: 50 }, skills: ["git", "sql", "typescript"], activityLevels: { refactoring: 6, "bug-hunting": 5 }, rewards: { exp: 800, money: 900, reputation: 6 }, skillExpRewards: { git: 120, sql: 150, typescript: 150 }, attributeExp: { logic: 42, resilience: 34 } }),
+  project({ id: "observability-platform", name: "可观测性平台", difficulty: 5, maxSuccessRate: 0.86, minWorkHours: 1.8, resources: { codeLines: 800, docs: 50, tests: 120, architecture: 90 }, skills: ["observability", "docker"], activityLevels: { architecture: 5, testing: 5 }, rewards: { exp: 760, money: 1000, reputation: 9 }, skillExpRewards: { observability: 260, docker: 180 }, attributeExp: { logic: 38, communication: 26 } }),
+  project({ id: "rag-assistant", name: "RAG 知识库助手", difficulty: 5, maxSuccessRate: 0.82, minWorkHours: 2.2, resources: { codeLines: 1100, docs: 90, tests: 140, architecture: 100, leads: 10 }, skills: ["llm-agent", "node-api"], activityLevels: { study: 5, documentation: 5, architecture: 5 }, rewards: { exp: 1100, money: 1500, reputation: 12 }, skillExpRewards: { "llm-agent": 260, "node-api": 180 }, attributeExp: { creativity: 48, learning: 36 } }),
+
+  trainingProject("vanilla-widget", "原生 JS 小组件", "javascript"),
+  trainingProject("repo-cleanup", "Git 仓库清扫", "git"),
+  trainingProject("sql-report", "SQL 报表练习", "sql"),
+  trainingProject("container-demo", "容器化 Demo", "docker"),
+  trainingProject("requirement-workshop", "需求澄清演练", "communication"),
+  project({ id: "typed-form", name: "类型化表单", difficulty: 1, skills: ["typescript", "react"], skillExpRewards: { typescript: 70, react: 70 }, activityLevels: { "feature-coding": 1 }, attributeExp: { learning: 8 } }),
+  trainingProject("api-mock-service", "API Mock 服务", "node-api"),
+  trainingProject("cache-lab", "缓存实验", "redis"),
+  trainingProject("pipeline-sandbox", "流水线沙盒", "ci-cd"),
+  trainingProject("observability-sandbox", "观测性沙盒", "observability"),
+  trainingProject("llm-prompt-bench", "LLM 提示词评测", "llm-agent"),
+  trainingProject("linux-cli-dojo", "Linux 命令行道场", "linux"),
+  trainingProject("http-debug-lab", "HTTP 抓包实验", "http-networking"),
+  trainingProject("vue-widget", "Vue 组件练习", "vue"),
+  trainingProject("nextjs-cache-page", "Next.js 缓存页面", "nextjs"),
+  trainingProject("state-store-refactor", "状态仓库重构", "state-management"),
+  trainingProject("web-vitals-sprint", "Web Vitals 优化", "web-performance"),
+  trainingProject("a11y-fix-pass", "可访问性修复", "accessibility"),
+  trainingProject("graphql-bff-demo", "GraphQL BFF Demo", "graphql"),
+  trainingProject("auth-hardening-lab", "认证加固实验", "auth-security"),
+  trainingProject("queue-worker-lab", "队列 Worker 实验", "message-queue"),
+  trainingProject("postgres-report", "PostgreSQL 报表", "postgresql"),
+  trainingProject("index-tuning-lab", "索引调优实验", "database-indexing"),
+  trainingProject("test-harness", "测试脚手架", "testing-automation"),
+  trainingProject("terraform-sandbox", "Terraform 沙盒", "terraform"),
+  trainingProject("vector-search-demo", "向量检索 Demo", "vector-db"),
+  trainingProject("eval-harness", "LLM 评测脚手架", "llm-evaluation"),
+
+  project({ id: "secure-admin-auth", name: "安全后台登录", difficulty: 3, skills: ["react", "node-api", "auth-security"], activityLevels: { testing: 4, documentation: 3 } }),
+  project({ id: "realtime-notification-center", name: "实时通知中心", difficulty: 3, skills: ["message-queue", "redis", "node-api"], activityLevels: { architecture: 3, testing: 4 } }),
+  project({ id: "analytics-dashboard", name: "数据分析看板", difficulty: 3, skills: ["postgresql", "database-indexing", "react"], activityLevels: { "feature-coding": 5, testing: 4 } }),
+  project({ id: "graphql-portal", name: "GraphQL 聚合门户", difficulty: 3, skills: ["graphql", "node-api", "typescript"], activityLevels: { documentation: 4, refactoring: 4 } }),
+  project({ id: "multi-tenant-saas", name: "多租户 SaaS", difficulty: 4, skills: ["nextjs", "postgresql", "auth-security"], activityLevels: { architecture: 5, testing: 5 } }),
+  project({ id: "cloud-infra-bootstrap", name: "云基础设施初始化", difficulty: 4, skills: ["linux", "docker", "terraform"], activityLevels: { architecture: 5, documentation: 4 } }),
+  project({ id: "web-quality-overhaul", name: "前端质量专项", difficulty: 4, skills: ["web-performance", "accessibility", "testing-automation"], activityLevels: { testing: 6, documentation: 4 } }),
+  project({ id: "ai-eval-platform", name: "AI 评测平台", difficulty: 5, skills: ["llm-agent", "llm-evaluation", "vector-db"], activityLevels: { study: 6, architecture: 5, testing: 5 } })
 ];
 
 const goals = [
@@ -423,6 +548,51 @@ const goals = [
     requirements: { stats: { totalBugsFixed: 50 } },
     rewards: { exp: 120, reputation: 1, attributeExp: { logic: 20, resilience: 15 } },
     requiresGoals: ["quality-loop"]
+  },
+  {
+    id: "learn-typescript",
+    name: "学会 TypeScript",
+    description: "把运行时报错提前到编辑器里，让红线成为日常同事。",
+    type: "side",
+    requirements: { skills: ["typescript"] },
+    rewards: { exp: 90, money: 60, attributeExp: { logic: 18, learning: 12 } },
+    requiresGoals: ["learn-web-basics"]
+  },
+  {
+    id: "unlock-ci-cd",
+    name: "点亮 CI/CD",
+    description: "让流水线先替你发现那些本该本地跑出来的问题。",
+    type: "side",
+    requirements: { skills: ["ci-cd"] },
+    rewards: { exp: 160, money: 120, reputation: 1, attributeExp: { focus: 18, resilience: 14 } },
+    requiresGoals: ["junior-promotion"]
+  },
+  {
+    id: "code-review-lv3",
+    name: "完成代码评审 Lv.3",
+    description: "从 LGTM 进化到能指出变量名背后的人生选择。",
+    type: "side",
+    requirements: { activityLevels: { "code-review": 3 } },
+    rewards: { exp: 180, reputation: 2, attributeExp: { communication: 24, logic: 16 } },
+    requiresGoals: ["quality-loop"]
+  },
+  {
+    id: "ship-observability-platform",
+    name: "交付可观测性平台",
+    description: "让线上问题终于能被图表解释，而不是靠群里猜。",
+    type: "side",
+    requirements: { completedProjects: ["observability-platform"] },
+    rewards: { exp: 360, money: 320, reputation: 3, attributeExp: { logic: 28, resilience: 22 } },
+    requiresGoals: ["architecture-track"]
+  },
+  {
+    id: "ship-rag-assistant",
+    name: "交付 RAG 助手",
+    description: "把知识库、向量检索和模型幻觉塞进同一个交付包。",
+    type: "side",
+    requirements: { completedProjects: ["rag-assistant"] },
+    rewards: { exp: 500, money: 520, reputation: 4, attributeExp: { creativity: 32, learning: 28 } },
+    requiresGoals: ["middle-promotion"]
   }
 ];
 
@@ -471,6 +641,85 @@ const randomEvents = [
     apply(state) {
       state.resources.codeLines += 60;
       state.stats.totalCodeLines += 60;
+    }
+  },
+  {
+    id: "dependency-hell",
+    name: "依赖地狱",
+    message: "升级一个包，顺手把半个 lockfile 送去火化，Bug 和技术债增加了。",
+    apply(state) {
+      state.resources.bugs += 4;
+      state.resources.techDebt += 8;
+      state.resources.pressure += 3;
+    }
+  },
+  {
+    id: "works-on-my-machine",
+    name: "我本地是好的",
+    message: "复现失败，但生产环境很诚实，压力和 Bug 都上来了。",
+    apply(state) {
+      state.resources.bugs += 3;
+      state.resources.pressure += 5;
+    }
+  },
+  {
+    id: "merge-conflict",
+    name: "合并冲突",
+    message: "三个人同时改了同一段祖传代码，技术债和压力同步上涨。",
+    apply(state) {
+      state.resources.techDebt += 6;
+      state.resources.pressure += 4;
+    }
+  },
+  {
+    id: "ci-green",
+    name: "CI 绿了",
+    message: "流水线全绿，Bug 少了一点，测试资产多了一点。",
+    apply(state) {
+      state.resources.bugs = Math.max(0, state.resources.bugs - 4);
+      state.resources.tests += 8;
+    }
+  },
+  {
+    id: "hotfix-release",
+    name: "热修复上线",
+    message: "热修复把火灭了，但 TODO 和压力留在了代码里。",
+    apply(state) {
+      state.resources.bugs = Math.max(0, state.resources.bugs - 6);
+      state.resources.techDebt += 5;
+      state.resources.pressure += 6;
+      state.resources.reputation += 1;
+    }
+  },
+  {
+    id: "prompt-hallucination",
+    name: "提示词幻觉",
+    message: "模型一本正经编了个不存在的 API，代码和 Bug 一起增加。",
+    apply(state) {
+      state.resources.codeLines += 35;
+      state.resources.bugs += 4;
+      state.resources.techDebt += 3;
+      state.stats.totalCodeLines += 35;
+    }
+  },
+  {
+    id: "stackoverflow-save",
+    name: "StackOverflow 救场",
+    message: "一个十年前的回答依旧能打，知识和代码都有进账。",
+    apply(state) {
+      state.resources.knowledge += 18;
+      state.resources.codeLines += 25;
+      state.stats.totalCodeLines += 25;
+    }
+  },
+  {
+    id: "friday-scope-change",
+    name: "需求周五下班前改一下",
+    message: "周五 17:59 的一句话，让文档、压力和技术债重新做人。",
+    apply(state) {
+      state.resources.docs = Math.max(0, state.resources.docs - 6);
+      state.resources.pressure += 8;
+      state.resources.techDebt += 7;
     }
   }
 ];

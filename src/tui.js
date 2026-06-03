@@ -53,21 +53,30 @@ async function startTui() {
 
   function Header({ view, paused }) {
     const active = view.activeActivity ? `${view.activeActivity.name} Lv.${view.activeActivity.level}` : "无";
+    const project = view.activeProject ? `${view.activeProject.name} ${view.activeProject.progressPercent}% 成功率 ${Math.round(view.activeProject.successRate * 100)}%` : "无";
+    const learning = view.activeSkillLearning ? `${view.activeSkillLearning.name} ${view.activeSkillLearning.progressPercent}%` : "无";
     return h(Box, { borderStyle: "round", paddingX: 1, flexDirection: "column" },
-      h(Text, { bold: true }, `《${view.title}》  ${view.role.name}  当前活动：${active}  ${paused ? "已暂停" : "自动结算中"}`),
+      h(Text, { bold: true }, `《${view.title}》  ${view.role.name}  当前活动：${active}  当前项目：${project}  当前学习：${learning}  ${paused ? "已暂停" : "自动结算中"}`),
       h(Text, null, view.nextAdvice)
     );
   }
 
   function ResourcePanel({ view }) {
-    const important = new Set(["codeLines", "exp", "money", "knowledge", "energy", "pressure", "bugs", "techDebt", "reputation"]);
-    const resources = view.resources.filter((item) => important.has(item.id));
+    const leftResources = view.resources.slice(0, 8);
+    const rightResources = view.resources.slice(8);
     const attrs = view.attributes.map((attr) => `${attr.name} ${attr.value}${attr.breakthrough ? `(+${attr.breakthrough})` : ""}`);
-    const skillLevels = view.skillLevels.map((skill) => `${skill.active ? "*" : ""}${skill.name} Lv.${skill.level}`);
+    const activityLevels = view.activityLevels.map((activity) => `${activity.active ? "*" : ""}${activity.name} Lv.${activity.level}`);
     return h(Box, { gap: 2 },
       h(Box, { borderStyle: "single", paddingX: 1, flexDirection: "column", flexGrow: 1 },
         h(Text, { bold: true }, "资源"),
-        ...resources.map((item) => h(Text, { key: item.id }, `${item.name.padEnd(4, " ")} ${item.value}`))
+        h(Box, { gap: 2 },
+          h(Box, { flexDirection: "column" },
+            ...leftResources.map((item) => h(Text, { key: item.id }, `${item.name.padEnd(4, " ")} ${item.value}`))
+          ),
+          h(Box, { flexDirection: "column" },
+            ...rightResources.map((item) => h(Text, { key: item.id }, `${item.name.padEnd(4, " ")} ${item.value}`))
+          )
+        )
       ),
       h(Box, { borderStyle: "single", paddingX: 1, flexDirection: "column", flexGrow: 1 },
         h(Text, { bold: true }, "属性"),
@@ -75,9 +84,9 @@ async function startTui() {
         h(Text, null, attrs.slice(3).join("  ")),
         h(Text, null, `目标可领取：${view.goals.claimableCount}`),
         h(Text, null, `累计活动：${view.stats.totalActiveSeconds}s`),
-        h(Text, { bold: true }, "技能等级"),
-        h(Text, null, skillLevels.slice(0, 5).join("  ")),
-        h(Text, null, skillLevels.slice(5).join("  "))
+        h(Text, { bold: true }, "活动等级"),
+        h(Text, null, activityLevels.slice(0, 5).join("  ")),
+        h(Text, null, activityLevels.slice(5).join("  "))
       )
     );
   }

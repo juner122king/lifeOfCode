@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const content = require("../src/content");
 const {
   DEFAULT_ATTRIBUTES,
   OFFLINE_CAP_SECONDS,
@@ -18,6 +19,9 @@ const {
   getGameViewModel,
   getGoalOptions,
   getManagementOptions,
+  getProjectProgress,
+  getProjectSuccessRate,
+  getSkillProgress,
   learnSkill,
   normalizeState,
   processCommand,
@@ -25,13 +29,24 @@ const {
   settleTime,
   startActivity,
   stopActivity,
-  submitProject
+  submitProject,
+  upgradeSkill
 } = require("../src/game");
+
+function unlockSkill(state, id, level = 1, exp = 0) {
+  state.skillProgress[id] = { level, exp };
+  if (!state.unlockedSkills.includes(id)) state.unlockedSkills.push(id);
+}
 
 test("新存档默认没有活动，并初始化职业资源和活动等级", () => {
   const state = createNewState();
 
   assert.equal(state.activeActivityId, null);
+  assert.equal(state.activeProjectId, null);
+  assert.equal(state.activeSkillLearningId, null);
+  assert.deepEqual(state.projectProgress, {});
+  assert.deepEqual(state.skillProgress, {});
+  assert.deepEqual(state.skillLearningProgress, {});
   assert.equal(state.resources.knowledge, 0);
   assert.equal(state.resources.tests, 0);
   assert.equal(state.resources.docs, 0);
@@ -44,14 +59,18 @@ test("新存档默认没有活动，并初始化职业资源和活动等级", ()
 test("旧存档会补齐活动字段、职业资源和目标领取记录", () => {
   const state = normalizeState({
     resources: { codeLines: 10, exp: 5, money: 30 },
+    unlockedSkills: ["html-css"],
     attributes: { logic: 999, focus: -2 },
     attributeBreakthroughs: { logic: 20 },
     attributeExp: { learning: 30 }
   });
 
   assert.equal(state.activeActivityId, null);
+  assert.equal(state.activeProjectId, null);
+  assert.deepEqual(state.projectProgress, {});
   assert.equal(state.resources.knowledge, 0);
   assert.deepEqual(state.claimedGoals, []);
+  assert.equal(getSkillProgress(state, "html-css").level, 1);
   assert.equal(getActivityLevel(state, "feature-coding"), 1);
   assert.equal(state.attributes.logic, 100);
   assert.equal(state.attributes.focus, 1);
@@ -210,22 +229,137 @@ test("refactoring 降低技术债并产出架构资产", () => {
   assert.ok(state.resources.architecture > 0);
 });
 
-test("study 产出知识，learn 消耗知识学习技能", () => {
+test("learn 消耗资源并启动耗时学习，完成后才解锁技能", () => {
   const now = 1_700_000_000_000;
   const state = createNewState(now);
   startActivity(state, "study");
   settleTime(state, now + 300_000, { randomEvents: false });
 
-  assert.ok(state.resources.knowledge > 18);
+  assert.ok(state.resources.knowledge > 30);
+  state.resources.knowledge = 60;
   state.resources.exp = 100;
   state.resources.money = 100;
 
   const beforeKnowledge = state.resources.knowledge;
   const message = learnSkill(state, "html-css");
 
-  assert.match(message, /学会了 HTML\/CSS/);
+  assert.match(message, /开始学习：HTML\/CSS/);
   assert.ok(state.resources.knowledge < beforeKnowledge);
+  assert.equal(state.activeSkillLearningId, "html-css");
+  assert.equal(state.unlockedSkills.includes("html-css"), false);
+
+  const result = settleTime(state, now + 901_000, { randomEvents: false });
+
+  assert.match(result.messages.join("\n"), /技能 HTML\/CSS 学习完成/);
   assert.ok(state.unlockedSkills.includes("html-css"));
+  assert.equal(getSkillProgress(state, "html-css").level, 1);
+});
+
+test("新增程序员技术包内容通过现有选项接口展示", () => {
+  const state = createNewState();
+
+  const activities = getActivityOptions(state);
+  const skills = getManagementOptions(state, "skills");
+  const tools = getManagementOptions(state, "tools");
+  const projects = getManagementOptions(state, "projects");
+  const goals = getGoalOptions(state);
+
+  assert.ok(activities.some((item) => item.id === "code-review"));
+  assert.ok(skills.some((item) => item.id === "typescript"));
+  assert.ok(skills.some((item) => item.id === "llm-agent"));
+  assert.ok(tools.some((item) => item.id === "github-actions"));
+  assert.ok(projects.some((item) => item.id === "component-library"));
+  assert.ok(projects.some((item) => item.id === "rag-assistant"));
+  assert.ok(goals.some((item) => item.id === "learn-typescript"));
+  assert.ok(goals.some((item) => item.id === "ship-rag-assistant"));
+  assert.ok(content.randomEvents.some((item) => item.id === "dependency-hell"));
+  assert.ok(content.randomEvents.some((item) => item.id === "friday-scope-change"));
+});
+
+test("新增技能 TypeScript 满足属性和资源后进入学习队列", () => {
+  const state = createNewState(1_700_000_000_000);
+  state.attributes.logic = 26;
+  state.resources.knowledge = 260;
+  state.resources.exp = 350;
+  state.resources.money = 200;
+
+  const message = learnSkill(state, "typescript");
+
+  assert.match(message, /开始学习：TypeScript/);
+  assert.equal(state.activeSkillLearningId, "typescript");
+  assert.equal(state.unlockedSkills.includes("typescript"), false);
+  assert.equal(Math.floor(state.resources.knowledge), 20);
+});
+
+test("upgrade 消耗技能经验、知识和资源后提升技能等级", () => {
+  const state = createNewState();
+  unlockSkill(state, "html-css", 1, 130);
+  state.attributes.creativity = 22;
+  state.resources.knowledge = 150;
+  state.resources.codeLines = 100;
+  state.resources.docs = 20;
+
+  const message = upgradeSkill(state, "html-css");
+
+  assert.match(message, /HTML\/CSS 提升到 熟练/);
+  assert.equal(getSkillProgress(state, "html-css").level, 2);
+  assert.ok(state.resources.knowledge < 150);
+  assert.ok(state.resources.codeLines < 100);
+});
+
+test("新增工具流水线会员可购买并进入已拥有工具", () => {
+  const state = createNewState();
+  state.resources.money = 700;
+
+  const message = buyTool(state, "github-actions");
+
+  assert.match(message, /买到了 流水线会员/);
+  assert.ok(state.ownedTools.includes("github-actions"));
+  assert.equal(Math.floor(state.resources.money), 60);
+});
+
+test("新增活动代码评审满足条件后可启动并改善质量资产", () => {
+  const start = 1_700_000_000_000;
+  const state = createNewState(start);
+  state.unlockedSkills.push("git");
+  state.activityLevels["feature-coding"] = 3;
+  state.activityLevels.testing = 2;
+  state.resources.bugs = 20;
+  state.resources.techDebt = 20;
+
+  assert.match(startActivity(state, "code-review"), /开始活动：代码评审/);
+  settleTime(state, start + 60_000, { randomEvents: false });
+
+  assert.ok(state.resources.bugs < 20 || state.resources.techDebt < 20);
+  assert.ok(state.resources.docs > 0 || state.resources.exp > 0);
+});
+
+test("新增项目组件库内卷可开始并在成功 RNG 下交付", () => {
+  const start = 1_700_000_000_000;
+  const state = createNewState(start);
+  state.resources.codeLines = 300;
+  state.resources.docs = 30;
+  state.resources.tests = 40;
+  unlockSkill(state, "typescript", 2);
+  unlockSkill(state, "react", 2);
+  state.activityLevels["feature-coding"] = 4;
+  state.activityLevels.documentation = 2;
+  state.activityLevels.testing = 2;
+
+  const message = submitProject(state, "component-library");
+
+  assert.match(message, /开始项目：组件库内卷/);
+  assert.equal(state.activeProjectId, "component-library");
+  assert.equal(state.resources.codeLines, 40);
+  assert.equal(state.resources.docs, 12);
+  assert.equal(state.resources.tests, 15);
+
+  const result = settleTime(state, start + 2_400_000, { randomEvents: false, rng: () => 0 });
+
+  assert.match(result.messages.join("\n"), /交付成功/);
+  assert.ok(state.completedProjects.includes("component-library"));
+  assert.equal(state.activeProjectId, null);
+  assert.ok(state.resources.money >= 250);
 });
 
 test("testing、documentation、freelancing、rest 分别产出对应资源", () => {
@@ -258,7 +392,7 @@ test("testing、documentation、freelancing、rest 分别产出对应资源", ()
   assert.ok(rest.resources.pressure < 50);
 });
 
-test("项目会检查职业产物、技能和活动等级，并提交成功", () => {
+test("项目会检查条件，开始时投入资源并按工时推进", () => {
   const state = createNewState();
 
   assert.match(submitProject(state, "homepage"), /项目条件不足/);
@@ -269,15 +403,172 @@ test("项目会检查职业产物、技能和活动等级，并提交成功", ()
   state.resources.money = 100;
   state.resources.knowledge = 30;
   state.activityLevels["feature-coding"] = 2;
-  learnSkill(state, "html-css");
+  unlockSkill(state, "html-css");
 
   const message = submitProject(state, "homepage");
 
-  assert.match(message, /提交了 个人主页/);
+  assert.match(message, /开始项目：个人主页/);
+  assert.equal(state.activeProjectId, "homepage");
+  assert.equal(state.activeActivityId, null);
+  assert.equal(state.projectProgress.homepage.resourcesPaid, true);
+  assert.equal(state.resources.codeLines, 20);
+  assert.equal(state.resources.docs, 2);
+  assert.equal(state.completedProjects.includes("homepage"), false);
+
+  settleTime(state, state.lastTick + 300_000, { randomEvents: false });
+  const progress = getProjectProgress(state, "homepage");
+  assert.ok(progress.workedSeconds > 0);
+  assert.ok(progress.progressPercent < 100);
+});
+
+test("项目达标后会自动成功并发放奖励", () => {
+  const start = 1_700_000_000_000;
+  const state = createNewState(start);
+  state.resources.codeLines = 100;
+  state.resources.docs = 10;
+  state.resources.exp = 100;
+  state.resources.money = 100;
+  state.resources.knowledge = 30;
+  state.activityLevels["feature-coding"] = 2;
+  unlockSkill(state, "html-css");
+  submitProject(state, "homepage");
+
+  const result = settleTime(state, start + 700_000, { randomEvents: false, rng: () => 0 });
+
+  assert.match(result.messages.join("\n"), /交付成功/);
   assert.equal(state.completedProjects.includes("homepage"), true);
-  assert.ok(state.resources.codeLines < 100);
-  assert.ok(state.resources.docs < 10);
+  assert.equal(state.activeProjectId, null);
+  assert.equal(state.projectProgress.homepage, undefined);
   assert.ok(state.resources.reputation > 0);
+});
+
+test("重复项目只给技能经验和少量经验金钱", () => {
+  const start = 1_700_000_000_000;
+  const state = createNewState(start);
+  state.resources.codeLines = 220;
+  state.resources.docs = 30;
+  state.activityLevels["feature-coding"] = 2;
+  unlockSkill(state, "html-css");
+
+  submitProject(state, "homepage");
+  settleTime(state, start + 700_000, { randomEvents: false, rng: () => 0 });
+  const first = {
+    exp: state.resources.exp,
+    money: state.resources.money,
+    reputation: state.resources.reputation,
+    totalProjects: state.stats.totalProjects,
+    skillExp: getSkillProgress(state, "html-css").exp
+  };
+
+  state.resources.codeLines += 100;
+  state.resources.docs += 10;
+  submitProject(state, "homepage");
+  const result = settleTime(state, start + 1_400_000, { randomEvents: false, rng: () => 0 });
+
+  assert.match(result.messages.join("\n"), /重复交付/);
+  assert.equal(state.completedProjects.filter((id) => id === "homepage").length, 1);
+  assert.equal(state.stats.totalProjects, first.totalProjects);
+  assert.equal(state.resources.reputation, first.reputation);
+  assert.equal(Math.floor(state.resources.exp - first.exp), 9);
+  assert.equal(Math.floor(state.resources.money - first.money), 12);
+  assert.ok(getSkillProgress(state, "html-css").exp > first.skillExp);
+});
+
+test("新增训练项目可重复提供目标技能经验", () => {
+  const start = 1_700_000_000_000;
+  const state = createNewState(start);
+  state.resources.codeLines = 260;
+  state.resources.docs = 20;
+  state.resources.tests = 20;
+  unlockSkill(state, "javascript");
+
+  assert.match(submitProject(state, "vanilla-widget"), /开始项目：原生 JS 小组件/);
+  settleTime(state, start + 1_300_000, { randomEvents: false, rng: () => 0 });
+  const firstExp = getSkillProgress(state, "javascript").exp;
+
+  state.resources.codeLines += 140;
+  state.resources.docs += 10;
+  state.resources.tests += 10;
+  assert.match(submitProject(state, "vanilla-widget"), /重复项目：原生 JS 小组件/);
+  settleTime(state, start + 2_600_000, { randomEvents: false, rng: () => 0 });
+
+  assert.ok(firstExp >= 70);
+  assert.ok(getSkillProgress(state, "javascript").exp >= firstExp + 70);
+});
+
+test("项目失败会清空进度且不返还已投入资源", () => {
+  const start = 1_700_000_000_000;
+  const state = createNewState(start);
+  state.resources.codeLines = 100;
+  state.resources.docs = 10;
+  state.resources.exp = 100;
+  state.resources.money = 100;
+  state.resources.knowledge = 30;
+  state.resources.bugs = 100;
+  state.resources.techDebt = 180;
+  state.resources.pressure = 100;
+  state.activityLevels["feature-coding"] = 2;
+  unlockSkill(state, "html-css");
+  submitProject(state, "homepage");
+  const afterInvestment = { codeLines: state.resources.codeLines, docs: state.resources.docs };
+
+  const result = settleTime(state, start + 700_000, { randomEvents: false, rng: () => 1 });
+
+  assert.match(result.messages.join("\n"), /交付失败/);
+  assert.equal(state.completedProjects.includes("homepage"), false);
+  assert.equal(state.activeProjectId, null);
+  assert.equal(state.projectProgress.homepage, undefined);
+  assert.equal(state.resources.codeLines, afterInvestment.codeLines);
+  assert.equal(state.resources.docs, afterInvestment.docs);
+});
+
+test("项目会占用当前活动位，普通活动会暂停项目", () => {
+  const state = createNewState();
+  state.resources.codeLines = 100;
+  state.resources.docs = 10;
+  state.resources.exp = 100;
+  state.resources.money = 100;
+  state.resources.knowledge = 30;
+  state.activityLevels["feature-coding"] = 2;
+  unlockSkill(state, "html-css");
+  submitProject(state, "homepage");
+
+  const message = startActivity(state, "study");
+
+  assert.match(message, /开始活动：系统学习/);
+  assert.equal(state.activeProjectId, null);
+  assert.equal(state.activeActivityId, "study");
+  assert.equal(state.projectProgress.homepage.resourcesPaid, true);
+});
+
+test("stop 可以暂停当前项目并保留进度", () => {
+  const state = createNewState();
+  state.resources.codeLines = 100;
+  state.resources.docs = 10;
+  state.resources.exp = 100;
+  state.resources.money = 100;
+  state.resources.knowledge = 30;
+  state.activityLevels["feature-coding"] = 2;
+  unlockSkill(state, "html-css");
+  submitProject(state, "homepage");
+
+  const message = stopActivity(state);
+
+  assert.match(message, /暂停项目：个人主页/);
+  assert.equal(state.activeProjectId, null);
+  assert.equal(state.projectProgress.homepage.resourcesPaid, true);
+});
+
+test("项目成功率会随 Bug、技术债和压力下降但受上下限约束", () => {
+  const clean = createNewState();
+  const risky = createNewState();
+  risky.resources.bugs = 100;
+  risky.resources.techDebt = 180;
+  risky.resources.pressure = 100;
+
+  assert.equal(getProjectSuccessRate(clean, "homepage"), 0.98);
+  assert.ok(getProjectSuccessRate(risky, "homepage") < getProjectSuccessRate(clean, "homepage"));
+  assert.equal(getProjectSuccessRate(risky, "flash-sale"), 0.24);
 });
 
 test("晋升会检查活动等级条件", () => {
@@ -436,13 +727,29 @@ test("view model 提供结构化资源、属性、目标摘要和可执行动作
 
   assert.equal(view.role.name, "实习程序员");
   assert.equal(view.activeActivity, null);
+  assert.equal(view.activeProject, null);
+  assert.deepEqual(view.resources.map((item) => item.id), [
+    "codeLines",
+    "exp",
+    "money",
+    "knowledge",
+    "tests",
+    "docs",
+    "architecture",
+    "leads",
+    "energy",
+    "pressure",
+    "bugs",
+    "techDebt",
+    "reputation"
+  ]);
   assert.equal(view.resources.find((item) => item.id === "money").value, 30);
   assert.equal(view.attributes.find((item) => item.id === "focus").name, "专注");
   assert.equal(view.goals.claimableCount, 1);
   assert.equal(view.goals.currentMain.id, "choose-work");
   assert.equal(view.actions.claimAll, "claim all");
   assert.equal(view.actions.save, "save");
-  assert.equal(view.skillLevels.find((item) => item.id === "feature-coding").level, 1);
+  assert.equal(view.activityLevels.find((item) => item.id === "feature-coding").level, 1);
 });
 
 test("activity options 标出锁定、当前活动、等级和命令", () => {
@@ -476,8 +783,8 @@ test("goal options 标出可领取状态和 claim 命令", () => {
 
 test("management options 标出技能、工具和项目动作状态", () => {
   const state = createNewState();
-  state.resources.knowledge = 20;
-  state.resources.exp = 30;
+  state.resources.knowledge = 40;
+  state.resources.exp = 50;
   state.resources.money = 100;
 
   const skill = getManagementOptions(state, "skills").find((item) => item.id === "html-css");
@@ -487,11 +794,13 @@ test("management options 标出技能、工具和项目动作状态", () => {
 
   assert.equal(skill.status, "可学习");
   assert.equal(skill.command, "learn html-css");
-  assert.match(skill.effects, /代码产出 x1\.06/);
+  assert.match(skill.effects, /代码产出 x1\.02/);
   assert.equal(tool.status, "可购买");
   assert.equal(tool.command, "buy used-laptop");
   assert.match(tool.effects, /代码产出 x1\.12/);
   assert.equal(project.status, "条件不足");
   assert.equal(project.command, "project homepage");
+  assert.match(project.effects, /难度 1/);
+  assert.match(project.effects, /成功率/);
   assert.equal(promoteAction.command, "promote");
 });

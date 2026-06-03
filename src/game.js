@@ -46,6 +46,11 @@ const MULTIPLIER_NAMES = {
   debt: "技术债风险",
   pressure: "压力增长"
 };
+const SKILL_LEVEL_NAMES = ["未学", "入门", "熟练", "精通", "专家", "大师"];
+const SKILL_EXP_THRESHOLDS = { 1: 120, 2: 320, 3: 700, 4: 1250 };
+const SKILL_UPGRADE_MIN_KNOWLEDGE = { 2: 120, 3: 280, 4: 520, 5: 900 };
+const SKILL_UPGRADE_KNOWLEDGE_MULTIPLIERS = { 2: 2, 3: 4, 4: 7, 5: 11 };
+const SKILL_UPGRADE_RESOURCE_MULTIPLIERS = { 2: 1, 3: 2, 4: 4, 5: 7 };
 
 function roleById(id) {
   return content.roles.find((role) => role.id === id);
@@ -61,6 +66,10 @@ function itemById(items, id) {
 
 function goalById(id) {
   return itemById(content.goals || [], id);
+}
+
+function projectById(id) {
+  return itemById(content.projects || [], id);
 }
 
 function roleRank(id) {
@@ -90,12 +99,17 @@ function createNewState(now = Date.now()) {
       leads: 0
     },
     activeActivityId: null,
+    activeProjectId: null,
+    projectProgress: {},
     activityLevels: createActivityMap(() => 1),
     activityExp: createActivityMap(() => 0),
     activityStats: {
       totalActiveSeconds: 0,
       byActivity: createActivityMap(() => 0)
     },
+    skillProgress: {},
+    activeSkillLearningId: null,
+    skillLearningProgress: {},
     unlockedSkills: [],
     ownedTools: [],
     completedProjects: [],
@@ -120,10 +134,15 @@ function normalizeState(raw, now = Date.now()) {
     ...raw,
     resources: { ...fresh.resources, ...(raw && raw.resources) },
     activeActivityId: activityById(raw && raw.activeActivityId) ? raw.activeActivityId : null,
+    activeProjectId: projectById(raw && raw.activeProjectId) ? raw.activeProjectId : null,
+    projectProgress: normalizeProjectProgress(raw && raw.projectProgress),
     activityLevels: normalizeActivityMap(raw && raw.activityLevels, 1),
     activityExp: normalizeActivityMap(raw && raw.activityExp, 0),
     activityStats: normalizeActivityStats(raw && raw.activityStats),
-    unlockedSkills: Array.isArray(raw && raw.unlockedSkills) ? raw.unlockedSkills : [],
+    skillProgress: normalizeSkillProgress(raw && raw.skillProgress, raw && raw.unlockedSkills),
+    activeSkillLearningId: itemById(content.skills, raw && raw.activeSkillLearningId) ? raw.activeSkillLearningId : null,
+    skillLearningProgress: normalizeSkillLearningProgress(raw && raw.skillLearningProgress),
+    unlockedSkills: [],
     ownedTools: Array.isArray(raw && raw.ownedTools) ? raw.ownedTools : [],
     completedProjects: Array.isArray(raw && raw.completedProjects) ? raw.completedProjects : [],
     claimedGoals: Array.isArray(raw && raw.claimedGoals) ? raw.claimedGoals : [],
@@ -134,6 +153,15 @@ function normalizeState(raw, now = Date.now()) {
     lastTick: Number.isFinite(raw && raw.lastTick) ? raw.lastTick : now,
     stats: { ...fresh.stats, ...(raw && raw.stats) }
   };
+  normalized.unlockedSkills = normalizeUnlockedSkills(raw && raw.unlockedSkills, normalized.skillProgress);
+  if (normalized.activeSkillLearningId && getSkillLevel(normalized, normalized.activeSkillLearningId) > 0) {
+    normalized.activeSkillLearningId = null;
+  }
+  if (normalized.activeSkillLearningId) {
+    normalized.activeActivityId = null;
+    normalized.activeProjectId = null;
+  }
+  if (normalized.activeProjectId) normalized.activeActivityId = null;
   clampState(normalized);
   return normalized;
 }
@@ -162,6 +190,57 @@ function normalizeAttributes(raw, defaults, min, max) {
     result[id] = clamp(Number.isFinite(value) ? value : fallback, min, max);
   }
   return result;
+}
+
+function normalizeProjectProgress(raw) {
+  const result = {};
+  for (const project of content.projects || []) {
+    const progress = raw && raw[project.id];
+    if (!progress || typeof progress !== "object") continue;
+    const workedSeconds = Math.max(0, Number(progress.workedSeconds) || 0);
+    const resourcesPaid = Boolean(progress.resourcesPaid);
+    if (workedSeconds > 0 || resourcesPaid) {
+      result[project.id] = { workedSeconds, resourcesPaid };
+    }
+  }
+  return result;
+}
+
+function normalizeSkillProgress(raw, unlockedSkills = []) {
+  const result = {};
+  const unlocked = new Set(Array.isArray(unlockedSkills) ? unlockedSkills : []);
+  for (const skill of content.skills || []) {
+    const progress = raw && raw[skill.id];
+    const migratedLevel = unlocked.has(skill.id) ? 1 : 0;
+    const level = clamp(Math.floor(Number(progress && progress.level) || migratedLevel), 0, 5);
+    const exp = Math.max(0, Number(progress && progress.exp) || 0);
+    if (level > 0 || exp > 0) result[skill.id] = { level, exp };
+  }
+  return result;
+}
+
+function normalizeUnlockedSkills(rawUnlockedSkills, skillProgress) {
+  const legacy = new Set(Array.isArray(rawUnlockedSkills) ? rawUnlockedSkills : []);
+  for (const [id, progress] of Object.entries(skillProgress || {})) {
+    if ((progress.level || 0) > 0) legacy.add(id);
+  }
+  return [...legacy].filter((id) => itemById(content.skills, id) && getNormalizedSkillLevel(skillProgress, id) > 0);
+}
+
+function normalizeSkillLearningProgress(raw) {
+  const result = {};
+  for (const skill of content.skills || []) {
+    const progress = raw && raw[skill.id];
+    if (!progress || typeof progress !== "object") continue;
+    const workedSeconds = Math.max(0, Number(progress.workedSeconds) || 0);
+    const resourcesPaid = Boolean(progress.resourcesPaid);
+    if (workedSeconds > 0 || resourcesPaid) result[skill.id] = { workedSeconds, resourcesPaid };
+  }
+  return result;
+}
+
+function getNormalizedSkillLevel(skillProgress, id) {
+  return clamp(Math.floor(Number(skillProgress && skillProgress[id] && skillProgress[id].level) || 0), 0, 5);
 }
 
 function clamp(value, min, max) {
@@ -248,15 +327,76 @@ function getActivityProgress(state, id) {
   };
 }
 
+function getSkillProgress(state, id) {
+  const progress = state.skillProgress[id] || {};
+  const legacyUnlocked = Array.isArray(state.unlockedSkills) && state.unlockedSkills.includes(id);
+  const level = clamp(Math.floor(Number(progress.level) || (legacyUnlocked ? 1 : 0)), 0, 5);
+  return {
+    level,
+    levelName: SKILL_LEVEL_NAMES[level],
+    exp: Math.max(0, Number(progress.exp) || 0),
+    next: level > 0 && level < 5 ? SKILL_EXP_THRESHOLDS[level] : 0
+  };
+}
+
+function getSkillLevel(state, id) {
+  return getSkillProgress(state, id).level;
+}
+
+function ensureSkillProgress(state, id) {
+  state.skillProgress[id] = state.skillProgress[id] || { level: 0, exp: 0 };
+  state.skillProgress[id].level = clamp(Math.floor(Number(state.skillProgress[id].level) || 0), 0, 5);
+  state.skillProgress[id].exp = Math.max(0, Number(state.skillProgress[id].exp) || 0);
+  return state.skillProgress[id];
+}
+
+function syncUnlockedSkills(state) {
+  state.unlockedSkills = content.skills
+    .filter((skill) => getSkillLevel(state, skill.id) > 0)
+    .map((skill) => skill.id);
+}
+
+function addSkillExp(state, rewards = {}, multiplier = 1) {
+  const gained = {};
+  for (const [id, amount] of Object.entries(rewards || {})) {
+    if (!itemById(content.skills, id) || amount <= 0) continue;
+    const progress = ensureSkillProgress(state, id);
+    const delta = amount * multiplier;
+    progress.exp += delta;
+    gained[id] = (gained[id] || 0) + delta;
+  }
+  return gained;
+}
+
+function formatSkillProgress(state, id) {
+  const skill = itemById(content.skills, id);
+  const progress = getSkillProgress(state, id);
+  const next = progress.next ? `${formatNumber(progress.exp)}/${formatNumber(progress.next)}` : formatNumber(progress.exp);
+  return `${skill ? skill.name : id} ${progress.levelName} ${next}`;
+}
+
+function formatSkillExpRewards(gained = {}) {
+  const entries = Object.entries(gained)
+    .filter(([, amount]) => amount > 0)
+    .map(([id, amount]) => {
+      const skill = itemById(content.skills, id);
+      return `${skill ? skill.name : id} +${formatNumber(amount)}`;
+    });
+  return entries.length ? `技能经验：${entries.join("，")}` : "";
+}
+
 function getMultipliers(state) {
   const multipliers = { code: 1, exp: 1, money: 1, bug: 1, debt: 1, pressure: 1 };
-  const apply = (item) => {
+  const apply = (item, level = 1) => {
     for (const [key, value] of Object.entries(item.multipliers || {})) {
-      multipliers[key] *= value;
+      multipliers[key] *= Math.pow(value, level);
     }
   };
 
-  state.unlockedSkills.map((id) => itemById(content.skills, id)).filter(Boolean).forEach(apply);
+  content.skills.forEach((skill) => {
+    const level = getSkillLevel(state, skill.id);
+    if (level > 0) apply(skill, level);
+  });
   state.ownedTools.map((id) => itemById(content.tools, id)).filter(Boolean).forEach(apply);
   return multipliers;
 }
@@ -272,6 +412,42 @@ function getProductionRisk(state) {
     bugDebtBoost,
     pressurePenalty,
     debtPenalty
+  };
+}
+
+function getProjectRiskScore(state) {
+  const bugRisk = clamp((state.resources.bugs || 0) / 100, 0, 1) * 0.4;
+  const debtRisk = clamp((state.resources.techDebt || 0) / 180, 0, 1) * 0.35;
+  const pressureRisk = clamp((state.resources.pressure || 0) / 100, 0, 1) * 0.25;
+  return bugRisk + debtRisk + pressureRisk;
+}
+
+function getProjectSuccessRate(state, projectOrId) {
+  const project = typeof projectOrId === "string" ? projectById(projectOrId) : projectOrId;
+  if (!project) return 0;
+  const maxSuccessRate = clamp(Number(project.maxSuccessRate) || 0.9, 0.15, 1);
+  const difficulty = clamp(Number(project.difficulty) || 1, 1, 5);
+  return clamp(maxSuccessRate - getProjectRiskScore(state) * difficulty * 0.12, 0.15, maxSuccessRate);
+}
+
+function getProjectRequiredSeconds(projectOrId) {
+  const project = typeof projectOrId === "string" ? projectById(projectOrId) : projectOrId;
+  if (!project) return 0;
+  return Math.max(1, Math.round((Number(project.minWorkHours) || 0) * 3600));
+}
+
+function getProjectProgress(state, projectOrId) {
+  const project = typeof projectOrId === "string" ? projectById(projectOrId) : projectOrId;
+  const id = project && project.id;
+  const progress = id && state.projectProgress[id] ? state.projectProgress[id] : {};
+  const workedSeconds = Math.max(0, Number(progress.workedSeconds) || 0);
+  const requiredSeconds = getProjectRequiredSeconds(project);
+  return {
+    workedSeconds,
+    requiredSeconds,
+    remainingSeconds: Math.max(0, requiredSeconds - workedSeconds),
+    progressPercent: requiredSeconds > 0 ? Math.min(100, Math.floor(workedSeconds / requiredSeconds * 100)) : 100,
+    resourcesPaid: Boolean(progress.resourcesPaid)
   };
 }
 
@@ -292,7 +468,7 @@ function activityLevelsMeet(state, required = {}) {
 function requirementsMet(state, requirements = {}) {
   if (!resourcesMeet(state.resources, requirements.resources)) return false;
   if (!activityLevelsMeet(state, requirements.activityLevels)) return false;
-  if (requirements.skills && !requirements.skills.every((id) => state.unlockedSkills.includes(id))) return false;
+  if (requirements.skills && !requirements.skills.every((id) => getSkillLevel(state, id) >= 1)) return false;
   if (requirements.ownedTools && !requirements.ownedTools.every((id) => state.ownedTools.includes(id))) return false;
   if (Number.isFinite(requirements.ownedToolCount) && state.ownedTools.length < requirements.ownedToolCount) return false;
   if (requirements.completedProjects && !requirements.completedProjects.every((id) => state.completedProjects.includes(id))) return false;
@@ -325,6 +501,17 @@ function formatResourceList(values = {}) {
     .filter(([, value]) => value)
     .map(([key, value]) => `${RESOURCE_NAMES[key] || key} ${value > 0 ? "+" : ""}${formatNumber(value)}`);
   return entries.length ? entries.join("，") : "无";
+}
+
+function formatPercent(value) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatDuration(seconds) {
+  const rounded = Math.max(0, Math.ceil(seconds));
+  if (rounded < 3600) return `${Math.ceil(rounded / 60)} 分钟`;
+  const hours = rounded / 3600;
+  return `${Number.isInteger(hours) ? hours.toFixed(0) : hours.toFixed(1)} 小时`;
 }
 
 function formatMultiplierList(multipliers = {}) {
@@ -366,6 +553,45 @@ function formatAttributeExpRewards(rewards = {}) {
     .filter(([, amount]) => amount > 0)
     .map(([attr, amount]) => `${ATTRIBUTE_NAMES[attr] || attr} +${formatNumber(amount)}`);
   return entries.length ? `属性经验：${entries.join("，")}` : "";
+}
+
+function formatAttributeRequirements(requirements = {}) {
+  const entries = Object.entries(requirements || {})
+    .filter(([, value]) => value > 0)
+    .map(([attr, value]) => `${ATTRIBUTE_NAMES[attr] || attr} ${formatNumber(value)}`);
+  return entries.length ? entries.join("，") : "无";
+}
+
+function missingAttributeRequirements(state, requirements = {}) {
+  return Object.entries(requirements || {})
+    .filter(([attr, value]) => getBaseAttribute(state, attr) < value)
+    .map(([attr, value]) => `${ATTRIBUTE_NAMES[attr] || attr} ${formatNumber(value - getBaseAttribute(state, attr))}`);
+}
+
+function getSkillUpgradeCost(skill, targetLevel) {
+  const knowledge = Math.max(
+    SKILL_UPGRADE_MIN_KNOWLEDGE[targetLevel] || 0,
+    Math.ceil((skill.cost.knowledge || 0) * (SKILL_UPGRADE_KNOWLEDGE_MULTIPLIERS[targetLevel] || 1))
+  );
+  const resources = { knowledge };
+  const multiplier = SKILL_UPGRADE_RESOURCE_MULTIPLIERS[targetLevel] || 1;
+  for (const [key, value] of Object.entries(skill.upgradeResourceBase || {})) {
+    resources[key] = Math.ceil(value * multiplier);
+  }
+  return resources;
+}
+
+function getSkillUpgradeAttributeRequirements(skill, targetLevel) {
+  const extra = 6 * (targetLevel - 1);
+  return Object.fromEntries(Object.entries(skill.attributeRequirements || {}).map(([attr, value]) => [attr, value + extra]));
+}
+
+function formatSkillUpgradeCost(state, skill) {
+  const progress = getSkillProgress(state, skill.id);
+  if (progress.level <= 0) return "需先学习";
+  if (progress.level >= 5) return "满级";
+  const targetLevel = progress.level + 1;
+  return `${SKILL_LEVEL_NAMES[targetLevel]}：经验 ${formatNumber(progress.exp)}/${formatNumber(SKILL_EXP_THRESHOLDS[progress.level])}，资源 ${formatResourceList(getSkillUpgradeCost(skill, targetLevel))}，属性 ${formatAttributeRequirements(getSkillUpgradeAttributeRequirements(skill, targetLevel))}`;
 }
 
 function formatActivityRequirements(requirements = {}) {
@@ -464,6 +690,120 @@ function settleActivity(state, activity, seconds) {
   return { deltas, levelUps, lowEnergy };
 }
 
+function ensureProjectProgress(state, projectId) {
+  state.projectProgress[projectId] = state.projectProgress[projectId] || { workedSeconds: 0, resourcesPaid: false };
+  state.projectProgress[projectId].workedSeconds = Math.max(0, Number(state.projectProgress[projectId].workedSeconds) || 0);
+  state.projectProgress[projectId].resourcesPaid = Boolean(state.projectProgress[projectId].resourcesPaid);
+  return state.projectProgress[projectId];
+}
+
+function clearProjectProgress(state, projectId) {
+  delete state.projectProgress[projectId];
+  if (state.activeProjectId === projectId) state.activeProjectId = null;
+}
+
+function ensureSkillLearningProgress(state, skillId) {
+  state.skillLearningProgress[skillId] = state.skillLearningProgress[skillId] || { workedSeconds: 0, resourcesPaid: false };
+  state.skillLearningProgress[skillId].workedSeconds = Math.max(0, Number(state.skillLearningProgress[skillId].workedSeconds) || 0);
+  state.skillLearningProgress[skillId].resourcesPaid = Boolean(state.skillLearningProgress[skillId].resourcesPaid);
+  return state.skillLearningProgress[skillId];
+}
+
+function getSkillLearningProgress(state, skillOrId) {
+  const skill = typeof skillOrId === "string" ? itemById(content.skills, skillOrId) : skillOrId;
+  const id = skill && skill.id;
+  const progress = id && state.skillLearningProgress[id] ? state.skillLearningProgress[id] : {};
+  const workedSeconds = Math.max(0, Number(progress.workedSeconds) || 0);
+  const requiredSeconds = Math.max(1, Number(skill && skill.learningSeconds) || 600);
+  return {
+    workedSeconds,
+    requiredSeconds,
+    remainingSeconds: Math.max(0, requiredSeconds - workedSeconds),
+    progressPercent: requiredSeconds > 0 ? Math.min(100, Math.floor(workedSeconds / requiredSeconds * 100)) : 100,
+    resourcesPaid: Boolean(progress.resourcesPaid)
+  };
+}
+
+function clearSkillLearningProgress(state, skillId) {
+  delete state.skillLearningProgress[skillId];
+  if (state.activeSkillLearningId === skillId) state.activeSkillLearningId = null;
+}
+
+function settleSkillLearning(state, skill, seconds) {
+  const progress = ensureSkillLearningProgress(state, skill.id);
+  progress.workedSeconds += seconds;
+  const currentProgress = getSkillLearningProgress(state, skill);
+  if (currentProgress.workedSeconds < currentProgress.requiredSeconds) return [];
+
+  const skillProgress = ensureSkillProgress(state, skill.id);
+  skillProgress.level = Math.max(skillProgress.level, 1);
+  clearSkillLearningProgress(state, skill.id);
+  syncUnlockedSkills(state);
+  return [formatLines([
+    `技能 ${skill.name} 学习完成，达到 ${SKILL_LEVEL_NAMES[1]}。`,
+    formatNextAdvice(state)
+  ])];
+}
+
+function applyProjectRewards(state, project, options = {}) {
+  const firstSuccess = !state.completedProjects.includes(project.id);
+  const rewardScale = firstSuccess ? 1 : 0.15;
+  state.resources.exp += (project.rewards.exp || 0) * rewardScale;
+  state.resources.money += (project.rewards.money || 0) * rewardScale;
+  if (firstSuccess) {
+    state.resources.reputation += project.rewards.reputation || 0;
+    state.completedProjects.push(project.id);
+    state.stats.totalProjects += 1;
+    applyAttributeExpRewards(state, project.attributeExp);
+  }
+  return {
+    firstSuccess,
+    rewards: {
+      exp: (project.rewards.exp || 0) * rewardScale,
+      money: (project.rewards.money || 0) * rewardScale,
+      reputation: firstSuccess ? project.rewards.reputation || 0 : 0
+    },
+    skillExp: addSkillExp(state, project.skillExpRewards, options.skillExpMultiplier || 1)
+  };
+}
+
+function settleProject(state, project, seconds, options = {}) {
+  const progress = ensureProjectProgress(state, project.id);
+  progress.workedSeconds += seconds;
+  const projectProgress = getProjectProgress(state, project);
+  const messages = [];
+
+  if (projectProgress.workedSeconds < projectProgress.requiredSeconds) {
+    return messages;
+  }
+
+  const successRate = getProjectSuccessRate(state, project);
+  const rng = options.rng || Math.random;
+  const roll = rng();
+  if (roll <= successRate) {
+    const rewardResult = applyProjectRewards(state, project);
+    clearProjectProgress(state, project.id);
+    messages.push(formatLines([
+      `项目 ${project.name} 工时达标：成功率 ${formatPercent(successRate)}，交付成功。`,
+      `获得：${formatResourceList(rewardResult.rewards)}`,
+      rewardResult.firstSuccess ? formatAttributeExpRewards(project.attributeExp) : "重复交付：声望、属性经验和完成计数不重复获得。",
+      formatSkillExpRewards(rewardResult.skillExp),
+      formatNextAdvice(state)
+    ]));
+    return messages;
+  }
+
+  const failedSkillExp = addSkillExp(state, project.skillExpRewards, 0.4);
+  clearProjectProgress(state, project.id);
+  messages.push(formatLines([
+    `项目 ${project.name} 工时达标：成功率 ${formatPercent(successRate)}，交付失败。`,
+    `投入资源全部损失：${formatResourceList(project.requirements.resources || {})}`,
+    formatSkillExpRewards(failedSkillExp),
+    formatNextAdvice(state)
+  ]));
+  return messages;
+}
+
 function settleTime(state, now = Date.now(), options = {}) {
   const maxSeconds = options.maxSeconds ?? OFFLINE_CAP_SECONDS;
   const elapsedSeconds = Math.max(0, Math.floor((now - state.lastTick) / 1000));
@@ -473,6 +813,35 @@ function settleTime(state, now = Date.now(), options = {}) {
   if (seconds <= 0) {
     state.lastTick = now;
     return { seconds: 0, messages };
+  }
+
+  const activeSkill = itemById(content.skills, state.activeSkillLearningId);
+  if (activeSkill) {
+    if (getSkillLevel(state, activeSkill.id) > 0) {
+      clearSkillLearningProgress(state, activeSkill.id);
+      state.lastTick = now;
+      return { seconds, messages };
+    }
+    messages.push(...settleSkillLearning(state, activeSkill, seconds));
+    state.lastTick = now;
+    clampState(state);
+    return { seconds, messages };
+  }
+
+  if (state.activeSkillLearningId && !activeSkill) {
+    state.activeSkillLearningId = null;
+  }
+
+  const activeProject = projectById(state.activeProjectId);
+  if (activeProject) {
+    messages.push(...settleProject(state, activeProject, seconds, options));
+    state.lastTick = now;
+    clampState(state);
+    return { seconds, messages };
+  }
+
+  if (state.activeProjectId && !activeProject) {
+    state.activeProjectId = null;
   }
 
   const activity = activityById(state.activeActivityId);
@@ -521,6 +890,8 @@ function startActivity(state, id) {
     ]);
   }
   if (state.activeActivityId === id) return `${activity.name} 已经在进行中。`;
+  state.activeSkillLearningId = null;
+  state.activeProjectId = null;
   state.activeActivityId = id;
   return formatLines([
     `开始活动：${activity.name}。`,
@@ -530,6 +901,16 @@ function startActivity(state, id) {
 }
 
 function stopActivity(state) {
+  if (state.activeSkillLearningId) {
+    const skill = itemById(content.skills, state.activeSkillLearningId);
+    state.activeSkillLearningId = null;
+    return `暂停学习：${skill ? skill.name : "未知技能"}。`;
+  }
+  if (state.activeProjectId) {
+    const project = projectById(state.activeProjectId);
+    state.activeProjectId = null;
+    return `暂停项目：${project ? project.name : "未知项目"}。`;
+  }
   if (!state.activeActivityId) return "当前没有正在进行的活动。";
   const activity = activityById(state.activeActivityId);
   state.activeActivityId = null;
@@ -726,6 +1107,8 @@ function claimAllGoals(state) {
 function formatNextAdvice(state) {
   const claimable = getClaimableGoals(state);
   if (claimable.length) return `建议：目标 ${claimable[0].name} 已完成，先 claim ${claimable[0].id} 领取奖励。`;
+  if (state.activeSkillLearningId) return "建议：技能学习中，wait 或保持在线完成学习。";
+  if (state.activeProjectId) return "建议：项目进行中，降低 Bug、技术债和压力可以提高交付成功率。";
   if (!state.activeActivityId) return "建议：先 start feature-coding 或 start study，选择当前要推进的活动。";
   if (state.resources.energy < 15 && state.activeActivityId !== "rest") return "建议：精力偏低，切到 start rest 恢复后再产出。";
   if ((state.resources.pressure || 0) >= 70 && state.activeActivityId !== "rest") return "建议：压力偏高，切到 start rest 降压。";
@@ -737,14 +1120,21 @@ function formatNextAdvice(state) {
 function formatState(state) {
   const role = roleById(state.currentRole);
   const active = activityById(state.activeActivityId);
+  const activeProject = projectById(state.activeProjectId);
+  const activeSkill = itemById(content.skills, state.activeSkillLearningId);
+  const projectProgress = activeProject ? getProjectProgress(state, activeProject) : null;
+  const skillLearningProgress = activeSkill ? getSkillLearningProgress(state, activeSkill) : null;
+  const learnedSkills = content.skills.filter((skill) => getSkillLevel(state, skill.id) > 0).map((skill) => formatSkillProgress(state, skill.id));
   return [
     `职位：${role ? role.name : state.currentRole}`,
     `当前活动：${active ? `${active.name} Lv.${getActivityLevel(state, active.id)}` : "无"}`,
+    `当前项目：${activeProject ? `${activeProject.name} ${projectProgress.progressPercent}%（成功率 ${formatPercent(getProjectSuccessRate(state, activeProject))}）` : "无"}`,
+    `当前学习：${activeSkill ? `${activeSkill.name} ${skillLearningProgress.progressPercent}%` : "无"}`,
     `代码：${formatNumber(state.resources.codeLines)}  经验：${formatNumber(state.resources.exp)}  金钱：${formatNumber(state.resources.money)}  知识：${formatNumber(state.resources.knowledge)}`,
     `测试：${formatNumber(state.resources.tests)}  文档：${formatNumber(state.resources.docs)}  架构：${formatNumber(state.resources.architecture)}  线索：${formatNumber(state.resources.leads)}`,
     `精力：${formatNumber(state.resources.energy)}  压力：${formatNumber(state.resources.pressure)}  Bug：${formatNumber(state.resources.bugs)}  技术债：${formatNumber(state.resources.techDebt)}  声望：${formatNumber(state.resources.reputation)}`,
     `属性：${formatAttributes(state)}`,
-    `技能：${state.unlockedSkills.length ? state.unlockedSkills.join(", ") : "暂无"}`,
+    `技能：${learnedSkills.length ? learnedSkills.join("，") : "暂无"}`,
     `工具：${state.ownedTools.length ? state.ownedTools.join(", ") : "暂无"}`,
     `已完成项目：${state.completedProjects.length ? state.completedProjects.join(", ") : "暂无"}`,
     formatGoalSummary(state)
@@ -764,9 +1154,10 @@ function helpText() {
     "  activities             查看活动列表",
     "  start <id>             开始一个持续活动",
     "  stop                   停止当前活动",
-    "  learn <id>             学技能",
+    "  learn <id>             开始或继续学习技能",
+    "  upgrade <id>           消耗技能经验和资源升级技能",
     "  buy <id>               买工具",
-    "  project <id>           提交项目",
+    "  project <id>           开始或继续项目",
     "  promote                申请晋升",
     "  goals                  查看目标链",
     "  claim [id|all]         领取已完成目标奖励",
@@ -780,7 +1171,10 @@ function helpText() {
 
 function listContent(type) {
   if (type === "skills") {
-    return content.skills.map((skill) => `${skill.id} - ${skill.name}，花费：${formatResourceList(skill.cost)}。${skill.description}`).join("\n");
+    return content.skills.map((skill) => {
+      const progress = getSkillProgress({ skillProgress: {}, unlockedSkills: [], skillLearningProgress: {} }, skill.id);
+      return `${skill.id} - ${skill.name}，学习花费：${formatResourceList(skill.cost)}，耗时 ${formatDuration(skill.learningSeconds)}，属性 ${formatAttributeRequirements(skill.attributeRequirements)}，等级 ${progress.levelName}，升级 ${formatSkillUpgradeCost({ skillProgress: {}, resources: {}, attributes: DEFAULT_ATTRIBUTES }, skill)}，倍率/级：${formatMultiplierList(skill.multipliers)}。${skill.description}`;
+    }).join("\n");
   }
   if (type === "tools") {
     return content.tools.map((tool) => `${tool.id} - ${tool.name}，花费：${formatResourceList(tool.cost)}。${tool.description}`).join("\n");
@@ -788,7 +1182,7 @@ function listContent(type) {
   if (type === "projects") {
     return content.projects.map((project) => {
       const skills = project.requirements.skills?.length ? project.requirements.skills.join(", ") : "无";
-      return `${project.id} - ${project.name}，技能 ${skills}，资源 ${formatResourceList(project.requirements.resources)}，活动 ${formatActivityRequirements({ activityLevels: project.requirements.activityLevels })}`;
+      return `${project.id} - ${project.name}，难度 ${project.difficulty}，最少工时 ${formatDuration(getProjectRequiredSeconds(project))}，最高成功率 ${formatPercent(project.maxSuccessRate)}，技能 ${skills}，资源 ${formatResourceList(project.requirements.resources)}，活动 ${formatActivityRequirements({ activityLevels: project.requirements.activityLevels })}`;
     }).join("\n");
   }
   return "可查看：list skills、list tools、list projects";
@@ -841,6 +1235,23 @@ function getActivityOptions(state) {
 }
 
 function getSkillLevelEntries(state) {
+  return content.skills.map((skill) => {
+    const progress = getSkillProgress(state, skill.id);
+    return {
+      id: skill.id,
+      name: skill.name,
+      level: progress.level,
+      levelName: progress.levelName,
+      exp: progress.exp,
+      nextExp: progress.next,
+      learned: progress.level > 0,
+      maxed: progress.level >= 5,
+      learning: state.activeSkillLearningId === skill.id
+    };
+  });
+}
+
+function getActivityLevelEntries(state) {
   return content.activities.map((activity) => {
     const progress = getActivityProgress(state, activity.id);
     return {
@@ -858,20 +1269,48 @@ function getSkillLevelEntries(state) {
 function getManagementOptions(state, type) {
   if (type === "skills") {
     return content.skills.map((skill) => {
-      const owned = state.unlockedSkills.includes(skill.id);
-      const affordable = canAfford(state.resources, skill.cost);
-      const attributeExp = formatAttributeExpRewards(skill.attributeExp);
+      const progress = getSkillProgress(state, skill.id);
+      const learning = state.activeSkillLearningId === skill.id;
+      const learningProgress = getSkillLearningProgress(state, skill);
+      const learned = progress.level > 0;
+      const paid = learningProgress.resourcesPaid;
+      const resourceAffordable = paid || canAfford(state.resources, skill.cost);
+      const missingAttributes = learned ? [] : missingAttributeRequirements(state, skill.attributeRequirements);
+      const learnable = !learned && resourceAffordable && missingAttributes.length === 0;
+      const canUpgrade = learned && progress.level < 5 && progress.exp >= SKILL_EXP_THRESHOLDS[progress.level] && canAfford(state.resources, getSkillUpgradeCost(skill, progress.level + 1)) && missingAttributeRequirements(state, getSkillUpgradeAttributeRequirements(skill, progress.level + 1)).length === 0;
+      const status = learned
+        ? progress.level >= 5 ? "满级" : canUpgrade ? "可升级" : "已学习"
+        : learning ? "学习中" : missingAttributes.length ? "属性不足" : resourceAffordable ? "可学习" : "资源不足";
       return {
         id: skill.id,
         name: skill.name,
         description: skill.description,
-        status: owned ? "已学习" : affordable ? "可学习" : "资源不足",
-        done: owned,
-        available: !owned && affordable,
+        status,
+        done: progress.level >= 5,
+        available: learnable || canUpgrade,
         cost: formatResourceList(skill.cost),
-        effects: [formatMultiplierList(skill.multipliers), attributeExp].filter((text) => text && text !== "无").join("；") || "无",
-        missing: owned || affordable ? "" : formatShortfall(state.resources, skill.cost),
-        command: !owned ? `learn ${skill.id}` : null
+        effects: [
+          `${progress.levelName} ${progress.next ? `${formatNumber(progress.exp)}/${formatNumber(progress.next)}` : formatNumber(progress.exp)}`,
+          `学习 ${formatDuration(learningProgress.workedSeconds)}/${formatDuration(learningProgress.requiredSeconds)}（${learningProgress.progressPercent}%）`,
+          `升级 ${formatSkillUpgradeCost(state, skill)}`,
+          `倍率/级 ${formatMultiplierList(skill.multipliers)}`
+        ].join("；"),
+        missing: learned
+          ? (progress.level >= 5 ? "" : [
+              progress.exp < SKILL_EXP_THRESHOLDS[progress.level] ? `技能经验 ${formatNumber(SKILL_EXP_THRESHOLDS[progress.level] - progress.exp)}` : "",
+              formatShortfall(state.resources, getSkillUpgradeCost(skill, progress.level + 1)),
+              missingAttributeRequirements(state, getSkillUpgradeAttributeRequirements(skill, progress.level + 1)).join("，")
+            ].filter(Boolean).join("；"))
+          : [
+              paid || resourceAffordable ? "" : formatShortfall(state.resources, skill.cost),
+              missingAttributes.length ? `属性缺口：${missingAttributes.join("，")}` : ""
+            ].filter(Boolean).join("；"),
+        level: progress.level,
+        levelName: progress.levelName,
+        exp: progress.exp,
+        nextExp: progress.next,
+        learningProgress,
+        command: learned ? (canUpgrade ? `upgrade ${skill.id}` : null) : `learn ${skill.id}`
       };
     });
   }
@@ -898,17 +1337,30 @@ function getManagementOptions(state, type) {
   if (type === "projects") {
     const projectOptions = content.projects.map((project) => {
       const completed = state.completedProjects.includes(project.id);
-      const missing = missingProjectRequirements(state, project);
+      const progress = getProjectProgress(state, project);
+      const active = state.activeProjectId === project.id;
+      const inProgress = progress.resourcesPaid;
+      const missing = missingProjectRequirements(state, project, { skipResources: progress.resourcesPaid });
+      const successRate = getProjectSuccessRate(state, project);
       return {
         id: project.id,
         name: project.name,
         description: `奖励：${formatResourceList(project.rewards)}`,
-        status: completed ? "已完成" : missing.length ? "条件不足" : "可提交",
+        status: active ? "进行中" : inProgress ? "已暂停" : completed ? "已完成/可重复" : missing.length ? "条件不足" : "可开始",
         done: completed,
-        available: !completed && missing.length === 0,
-        cost: formatResourceList(project.requirements.resources || {}),
+        available: missing.length === 0,
+        cost: progress.resourcesPaid ? "已投入" : formatResourceList(project.requirements.resources || {}),
+        effects: `难度 ${project.difficulty}；工时 ${formatDuration(progress.workedSeconds)}/${formatDuration(progress.requiredSeconds)}（${progress.progressPercent}%）；成功率 ${formatPercent(successRate)} / 最高 ${formatPercent(project.maxSuccessRate)}`,
         missing: missing.join("、"),
-        command: !completed ? `project ${project.id}` : null
+        difficulty: project.difficulty,
+        maxSuccessRate: project.maxSuccessRate,
+        successRate,
+        minWorkHours: project.minWorkHours,
+        workedSeconds: progress.workedSeconds,
+        requiredSeconds: progress.requiredSeconds,
+        progressPercent: progress.progressPercent,
+        resourcesPaid: progress.resourcesPaid,
+        command: `project ${project.id}`
       };
     });
 
@@ -934,6 +1386,10 @@ function getManagementOptions(state, type) {
 function getGameViewModel(state) {
   const role = roleById(state.currentRole);
   const active = activityById(state.activeActivityId);
+  const activeProject = projectById(state.activeProjectId);
+  const activeSkill = itemById(content.skills, state.activeSkillLearningId);
+  const activeProjectProgress = activeProject ? getProjectProgress(state, activeProject) : null;
+  const activeSkillProgress = activeSkill ? getSkillLearningProgress(state, activeSkill) : null;
   const claimableGoals = getClaimableGoals(state);
   const currentMainGoal = getCurrentMainGoal(state);
 
@@ -948,6 +1404,21 @@ function getGameViewModel(state) {
       id: active.id,
       name: active.name,
       level: getActivityLevel(state, active.id)
+    } : null,
+    activeProject: activeProject ? {
+      id: activeProject.id,
+      name: activeProject.name,
+      progressPercent: activeProjectProgress.progressPercent,
+      workedSeconds: activeProjectProgress.workedSeconds,
+      requiredSeconds: activeProjectProgress.requiredSeconds,
+      successRate: getProjectSuccessRate(state, activeProject)
+    } : null,
+    activeSkillLearning: activeSkill ? {
+      id: activeSkill.id,
+      name: activeSkill.name,
+      progressPercent: activeSkillProgress.progressPercent,
+      workedSeconds: activeSkillProgress.workedSeconds,
+      requiredSeconds: activeSkillProgress.requiredSeconds
     } : null,
     resources: getResourceEntries(state),
     attributes: getAttributeEntries(state),
@@ -968,6 +1439,7 @@ function getGameViewModel(state) {
       projects: [...state.completedProjects]
     },
     skillLevels: getSkillLevelEntries(state),
+    activityLevels: getActivityLevelEntries(state),
     stats: {
       totalCodeLines: Math.floor(state.stats.totalCodeLines || 0),
       totalBugsFixed: Math.floor(state.stats.totalBugsFixed || 0),
@@ -977,7 +1449,7 @@ function getGameViewModel(state) {
     nextAdvice: formatNextAdvice(state),
     actions: {
       claimAll: claimableGoals.length > 0 ? "claim all" : null,
-      stopActivity: state.activeActivityId ? "stop" : null,
+      stopActivity: state.activeActivityId || state.activeProjectId || state.activeSkillLearningId ? "stop" : null,
       save: "save",
       quit: "quit"
     }
@@ -1005,21 +1477,74 @@ function formatShortfall(resources, cost = {}) {
 function learnSkill(state, id) {
   const skill = itemById(content.skills, id);
   if (!skill) return `没有这个技能：${id}`;
-  if (state.unlockedSkills.includes(id)) return formatLines([`你已经学会了 ${skill.name}。`, formatNextAdvice(state)]);
-  if (!canAfford(state.resources, skill.cost)) {
+  if (getSkillLevel(state, id) > 0) return formatLines([`你已经学会了 ${skill.name}。`, formatNextAdvice(state)]);
+  const progress = ensureSkillLearningProgress(state, id);
+  const missingAttributes = missingAttributeRequirements(state, skill.attributeRequirements);
+  if (missingAttributes.length) {
+    return formatLines([
+      `属性不足，学习 ${skill.name} 还需要：${missingAttributes.join("、")}。`,
+      `要求：${formatAttributeRequirements(skill.attributeRequirements)}。`
+    ]);
+  }
+  if (!progress.resourcesPaid && !canAfford(state.resources, skill.cost)) {
     return formatLines([
       `资源不足，学习 ${skill.name} 需要 ${formatResourceList(skill.cost)}。`,
       formatShortfall(state.resources, skill.cost),
       "建议：start study 产出知识，再回来 learn。"
     ]);
   }
-  pay(state.resources, skill.cost);
-  state.unlockedSkills.push(id);
-  applyAttributeExpRewards(state, skill.attributeExp);
+  const wasPaid = progress.resourcesPaid;
+  if (!progress.resourcesPaid) {
+    pay(state.resources, skill.cost);
+    progress.resourcesPaid = true;
+  }
+  state.activeSkillLearningId = id;
+  state.activeActivityId = null;
+  state.activeProjectId = null;
+  const currentProgress = getSkillLearningProgress(state, skill);
   return formatLines([
-    `学会了 ${skill.name}。${skill.description}`,
-    `消耗：${formatResourceList(Object.fromEntries(Object.entries(skill.cost).map(([key, value]) => [key, -value])))}`,
-    formatAttributeExpRewards(skill.attributeExp),
+    `${wasPaid ? "继续学习" : "开始学习"}：${skill.name}。${skill.description}`,
+    wasPaid ? "" : `消耗：${formatResourceList(Object.fromEntries(Object.entries(skill.cost).map(([key, value]) => [key, -value])))}`,
+    `进度：${formatDuration(currentProgress.workedSeconds)}/${formatDuration(currentProgress.requiredSeconds)}（${currentProgress.progressPercent}%）。`,
+    formatNextAdvice(state)
+  ]);
+}
+
+function upgradeSkill(state, id) {
+  const skill = itemById(content.skills, id);
+  if (!skill) return `没有这个技能：${id}`;
+  const progress = ensureSkillProgress(state, id);
+  if (progress.level <= 0) return `还没有学会 ${skill.name}，先执行 learn ${skill.id}。`;
+  if (progress.level >= 5) return `${skill.name} 已经是大师级。`;
+
+  const targetLevel = progress.level + 1;
+  const requiredExp = SKILL_EXP_THRESHOLDS[progress.level];
+  if (progress.exp < requiredExp) {
+    return `技能经验不足，${skill.name} 升到 ${SKILL_LEVEL_NAMES[targetLevel]} 需要 ${formatNumber(requiredExp)}，当前 ${formatNumber(progress.exp)}。`;
+  }
+  const attrReq = getSkillUpgradeAttributeRequirements(skill, targetLevel);
+  const missingAttributes = missingAttributeRequirements(state, attrReq);
+  if (missingAttributes.length) {
+    return formatLines([
+      `属性不足，${skill.name} 升到 ${SKILL_LEVEL_NAMES[targetLevel]} 还需要：${missingAttributes.join("、")}。`,
+      `要求：${formatAttributeRequirements(attrReq)}。`
+    ]);
+  }
+  const cost = getSkillUpgradeCost(skill, targetLevel);
+  if (!canAfford(state.resources, cost)) {
+    return formatLines([
+      `资源不足，${skill.name} 升到 ${SKILL_LEVEL_NAMES[targetLevel]} 需要 ${formatResourceList(cost)}。`,
+      formatShortfall(state.resources, cost)
+    ]);
+  }
+
+  pay(state.resources, cost);
+  progress.exp -= requiredExp;
+  progress.level = targetLevel;
+  syncUnlockedSkills(state);
+  return formatLines([
+    `${skill.name} 提升到 ${SKILL_LEVEL_NAMES[targetLevel]}。`,
+    `消耗：技能经验 -${formatNumber(requiredExp)}，${formatResourceList(Object.fromEntries(Object.entries(cost).map(([key, value]) => [key, -value])))}`,
     formatNextAdvice(state)
   ]);
 }
@@ -1040,16 +1565,19 @@ function buyTool(state, id) {
   return formatLines([`买到了 ${tool.name}。${tool.description}`, formatNextAdvice(state)]);
 }
 
-function missingProjectRequirements(state, project) {
+function missingProjectRequirements(state, project, options = {}) {
   const missing = [];
-  for (const [key, value] of Object.entries(project.requirements.resources || {})) {
-    if ((state.resources[key] || 0) < value) missing.push(`${RESOURCE_NAMES[key] || key} ${formatNumber(value - (state.resources[key] || 0))}`);
+  if (!options.skipResources) {
+    for (const [key, value] of Object.entries(project.requirements.resources || {})) {
+      if ((state.resources[key] || 0) < value) missing.push(`${RESOURCE_NAMES[key] || key} ${formatNumber(value - (state.resources[key] || 0))}`);
+    }
   }
   for (const [id, level] of Object.entries(project.requirements.activityLevels || {})) {
     if (getActivityLevel(state, id) < level) missing.push(`${activityById(id)?.name || id} Lv.${level}`);
   }
   for (const skill of project.requirements.skills || []) {
-    if (!state.unlockedSkills.includes(skill)) missing.push(`技能 ${skill}`);
+    const requiredLevel = clamp(Math.floor(Number(project.difficulty) || 1), 1, 5);
+    if (getSkillLevel(state, skill) < requiredLevel) missing.push(`技能 ${skill} ${SKILL_LEVEL_NAMES[requiredLevel]}`);
   }
   return missing;
 }
@@ -1063,10 +1591,11 @@ function qualityPenalty(state) {
 }
 
 function submitProject(state, id) {
-  const project = itemById(content.projects, id);
+  const project = projectById(id);
   if (!project) return `没有这个项目：${id}`;
-  if (state.completedProjects.includes(id)) return formatLines([`项目 ${project.name} 已经完成过了。`, formatNextAdvice(state)]);
-  const missing = missingProjectRequirements(state, project);
+  const existingProgress = state.projectProgress[project.id];
+  const resourcesPaid = Boolean(existingProgress && existingProgress.resourcesPaid);
+  const missing = missingProjectRequirements(state, project, { skipResources: resourcesPaid });
   if (missing.length) {
     return formatLines([
       `项目条件不足，还需要：${missing.join("、")}。`,
@@ -1074,22 +1603,21 @@ function submitProject(state, id) {
     ]);
   }
 
-  pay(state.resources, project.requirements.resources);
-  const penalty = qualityPenalty(state);
-  const rewardMultiplier = 1 - penalty;
-  const expReward = project.rewards.exp * rewardMultiplier;
-  const moneyReward = project.rewards.money * rewardMultiplier;
-  const reputationReward = project.rewards.reputation * rewardMultiplier;
-  state.resources.exp += expReward;
-  state.resources.money += moneyReward;
-  state.resources.reputation += reputationReward;
-  state.completedProjects.push(id);
-  state.stats.totalProjects += 1;
-  applyAttributeExpRewards(state, project.attributeExp);
+  const progress = ensureProjectProgress(state, project.id);
+  const wasPaid = progress.resourcesPaid;
+  if (!progress.resourcesPaid) {
+    pay(state.resources, project.requirements.resources);
+    progress.resourcesPaid = true;
+  }
+  state.activeProjectId = project.id;
+  state.activeSkillLearningId = null;
+  state.activeActivityId = null;
+  const currentProgress = getProjectProgress(state, project);
   return formatLines([
-    `提交了 ${project.name}，${penalty > 0 ? `质量折损 ${Math.round(penalty * 100)}%，` : ""}获得 ${formatNumber(expReward)} 经验、${formatNumber(moneyReward)} 金钱、${formatNumber(reputationReward)} 声望。`,
-    `消耗：${formatResourceList(Object.fromEntries(Object.entries(project.requirements.resources || {}).map(([key, value]) => [key, -value])))}`,
-    formatAttributeExpRewards(project.attributeExp),
+    `${wasPaid ? "继续项目" : state.completedProjects.includes(id) ? "重复项目" : "开始项目"}：${project.name}。`,
+    wasPaid ? "" : `投入：${formatResourceList(Object.fromEntries(Object.entries(project.requirements.resources || {}).map(([key, value]) => [key, -value])))}`,
+    `进度：${formatDuration(currentProgress.workedSeconds)}/${formatDuration(currentProgress.requiredSeconds)}（${currentProgress.progressPercent}%）。`,
+    `难度 ${project.difficulty}，当前成功率 ${formatPercent(getProjectSuccessRate(state, project))}，最高 ${formatPercent(project.maxSuccessRate)}。`,
     formatNextAdvice(state)
   ]);
 }
@@ -1102,7 +1630,7 @@ function promote(state) {
   if ((state.resources.exp || 0) < req.exp) missing.push(`${req.exp} 经验`);
   if ((state.resources.reputation || 0) < req.reputation) missing.push(`${req.reputation} 声望`);
   if (state.completedProjects.length < req.completedProjects) missing.push(`${req.completedProjects} 个完成项目`);
-  for (const skill of req.skills || []) if (!state.unlockedSkills.includes(skill)) missing.push(`技能 ${skill}`);
+  for (const skill of req.skills || []) if (getSkillLevel(state, skill) < 1) missing.push(`技能 ${skill}`);
   for (const [id, level] of Object.entries(req.activityLevels || {})) if (getActivityLevel(state, id) < level) missing.push(`${activityById(id)?.name || id} Lv.${level}`);
   if (missing.length) return formatLines([`晋升失败，还需要：${missing.join("、")}。`, formatNextAdvice(state)]);
 
@@ -1154,6 +1682,9 @@ function processCommand(state, input, options = {}) {
       break;
     case "learn":
       messages.push(arg ? learnSkill(state, arg) : "用法：learn <id>");
+      break;
+    case "upgrade":
+      messages.push(arg ? upgradeSkill(state, arg) : "用法：upgrade <id>");
       break;
     case "buy":
       messages.push(arg ? buyTool(state, arg) : "用法：buy <id>");
@@ -1318,6 +1849,9 @@ module.exports = {
   getManagementOptions,
   getMultipliers,
   getProductionRisk,
+  getProjectProgress,
+  getProjectSuccessRate,
+  getSkillProgress,
   helpText,
   learnSkill,
   listContent,
@@ -1330,5 +1864,6 @@ module.exports = {
   settleTime,
   startActivity,
   stopActivity,
-  submitProject
+  submitProject,
+  upgradeSkill
 };
