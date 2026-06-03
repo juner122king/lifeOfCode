@@ -51,6 +51,97 @@ const roles = [
   }
 ];
 
+const characterCards = [
+  {
+    id: "academy-prodigy",
+    name: "象牙塔学霸",
+    background: "理论与算法的巨子，学习效率拉满。但温室里的花朵从未面对过真实的生产环境，抗压和沟通能力极度匮乏，极易在连环 Bug 中破防。",
+    description: "高学习、高逻辑，适合系统学习开局；资金、沟通和抗压明显偏弱。",
+    attributes: { learning: 72, logic: 58, focus: 32, creativity: 20, resilience: 10, communication: 4 },
+    resources: { knowledge: 80, exp: 50, money: -10 },
+    skills: {},
+    activityLevels: { study: 2 },
+    ownedTools: []
+  },
+  {
+    id: "indie-hacker",
+    name: "野路子独立开发者",
+    background: "满脑子商业点子和奇思妙想，天生的产品变现大师。极度鄙视学院派死记硬背的理论，底层逻辑和系统学习能力偏弱。",
+    description: "高创造、高专注，自带 JavaScript 和写功能 Lv.2，适合快速做产品。",
+    attributes: { creativity: 70, focus: 58, communication: 44, resilience: 24, learning: 10, logic: 6 },
+    resources: { leads: 4, money: 15 },
+    skills: { javascript: 1 },
+    activityLevels: { "feature-coding": 2 },
+    ownedTools: []
+  },
+  {
+    id: "seasoned-contractor",
+    name: "熟练外包枪手",
+    background: "常年浸淫于低端外包 and 快餐式开发，练就了坚如磐石的抗压能力和机械化的专注度。毫无创造力可言，留下的代码是所有维护者的噩梦。",
+    description: "高抗压、高专注，自带大量代码和 HTML/CSS，但技术债、Bug、压力也很高。",
+    attributes: { resilience: 72, focus: 64, logic: 28, communication: 22, learning: 8, creativity: 4 },
+    resources: { codeLines: 500, money: 35, techDebt: 45, bugs: 16, pressure: 12 },
+    skills: { "html-css": 1 },
+    activityLevels: {},
+    ownedTools: []
+  },
+  {
+    id: "open-source-zealot",
+    name: "开源社区极客",
+    background: "逻辑严密、视规范如生命的极客。能够洞察代码中最微小的逻辑硬伤，由于长期沉浸于纯粹的技术世界，严重缺乏世故的沟通技巧。",
+    description: "高逻辑、高创造，自带 Git、文档和声望，但初始资金吃紧。",
+    attributes: { logic: 70, creativity: 58, learning: 46, focus: 28, resilience: 14, communication: 4 },
+    resources: { docs: 35, reputation: 3, money: -20 },
+    skills: { git: 1 },
+    activityLevels: {},
+    ownedTools: []
+  },
+  {
+    id: "determined-switcher",
+    name: "破釜沉舟转行者",
+    background: "步入中年、砸下重金转型软件开发。拥有无与伦比的社会沟通手腕与面对绝境的抗压能力，虽然代码逻辑 and 学习曲线极为陡峭，但他带足了钞票和速成技巧。",
+    description: "高沟通、高抗压、资金充足，自带沟通能力；逻辑和学习较弱，质量风险偏高。",
+    attributes: { communication: 72, resilience: 66, focus: 28, creativity: 18, learning: 10, logic: 4 },
+    resources: { money: 180, techDebt: 35, pressure: 15 },
+    skills: { communication: 1 },
+    activityLevels: {},
+    ownedTools: []
+  },
+  {
+    id: "product-minded-dev",
+    name: "产品型前端",
+    background: "最懂业务、站在用户视角思考的交互流前端。沟通 and 美感创意是其王牌，但在面对长串代码逻辑和深度排错时，注意力极易涣散。",
+    description: "高沟通、高创造，自带业务线索、文档和 HTML/CSS；逻辑与专注较弱。",
+    attributes: { communication: 66, creativity: 64, learning: 30, resilience: 20, logic: 10, focus: 13 },
+    resources: { leads: 5, docs: 25 },
+    skills: { "html-css": 1 },
+    activityLevels: {},
+    ownedTools: []
+  },
+  {
+    id: "perfectionist-qa",
+    name: "完美主义细节控",
+    background: "拥有鹰一般的专注力，对代码质量的嗅觉极其灵敏。强迫症晚期，开局就因为无法忍受前人的烂代码而把大量时间耗在清理质量风险上，进度被技术债和压力拖住。",
+    description: "高专注、高逻辑，自带测试自动化和测试资产；抗压、沟通和现金流较弱。",
+    attributes: { focus: 72, logic: 60, learning: 34, creativity: 12, communication: 6, resilience: 4 },
+    resources: { tests: 55, docs: 8, techDebt: 20, pressure: 25, money: -15 },
+    skills: { "testing-automation": 1 },
+    activityLevels: {},
+    ownedTools: []
+  },
+  {
+    id: "laid-back-slacker",
+    name: "乐天派“面条哥”",
+    background: "心态稳如宇宙奇点，线上大火也无法动摇其分毫。极具亲和力，但属于典型的“多动症”人格，专注度和创造力低得可怜，写出的代码全是堆叠的面条。",
+    description: "高抗压、沟通尚可，休息恢复 Lv.2；专注和创造很低，初始 Bug 与技术债偏高。",
+    attributes: { resilience: 72, communication: 48, learning: 20, logic: 16, creativity: 4, focus: 2 },
+    resources: { money: 15, bugs: 16, techDebt: 20 },
+    skills: {},
+    activityLevels: { rest: 2 },
+    ownedTools: []
+  }
+];
+
 const activities = [
   {
     id: "feature-coding",
@@ -726,6 +817,7 @@ const randomEvents = [
 
 module.exports = {
   roles,
+  characterCards,
   activities,
   skills,
   tools,

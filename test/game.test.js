@@ -8,6 +8,7 @@ const {
   DEFAULT_ATTRIBUTES,
   OFFLINE_CAP_SECONDS,
   addAttributeExp,
+  characterCardById,
   buyTool,
   claimGoal,
   createProfile,
@@ -20,6 +21,7 @@ const {
   getActivityLevel,
   getActivityOptions,
   getActivityProgress,
+  getCharacterCardOptions,
   getEffectiveAttribute,
   getGameViewModel,
   getGoalOptions,
@@ -88,6 +90,42 @@ test("旧存档会补齐活动字段、职业资源和目标领取记录", () =>
   assert.equal(state.attributes.focus, 1);
   assert.equal(state.attributes.learning, DEFAULT_ATTRIBUTES.learning);
   assert.equal(getEffectiveAttribute(state, "logic"), 104);
+  assert.equal(state.characterCardId, null);
+});
+
+test("人物卡数据完整且活动等级奖励受限", () => {
+  assert.equal(content.characterCards.length, 8);
+  assert.equal(content.characterCards.flatMap((card) => Object.keys(card.attributes)).length, 48);
+
+  for (const card of content.characterCards) {
+    assert.deepEqual(Object.keys(card.attributes).sort(), ["communication", "creativity", "focus", "learning", "logic", "resilience"].sort());
+    for (const value of Object.values(card.attributes)) {
+      assert.ok(value >= 1 && value <= 100);
+    }
+    assert.deepEqual(card.ownedTools, []);
+  }
+
+  const boostedActivities = content.characterCards.flatMap((card) => Object.entries(card.activityLevels).map(([id, level]) => `${id}:${level}`));
+  assert.deepEqual(boostedActivities.sort(), ["feature-coding:2", "rest:2", "study:2"].sort());
+  assert.ok(boostedActivities.every((entry) => !entry.endsWith(":3")));
+});
+
+test("人物卡只应用初始状态，不自动开始活动", () => {
+  const academy = createNewState(1_700_000_000_000, { characterCardId: "academy-prodigy" });
+  assert.equal(academy.characterCardId, "academy-prodigy");
+  assert.equal(academy.attributes.learning, 72);
+  assert.equal(academy.resources.knowledge, 80);
+  assert.equal(academy.resources.money, 20);
+  assert.equal(getActivityLevel(academy, "study"), 2);
+  assert.equal(academy.activeActivityId, null);
+
+  const indie = createNewState(1_700_000_000_000, { characterCardId: "indie-hacker" });
+  assert.equal(getSkillProgress(indie, "javascript").level, 1);
+  assert.equal(getActivityLevel(indie, "feature-coding"), 2);
+
+  const slacker = createNewState(1_700_000_000_000, { characterCardId: "laid-back-slacker" });
+  assert.equal(getActivityLevel(slacker, "rest"), 2);
+  assert.equal(slacker.activeActivityId, null);
 });
 
 test("旧单存档作为 default 档案兼容加载", () => {
@@ -110,29 +148,40 @@ test("旧单存档作为 default 档案兼容加载", () => {
 
 test("角色档案创建、读取和状态隔离", () => {
   const saveRoot = createTempSaveRoot();
-  const alpha = createProfile("alpha", "前端角色", 1_700_000_000_000, { saveRoot });
+  assert.throws(() => createProfile("missing-card", "缺卡", 1_700_000_000_000, { saveRoot }), /必须选择人物卡/);
+  assert.throws(() => createProfile("bad-card", "坏卡", 1_700_000_000_000, { saveRoot, characterCardId: "nope" }), /没有这个人物卡/);
+
+  const alpha = createProfile("alpha", "前端角色", 1_700_000_000_000, { saveRoot, characterCardId: "product-minded-dev" });
   alpha.resources.money = 321;
   processCommand(alpha, "save", { saveRoot, now: 1_700_000_010_000 });
 
-  const beta = createProfile("beta", "AI 角色", 1_700_000_020_000, { saveRoot });
+  const beta = createProfile("beta", "AI 角色", 1_700_000_020_000, { saveRoot, characterCardId: "indie-hacker" });
   beta.resources.money = 654;
   processCommand(beta, "save", { saveRoot, now: 1_700_000_030_000 });
 
   assert.equal(loadProfile("alpha", 1_700_000_040_000, { saveRoot }).resources.money, 321);
   assert.equal(loadProfile("beta", 1_700_000_040_000, { saveRoot }).resources.money, 654);
+  assert.equal(loadProfile("alpha", 1_700_000_040_000, { saveRoot }).characterCardId, "product-minded-dev");
   assert.deepEqual(listProfiles({ saveRoot }).map((item) => item.id), ["default", "alpha", "beta"]);
 });
 
 test("profile 命令可创建、切换、重命名和保存当前档案", () => {
   const saveRoot = createTempSaveRoot();
-  const state = loadProfile("default", 1_700_000_000_000, { saveRoot });
+  const state = createProfile("default", "默认档案", 1_700_000_000_000, { saveRoot, characterCardId: "academy-prodigy" });
   state.resources.money = 111;
 
-  let message = processCommand(state, "profile new dev 开发者档案", { saveRoot, now: 1_700_000_010_000 }).messages.join("\n");
+  let message = processCommand(state, "profile new nocard 开发者档案", { saveRoot, now: 1_700_000_005_000 }).messages.join("\n");
+  assert.match(message, /必须选择人物卡/);
+  message = processCommand(state, "profile new bad --card nope 坏档案", { saveRoot, now: 1_700_000_006_000 }).messages.join("\n");
+  assert.match(message, /没有这个人物卡：nope/);
+
+  message = processCommand(state, "profile new dev --card indie-hacker 开发者档案", { saveRoot, now: 1_700_000_010_000 }).messages.join("\n");
   assert.match(message, /已创建并切换到档案：dev - 开发者档案/);
   assert.equal(state.profileId, "dev");
+  assert.equal(state.characterCardId, "indie-hacker");
   state.resources.money = 222;
   processCommand(state, "save", { saveRoot, now: 1_700_000_020_000 });
+  assert.equal(loadProfile("dev", 1_700_000_025_000, { saveRoot }).characterCardId, "indie-hacker");
 
   message = processCommand(state, "profile load default", { saveRoot, now: 1_700_000_030_000 }).messages.join("\n");
   assert.match(message, /已切换到档案：default - 默认档案/);
@@ -145,7 +194,7 @@ test("profile 命令可创建、切换、重命名和保存当前档案", () => 
 
 test("删除档案需要确认且不能删除 default 或当前档案", () => {
   const saveRoot = createTempSaveRoot();
-  const state = createProfile("side", "副档案", 1_700_000_000_000, { saveRoot });
+  const state = createProfile("side", "副档案", 1_700_000_000_000, { saveRoot, characterCardId: "academy-prodigy" });
 
   assert.throws(() => deleteProfile("default", { saveRoot, confirm: true }), /default 档案不能删除/);
   assert.throws(() => deleteProfile("side", { saveRoot, currentProfileId: "side", confirm: true }), /不能删除当前/);
@@ -737,11 +786,24 @@ test("help 包含新命令，不再展示旧的一次性命令", () => {
   const help = processCommand(createNewState(), "help").messages.join("\n");
 
   assert.match(help, /activities/);
+  assert.match(help, /cards/);
+  assert.match(help, /profile new <id> --card <cardId>/);
   assert.match(help, /start <id>/);
   assert.match(help, /stop/);
   assert.doesNotMatch(help, /  code\s/);
   assert.doesNotMatch(help, /  fix\s/);
   assert.doesNotMatch(help, /  refactor\s/);
+});
+
+test("cards 命令和人物卡选项展示卡片信息", () => {
+  const message = processCommand(createNewState(), "cards").messages.join("\n");
+  const options = getCharacterCardOptions({ now: 1_700_000_000_000 });
+
+  assert.match(message, /academy-prodigy - 象牙塔学霸/);
+  assert.match(message, /indie-hacker - 野路子独立开发者/);
+  assert.equal(options.length, 8);
+  assert.equal(options.find((item) => item.id === "indie-hacker").command, "profile new profile-20231114221320-indie-hacker --card indie-hacker 野路子独立开发者");
+  assert.match(options.find((item) => item.id === "academy-prodigy").resources, /知识 \+80/);
 });
 
 test("旧的一次性命令只返回迁移提示，不改变资源", () => {
@@ -812,6 +874,9 @@ test("view model 提供结构化资源、属性、目标摘要和可执行动作
   assert.equal(view.role.name, "实习程序员");
   assert.equal(view.profile.id, "default");
   assert.equal(view.profile.name, "默认档案");
+  assert.equal(view.profile.characterCardName, "未选择人物卡/旧档案");
+  assert.equal(view.characterCard.legacy, true);
+  assert.deepEqual(view.characterCard.initialAttributes, []);
   assert.equal(view.activeActivity, null);
   assert.equal(view.activeProject, null);
   assert.deepEqual(view.resources.map((item) => item.id), [
@@ -836,6 +901,20 @@ test("view model 提供结构化资源、属性、目标摘要和可执行动作
   assert.equal(view.actions.claimAll, "claim all");
   assert.equal(view.actions.save, "save");
   assert.equal(view.activityLevels.find((item) => item.id === "feature-coding").level, 1);
+});
+
+test("view model 展示当前人物卡信息", () => {
+  const state = createNewState(1_700_000_000_000, { characterCardId: "academy-prodigy" });
+  const view = getGameViewModel(state);
+
+  assert.equal(characterCardById("academy-prodigy").name, "象牙塔学霸");
+  assert.equal(view.profile.characterCardId, "academy-prodigy");
+  assert.equal(view.profile.characterCardName, "象牙塔学霸");
+  assert.equal(view.characterCard.id, "academy-prodigy");
+  assert.equal(view.characterCard.name, "象牙塔学霸");
+  assert.equal(view.characterCard.initialAttributes.find((item) => item.id === "learning").value, 72);
+  assert.match(view.characterCard.initialBonuses.resources, /知识 \+80/);
+  assert.match(view.characterCard.initialBonuses.activityLevels, /系统学习 Lv\.2/);
 });
 
 test("activity options 标出锁定、当前活动、等级和命令", () => {
@@ -893,7 +972,7 @@ test("management options 标出技能、工具和项目动作状态", () => {
 
 test("profile options 为 TUI 提供新建、保存和切换动作", () => {
   const saveRoot = createTempSaveRoot();
-  createProfile("work", "工作档案", 1_700_000_000_000, { saveRoot });
+  createProfile("work", "工作档案", 1_700_000_000_000, { saveRoot, characterCardId: "determined-switcher" });
   const state = loadProfile("default", 1_700_000_010_000, { saveRoot });
 
   const options = getProfileOptions(state, { saveRoot, now: 1_700_000_020_000 });
@@ -901,9 +980,12 @@ test("profile options 为 TUI 提供新建、保存和切换动作", () => {
   const saveOption = options.find((item) => item.id === "profile-save");
   const work = options.find((item) => item.id === "work");
 
-  assert.match(createOption.command, /profile new profile-/);
+  assert.equal(createOption.command, null);
+  assert.match(createOption.description, /必须先选择人物卡|必须先选择/);
   assert.equal(saveOption.command, "save");
   assert.equal(work.status, "可加载");
   assert.equal(work.command, "profile load work");
   assert.equal(work.deleteCommand, "profile delete work confirm");
+  assert.match(work.description, /破釜沉舟转行者/);
+  assert.equal(options.some((item) => item.id.startsWith("create-")), false);
 });

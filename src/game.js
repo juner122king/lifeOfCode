@@ -63,6 +63,10 @@ function activityById(id) {
   return content.activities.find((activity) => activity.id === id);
 }
 
+function characterCardById(id) {
+  return content.characterCards.find((card) => card.id === id);
+}
+
 function itemById(items, id) {
   return items.find((item) => item.id === id);
 }
@@ -101,12 +105,41 @@ function normalizeTimestamp(value, fallback) {
   return Number.isFinite(time) ? new Date(time).toISOString() : fallback;
 }
 
-function createNewState(now = Date.now()) {
+function applyCharacterCard(state, characterCardId) {
+  const card = characterCardById(characterCardId);
+  if (!card) throw new Error(`没有这个人物卡：${characterCardId}`);
+
+  state.characterCardId = card.id;
+  state.attributes = normalizeAttributes(card.attributes, DEFAULT_ATTRIBUTES, 1, 100);
+
+  for (const [key, delta] of Object.entries(card.resources || {})) {
+    state.resources[key] = Math.max(0, (Number(state.resources[key]) || 0) + Number(delta || 0));
+  }
+
+  for (const [id, level] of Object.entries(card.skills || {})) {
+    if (!itemById(content.skills, id)) continue;
+    const progress = ensureSkillProgress(state, id);
+    progress.level = clamp(Math.floor(Number(level) || 1), 1, 5);
+    progress.exp = Math.max(0, Number(progress.exp) || 0);
+  }
+
+  for (const [id, level] of Object.entries(card.activityLevels || {})) {
+    if (activityById(id)) state.activityLevels[id] = Math.max(1, Math.floor(Number(level) || 1));
+  }
+
+  state.ownedTools = (card.ownedTools || []).filter((id) => itemById(content.tools, id));
+  syncUnlockedSkills(state);
+  clampState(state);
+  return state;
+}
+
+function createNewState(now = Date.now(), options = {}) {
   const role = content.roles[0];
   const timestamp = new Date(now).toISOString();
-  return {
+  const state = {
     profileId: DEFAULT_PROFILE_ID,
     profileName: DEFAULT_PROFILE_NAME,
+    characterCardId: null,
     createdAt: timestamp,
     updatedAt: timestamp,
     resources: {
@@ -151,6 +184,8 @@ function createNewState(now = Date.now()) {
       totalProjects: 0
     }
   };
+  if (options.characterCardId) applyCharacterCard(state, options.characterCardId);
+  return state;
 }
 
 function normalizeState(raw, now = Date.now()) {
@@ -160,6 +195,7 @@ function normalizeState(raw, now = Date.now()) {
     ...raw,
     profileId: normalizeProfileId(raw && raw.profileId) || DEFAULT_PROFILE_ID,
     profileName: normalizeProfileName(raw && raw.profileName, raw && raw.profileId),
+    characterCardId: characterCardById(raw && raw.characterCardId) ? raw.characterCardId : null,
     createdAt: normalizeTimestamp(raw && raw.createdAt, fresh.createdAt),
     updatedAt: normalizeTimestamp(raw && raw.updatedAt, raw && raw.lastTick ? new Date(raw.lastTick).toISOString() : fresh.updatedAt),
     resources: { ...fresh.resources, ...(raw && raw.resources) },
@@ -531,6 +567,48 @@ function formatResourceList(values = {}) {
     .filter(([, value]) => value)
     .map(([key, value]) => `${RESOURCE_NAMES[key] || key} ${value > 0 ? "+" : ""}${formatNumber(value)}`);
   return entries.length ? entries.join("，") : "无";
+}
+
+function getCharacterCardName(characterCardId) {
+  const card = characterCardById(characterCardId);
+  return card ? card.name : "未选择人物卡/旧档案";
+}
+
+function formatCharacterCardAttributes(card) {
+  return ATTRIBUTE_IDS
+    .map((id) => `${ATTRIBUTE_NAMES[id]} ${card.attributes[id]}`)
+    .join("，");
+}
+
+function formatCharacterCardSkills(card) {
+  const entries = Object.entries(card.skills || {}).map(([id, level]) => {
+    const skill = itemById(content.skills, id);
+    return `${skill ? skill.name : id} Lv.${level}`;
+  });
+  return entries.length ? entries.join("，") : "无";
+}
+
+function formatCharacterCardActivityLevels(card) {
+  const entries = Object.entries(card.activityLevels || {}).map(([id, level]) => {
+    const activity = activityById(id);
+    return `${activity ? activity.name : id} Lv.${level}`;
+  });
+  return entries.length ? entries.join("，") : "无";
+}
+
+function formatCharacterCard(card) {
+  return formatLines([
+    `${card.id} - ${card.name}`,
+    `  ${card.description}`,
+    `  属性：${formatCharacterCardAttributes(card)}`,
+    `  资源：${formatResourceList(card.resources)}`,
+    `  技能：${formatCharacterCardSkills(card)}`,
+    `  活动等级：${formatCharacterCardActivityLevels(card)}`
+  ]);
+}
+
+function formatCharacterCards() {
+  return content.characterCards.map(formatCharacterCard).join("\n");
 }
 
 function formatPercent(value) {
@@ -1157,6 +1235,7 @@ function formatState(state) {
   const learnedSkills = content.skills.filter((skill) => getSkillLevel(state, skill.id) > 0).map((skill) => formatSkillProgress(state, skill.id));
   return [
     `档案：${state.profileId} - ${state.profileName}`,
+    `人物卡：${getCharacterCardName(state.characterCardId)}`,
     `职位：${role ? role.name : state.currentRole}`,
     `当前活动：${active ? `${active.name} Lv.${getActivityLevel(state, active.id)}` : "无"}`,
     `当前项目：${activeProject ? `${activeProject.name} ${projectProgress.progressPercent}%（成功率 ${formatPercent(getProjectSuccessRate(state, activeProject))}）` : "无"}`,
@@ -1192,14 +1271,15 @@ function helpText() {
     "  promote                申请晋升",
     "  goals                  查看目标链",
     "  claim [id|all]         领取已完成目标奖励",
+    "  cards                  查看人物卡列表",
     "  profiles               查看角色档案",
-    "  profile new <id> [name] 创建档案并切换",
+    "  profile new <id> --card <cardId> [name] 创建档案并切换",
     "  profile load <id>      保存当前并切换档案",
     "  profile save [id]      保存当前档案或另存为档案",
     "  profile rename <id> <name> 重命名档案",
     "  profile delete <id> confirm 删除档案",
     "  wait <seconds>         快进调试",
-    "  list skills|tools|projects 查看可购买/可提交内容",
+    "  list skills|tools|projects|cards 查看可购买/可提交内容",
     "  save                   保存",
     "  help                   帮助",
     "  quit                   保存并退出"
@@ -1207,6 +1287,7 @@ function helpText() {
 }
 
 function listContent(type) {
+  if (type === "cards") return formatCharacterCards();
   if (type === "skills") {
     return content.skills.map((skill) => {
       const progress = getSkillProgress({ skillProgress: {}, unlockedSkills: [], skillLearningProgress: {} }, skill.id);
@@ -1222,7 +1303,7 @@ function listContent(type) {
       return `${project.id} - ${project.name}，难度 ${project.difficulty}，最少工时 ${formatDuration(getProjectRequiredSeconds(project))}，最高成功率 ${formatPercent(project.maxSuccessRate)}，技能 ${skills}，资源 ${formatResourceList(project.requirements.resources)}，活动 ${formatActivityRequirements({ activityLevels: project.requirements.activityLevels })}`;
     }).join("\n");
   }
-  return "可查看：list skills、list tools、list projects";
+  return "可查看：list skills、list tools、list projects、list cards";
 }
 
 function getResourceEntries(state) {
@@ -1242,6 +1323,24 @@ function getAttributeEntries(state) {
     effective: getEffectiveAttribute(state, id),
     exp: state.attributeExp[id] || 0
   }));
+}
+
+function getInitialCharacterCardAttributeEntries(card) {
+  if (!card) return [];
+  return ATTRIBUTE_IDS.map((id) => ({
+    id,
+    name: ATTRIBUTE_NAMES[id],
+    value: Math.floor(Number(card.attributes[id]) || 0)
+  }));
+}
+
+function getCharacterCardInitialBonuses(card) {
+  if (!card) return null;
+  return {
+    resources: formatResourceList(card.resources),
+    skills: formatCharacterCardSkills(card),
+    activityLevels: formatCharacterCardActivityLevels(card)
+  };
 }
 
 function getActivityOptions(state) {
@@ -1267,6 +1366,24 @@ function getActivityOptions(state) {
       requirements: formatActivityRequirements(activity.requirements),
       output: formatResourceList(activity.effectsPerSecond || {}),
       command: unlocked ? `start ${activity.id}` : null
+    };
+  });
+}
+
+function getCharacterCardOptions(options = {}) {
+  const now = options.now ?? Date.now();
+  return content.characterCards.map((card) => {
+    const nextId = `profile-${new Date(now).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${card.id}`;
+    return {
+      id: card.id,
+      name: card.name,
+      description: card.description,
+      status: "可选择",
+      attributes: formatCharacterCardAttributes(card),
+      resources: formatResourceList(card.resources),
+      skills: formatCharacterCardSkills(card),
+      activityLevels: formatCharacterCardActivityLevels(card),
+      command: `profile new ${nextId} --card ${card.id} ${card.name}`
     };
   });
 }
@@ -1422,6 +1539,7 @@ function getManagementOptions(state, type) {
 
 function getGameViewModel(state) {
   const role = roleById(state.currentRole);
+  const characterCard = characterCardById(state.characterCardId);
   const active = activityById(state.activeActivityId);
   const activeProject = projectById(state.activeProjectId);
   const activeSkill = itemById(content.skills, state.activeSkillLearningId);
@@ -1435,8 +1553,26 @@ function getGameViewModel(state) {
     profile: {
       id: state.profileId,
       name: state.profileName,
+      characterCardId: state.characterCardId,
+      characterCardName: getCharacterCardName(state.characterCardId),
       createdAt: state.createdAt,
       updatedAt: state.updatedAt
+    },
+    characterCard: characterCard ? {
+      id: characterCard.id,
+      name: characterCard.name,
+      description: characterCard.description,
+      background: characterCard.background,
+      initialAttributes: getInitialCharacterCardAttributeEntries(characterCard),
+      initialBonuses: getCharacterCardInitialBonuses(characterCard)
+    } : {
+      id: null,
+      name: getCharacterCardName(null),
+      description: "这个档案创建于人物卡系统之前，未绑定初始人物卡。",
+      background: "",
+      initialAttributes: [],
+      initialBonuses: null,
+      legacy: true
     },
     role: {
       id: state.currentRole,
@@ -1738,6 +1874,8 @@ function profileSummaryFromFile(profileId, savePath, currentProfileId, now = Dat
     return {
       id,
       name: id === DEFAULT_PROFILE_ID ? DEFAULT_PROFILE_NAME : id,
+      characterCardId: null,
+      characterCardName: getCharacterCardName(null),
       current: id === currentProfileId,
       exists: false,
       createdAt: null,
@@ -1750,6 +1888,8 @@ function profileSummaryFromFile(profileId, savePath, currentProfileId, now = Dat
   return {
     id,
     name: state.profileName,
+    characterCardId: state.characterCardId,
+    characterCardName: getCharacterCardName(state.characterCardId),
     current: id === currentProfileId,
     exists: true,
     createdAt: state.createdAt,
@@ -1780,12 +1920,14 @@ function listProfiles(options = {}) {
 
 function formatProfiles(profiles) {
   return formatLines([
+    "新建档案需选择人物卡：profile new <id> --card <cardId> [name]",
     "档案：",
     ...profiles.map((profile) => {
       const marker = profile.current ? "*" : " ";
       const status = profile.exists ? "已创建" : "未创建";
+      const card = profile.characterCardName ? `，人物卡 ${profile.characterCardName}` : "";
       const updatedAt = profile.updatedAt ? `，更新 ${profile.updatedAt}` : "";
-      return `${marker} ${profile.id} - ${profile.name} [${status}]${updatedAt}`;
+      return `${marker} ${profile.id} - ${profile.name} [${status}]${card}${updatedAt}`;
     })
   ]);
 }
@@ -1807,9 +1949,11 @@ function loadProfile(profileId = DEFAULT_PROFILE_ID, now = Date.now(), options =
 function createProfile(profileId, profileName, now = Date.now(), options = {}) {
   const id = normalizeProfileId(profileId);
   if (!id) throw new Error(`非法档案 ID：${profileId}`);
+  if (!options.characterCardId) throw new Error("新建档案必须选择人物卡：profile new <id> --card <cardId> [name]");
+  if (!characterCardById(options.characterCardId)) throw new Error(`没有这个人物卡：${options.characterCardId}`);
   const savePath = resolveProfilePath(id, options.saveRoot);
   if (fs.existsSync(savePath)) throw new Error(`档案已存在：${id}`);
-  const state = applyProfileMetadata(createNewState(now), id, profileName || id, now);
+  const state = applyProfileMetadata(createNewState(now, { characterCardId: options.characterCardId }), id, profileName || id, now);
   saveProfile(state, { saveRoot: options.saveRoot, now });
   return state;
 }
@@ -1833,14 +1977,13 @@ function replaceStateContents(target, source) {
 
 function getProfileOptions(state, options = {}) {
   const profiles = listProfiles({ saveRoot: options.saveRoot, currentProfileId: state.profileId, now: options.now });
-  const nextId = `profile-${new Date(options.now ?? Date.now()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}`;
   return [
     {
       id: "profile-new",
       name: "新建档案",
-      description: `创建并切换到 ${nextId}。CLI 可用 profile new <id> <name> 自定义。`,
-      status: "可创建",
-      command: `profile new ${nextId} 新档案`
+      description: "新建档案必须先选择人物卡。切到 C 人物卡面板，或使用 profile new <id> --card <cardId> [name]。",
+      status: "需选择人物卡",
+      command: null
     },
     {
       id: "profile-save",
@@ -1852,13 +1995,35 @@ function getProfileOptions(state, options = {}) {
     ...profiles.map((profile) => ({
       id: profile.id,
       name: profile.name,
-      description: `${profile.id}${profile.updatedAt ? `，更新 ${profile.updatedAt}` : ""}`,
+      description: `${profile.id}，人物卡 ${profile.characterCardName}${profile.updatedAt ? `，更新 ${profile.updatedAt}` : ""}`,
       status: profile.current ? "当前" : profile.exists ? "可加载" : "未创建",
       command: profile.current ? null : `profile load ${profile.id}`,
       deleteCommand: profile.id !== DEFAULT_PROFILE_ID && !profile.current ? `profile delete ${profile.id} confirm` : null,
       current: profile.current
     }))
   ];
+}
+
+function parseProfileNewArgs(args) {
+  const [id, ...rest] = args;
+  let characterCardId = null;
+  const nameParts = [];
+  for (let index = 0; index < rest.length; index += 1) {
+    const part = rest[index];
+    if (part === "--card") {
+      characterCardId = rest[index + 1] || null;
+      index += 1;
+    } else {
+      nameParts.push(part);
+    }
+  }
+  return { id, characterCardId, profileName: nameParts.join(" ") || id };
+}
+
+function shouldAutosaveCurrentProfile(state, options = {}) {
+  const id = normalizeProfileId(state.profileId) || DEFAULT_PROFILE_ID;
+  if (state.characterCardId) return true;
+  return fs.existsSync(resolveProfilePath(id, options.saveRoot));
 }
 
 function processProfileCommand(state, args, options = {}) {
@@ -1870,17 +2035,18 @@ function processProfileCommand(state, args, options = {}) {
       case undefined:
         return formatProfiles(listProfiles({ saveRoot: options.saveRoot, currentProfileId: state.profileId, now }));
       case "new": {
-        if (!id) return "用法：profile new <id> [name]";
-        saveProfile(state, { saveRoot: options.saveRoot, now });
-        const profileName = rest.join(" ") || id;
-        const next = createProfile(id, profileName, now, { saveRoot: options.saveRoot });
+        if (!id) return "用法：profile new <id> --card <cardId> [name]";
+        const parsed = parseProfileNewArgs([id, ...rest]);
+        if (!parsed.characterCardId) return "新建档案必须选择人物卡：profile new <id> --card <cardId> [name]";
+        if (shouldAutosaveCurrentProfile(state, options)) saveProfile(state, { saveRoot: options.saveRoot, now });
+        const next = createProfile(parsed.id, parsed.profileName, now, { saveRoot: options.saveRoot, characterCardId: parsed.characterCardId });
         replaceStateContents(state, next);
-        return `已创建并切换到档案：${state.profileId} - ${state.profileName}。`;
+        return `已创建并切换到档案：${state.profileId} - ${state.profileName}（${getCharacterCardName(state.characterCardId)}）。`;
       }
       case "load": {
         if (!id) return "用法：profile load <id>";
         if (id === state.profileId) return `已经在档案 ${state.profileId}。`;
-        saveProfile(state, { saveRoot: options.saveRoot, now });
+        if (shouldAutosaveCurrentProfile(state, options)) saveProfile(state, { saveRoot: options.saveRoot, now });
         const next = loadProfile(id, now, { saveRoot: options.saveRoot });
         replaceStateContents(state, next);
         return `已切换到档案：${state.profileId} - ${state.profileName}。`;
@@ -1908,7 +2074,7 @@ function processProfileCommand(state, args, options = {}) {
         return `已删除档案：${id}。`;
       }
       default:
-        return "用法：profiles 或 profile list|new|load|save|rename|delete";
+        return "用法：profiles 或 profile list|new|load|save|rename|delete；新建：profile new <id> --card <cardId> [name]";
     }
   } catch (error) {
     return error && error.message ? error.message : String(error);
@@ -1966,6 +2132,9 @@ function processCommand(state, input, options = {}) {
     case "profiles":
       messages.push(formatProfiles(listProfiles({ saveRoot: options.saveRoot, currentProfileId: state.profileId, now })));
       break;
+    case "cards":
+      messages.push(formatCharacterCards());
+      break;
     case "profile":
       messages.push(processProfileCommand(state, args, { ...options, now }));
       break;
@@ -2020,8 +2189,11 @@ function saveGame(state, savePath = SAVE_PATH) {
   fs.writeFileSync(savePath, JSON.stringify(state, null, 2));
 }
 
-function startCli() {
-  const state = loadProfile(DEFAULT_PROFILE_ID);
+function defaultProfileExists(saveRoot) {
+  return fs.existsSync(resolveProfilePath(DEFAULT_PROFILE_ID, saveRoot));
+}
+
+function startCliSession(state) {
   const offline = settleTime(state, Date.now(), { randomEvents: true });
   saveProfile(state);
 
@@ -2087,6 +2259,37 @@ function startCli() {
   });
 }
 
+function startCli() {
+  if (!defaultProfileExists()) {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      console.log("首次创建 default 档案必须选择人物卡。");
+      console.log("可用人物卡：");
+      console.log(formatCharacterCards());
+      console.log("用法：profile new default --card <cardId> 默认档案");
+      return;
+    }
+
+    console.log("首次创建 default 档案，请选择人物卡：");
+    console.log(formatCharacterCards());
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question("输入人物卡 id> ", (answer) => {
+      const characterCardId = String(answer || "").trim();
+      try {
+        const state = createProfile(DEFAULT_PROFILE_ID, DEFAULT_PROFILE_NAME, Date.now(), { characterCardId });
+        rl.close();
+        startCliSession(state);
+      } catch (error) {
+        console.log(error && error.message ? error.message : String(error));
+        rl.close();
+        startCli();
+      }
+    });
+    return;
+  }
+
+  startCliSession(loadProfile(DEFAULT_PROFILE_ID));
+}
+
 if (require.main === module) {
   startCli();
 }
@@ -2100,10 +2303,14 @@ module.exports = {
   addAttributeExp,
   buyTool,
   claimGoal,
+  applyCharacterCard,
+  characterCardById,
   createNewState,
   createProfile,
   deleteProfile,
+  defaultProfileExists,
   formatActivities,
+  formatCharacterCards,
   formatChangedResources,
   formatGoals,
   formatGoalSummary,
@@ -2114,6 +2321,7 @@ module.exports = {
   getActivityProgress,
   getBaseAttribute,
   getBreakthrough,
+  getCharacterCardOptions,
   getEffectiveAttribute,
   getGameViewModel,
   getGoalOptions,
