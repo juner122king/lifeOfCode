@@ -724,7 +724,7 @@ function formatActivities(state) {
       const status = state.activeActivityId === activity.id
         ? "进行中"
         : activityUnlocked(state, activity) ? "可开始" : "未解锁";
-      return `${activity.id} - ${activity.name} [${status}] Lv.${progress.level} ${formatNumber(progress.exp)}/${formatNumber(progress.next)}，解锁：${formatActivityRequirements(activity.requirements)}。${activity.description}`;
+      return `${activity.id} - ${activity.name} [${status}] Lv.${progress.level} 等级经验 ${formatNumber(progress.exp)}/${formatNumber(progress.next)}，解锁：${formatActivityRequirements(activity.requirements)}。${activity.description}`;
     })
   ]);
 }
@@ -1238,8 +1238,8 @@ function formatState(state) {
     `人物卡：${getCharacterCardName(state.characterCardId)}`,
     `职位：${role ? role.name : state.currentRole}`,
     `当前活动：${active ? `${active.name} Lv.${getActivityLevel(state, active.id)}` : "无"}`,
-    `当前项目：${activeProject ? `${activeProject.name} ${projectProgress.progressPercent}%（成功率 ${formatPercent(getProjectSuccessRate(state, activeProject))}）` : "无"}`,
-    `当前学习：${activeSkill ? `${activeSkill.name} ${skillLearningProgress.progressPercent}%` : "无"}`,
+    `当前项目：${activeProject ? `${activeProject.name} 工时 ${projectProgress.progressPercent}%（成功率 ${formatPercent(getProjectSuccessRate(state, activeProject))}）` : "无"}`,
+    `当前学习：${activeSkill ? `${activeSkill.name} 学习 ${skillLearningProgress.progressPercent}%` : "无"}`,
     `代码：${formatNumber(state.resources.codeLines)}  经验：${formatNumber(state.resources.exp)}  金钱：${formatNumber(state.resources.money)}  知识：${formatNumber(state.resources.knowledge)}`,
     `测试：${formatNumber(state.resources.tests)}  文档：${formatNumber(state.resources.docs)}  架构：${formatNumber(state.resources.architecture)}  线索：${formatNumber(state.resources.leads)}`,
     `精力：${formatNumber(state.resources.energy)}  压力：${formatNumber(state.resources.pressure)}  Bug：${formatNumber(state.resources.bugs)}  技术债：${formatNumber(state.resources.techDebt)}  声望：${formatNumber(state.resources.reputation)}`,
@@ -1363,6 +1363,9 @@ function getActivityOptions(state) {
       exp: progress.exp,
       nextExp: progress.next,
       progressPercent: progress.next > 0 ? Math.min(100, Math.floor(progress.exp / progress.next * 100)) : 100,
+      progressLabel: "等级进度",
+      progressActive: active,
+      progressText: `${formatNumber(progress.exp)}/${formatNumber(progress.next)}`,
       requirements: formatActivityRequirements(activity.requirements),
       output: formatResourceList(activity.effectsPerSecond || {}),
       command: unlocked ? `start ${activity.id}` : null
@@ -1432,6 +1435,21 @@ function getManagementOptions(state, type) {
       const missingAttributes = learned ? [] : missingAttributeRequirements(state, skill.attributeRequirements);
       const learnable = !learned && resourceAffordable && missingAttributes.length === 0;
       const canUpgrade = learned && progress.level < 5 && progress.exp >= SKILL_EXP_THRESHOLDS[progress.level] && canAfford(state.resources, getSkillUpgradeCost(skill, progress.level + 1)) && missingAttributeRequirements(state, getSkillUpgradeAttributeRequirements(skill, progress.level + 1)).length === 0;
+      const progressFields = !learned && (learning || paid || learningProgress.workedSeconds > 0)
+        ? {
+            progressLabel: "学习进度",
+            progressPercent: learningProgress.progressPercent,
+            progressActive: learning,
+            progressText: `${formatDuration(learningProgress.workedSeconds)}/${formatDuration(learningProgress.requiredSeconds)}`
+          }
+        : learned && progress.next > 0
+          ? {
+              progressLabel: "升级经验",
+              progressPercent: Math.min(100, Math.floor(progress.exp / progress.next * 100)),
+              progressActive: false,
+              progressText: `${formatNumber(progress.exp)}/${formatNumber(progress.next)}`
+            }
+          : {};
       const status = learned
         ? progress.level >= 5 ? "满级" : canUpgrade ? "可升级" : "已学习"
         : learning ? "学习中" : missingAttributes.length ? "属性不足" : resourceAffordable ? "可学习" : "资源不足";
@@ -1464,6 +1482,7 @@ function getManagementOptions(state, type) {
         exp: progress.exp,
         nextExp: progress.next,
         learningProgress,
+        ...progressFields,
         command: learned ? (canUpgrade ? `upgrade ${skill.id}` : null) : `learn ${skill.id}`
       };
     });
@@ -1513,6 +1532,9 @@ function getManagementOptions(state, type) {
         workedSeconds: progress.workedSeconds,
         requiredSeconds: progress.requiredSeconds,
         progressPercent: progress.progressPercent,
+        progressLabel: "工时进度",
+        progressActive: active,
+        progressText: `${formatDuration(progress.workedSeconds)}/${formatDuration(progress.requiredSeconds)}`,
         resourcesPaid: progress.resourcesPaid,
         command: `project ${project.id}`
       };

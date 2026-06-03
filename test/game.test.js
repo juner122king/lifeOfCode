@@ -284,6 +284,7 @@ test("activities 展示活动列表、等级、锁定状态和当前状态", () 
   const message = formatActivities(state);
 
   assert.match(message, /feature-coding - 写功能 \[进行中\] Lv\.1/);
+  assert.match(message, /等级经验/);
   assert.match(message, /architecture - 架构设计 \[未解锁\]/);
   assert.match(message, /rest - 休息恢复/);
 });
@@ -929,6 +930,11 @@ test("activity options 标出锁定、当前活动、等级和命令", () => {
   assert.equal(active.active, true);
   assert.equal(active.command, "start feature-coding");
   assert.equal(active.level, 1);
+  assert.equal(active.progressLabel, "等级进度");
+  assert.equal(active.progressPercent, 0);
+  assert.equal(active.progressActive, true);
+  assert.match(active.progressText, /0\/100/);
+  assert.equal(options.find((item) => item.id === "study").progressActive, false);
   assert.equal(locked.status, "未解锁");
   assert.equal(locked.command, null);
 });
@@ -968,6 +974,58 @@ test("management options 标出技能、工具和项目动作状态", () => {
   assert.match(project.effects, /难度 1/);
   assert.match(project.effects, /成功率/);
   assert.equal(promoteAction.command, "promote");
+});
+
+test("skill options use explicit progress semantics", () => {
+  const learningState = createNewState();
+  learningState.resources.knowledge = 60;
+  learningState.resources.exp = 100;
+  learningState.resources.money = 100;
+
+  const unstarted = getManagementOptions(learningState, "skills").find((item) => item.id === "html-css");
+  assert.equal(unstarted.progressPercent, undefined);
+
+  learnSkill(learningState, "html-css");
+  const learning = getManagementOptions(learningState, "skills").find((item) => item.id === "html-css");
+  assert.equal(learning.progressLabel, "学习进度");
+  assert.equal(learning.progressPercent, 0);
+  assert.equal(learning.progressActive, true);
+  assert.match(formatState(learningState), /当前学习：HTML\/CSS 学习 0%/);
+
+  const learnedState = createNewState();
+  unlockSkill(learnedState, "html-css", 1, 60);
+  const learned = getManagementOptions(learnedState, "skills").find((item) => item.id === "html-css");
+  assert.equal(learned.progressLabel, "升级经验");
+  assert.equal(learned.progressPercent, 50);
+  assert.equal(learned.progressActive, false);
+
+  const maxedState = createNewState();
+  unlockSkill(maxedState, "html-css", 5, 0);
+  const maxed = getManagementOptions(maxedState, "skills").find((item) => item.id === "html-css");
+  assert.equal(maxed.progressPercent, undefined);
+});
+
+test("project options mark work progress and animate only the active project", () => {
+  const state = createNewState();
+  state.resources.codeLines = 100;
+  state.resources.docs = 10;
+  state.resources.exp = 100;
+  state.resources.money = 100;
+  state.resources.knowledge = 30;
+  state.activityLevels["feature-coding"] = 2;
+  unlockSkill(state, "html-css");
+
+  submitProject(state, "homepage");
+  let project = getManagementOptions(state, "projects").find((item) => item.id === "homepage");
+  assert.equal(project.progressLabel, "工时进度");
+  assert.equal(project.progressActive, true);
+
+  assert.match(formatState(state), /当前项目：个人主页 工时 0%（成功率/);
+
+  stopActivity(state);
+  project = getManagementOptions(state, "projects").find((item) => item.id === "homepage");
+  assert.equal(project.status, "已暂停");
+  assert.equal(project.progressActive, false);
 });
 
 test("profile options 为 TUI 提供新建、保存和切换动作", () => {

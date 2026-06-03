@@ -14,6 +14,13 @@ const {
   saveProfile,
   settleTime
 } = require("./game");
+const {
+  THEME,
+  renderProgressBar,
+  toneForLog,
+  toneForResource,
+  toneForStatus
+} = require("./tuiTheme");
 
 const PANELS = [
   { id: "profiles", label: "档案", key: "F" },
@@ -32,9 +39,37 @@ function trimText(value, length) {
   return text.length > length ? `${text.slice(0, Math.max(0, length - 1))}…` : text;
 }
 
-function pushLogs(current, messages) {
-  const entries = messages.filter(Boolean).flatMap((message) => String(message).split("\n").filter(Boolean));
-  return [...entries, ...current].slice(0, MAX_LOGS);
+function normalizeLogMessages(messages) {
+  return messages.filter(Boolean).flatMap((message) => String(message).split("\n").filter(Boolean));
+}
+
+function createLogEntries(messages, startId = 0) {
+  let nextId = Math.max(0, Math.floor(Number(startId) || 0));
+  const entries = normalizeLogMessages(messages).map((text) => ({
+    id: nextId++,
+    text
+  }));
+  return { entries, nextId };
+}
+
+function appendLogEntries(current, entries, maxLogs = MAX_LOGS) {
+  const safeMax = Math.max(1, Math.floor(Number(maxLogs) || MAX_LOGS));
+  return [...current, ...entries].slice(-safeMax);
+}
+
+function getLogRows(logs, maxLogs = MAX_LOGS) {
+  const safeMax = Math.max(1, Math.floor(Number(maxLogs) || MAX_LOGS));
+  const visible = logs.slice(-safeMax);
+  if (!visible.length) {
+    return [
+      ...Array.from({ length: safeMax - 1 }, (_, index) => ({ id: `empty-${index}`, text: "", empty: true })),
+      { id: "empty-message", text: "暂无日志。", empty: true }
+    ];
+  }
+  return [
+    ...Array.from({ length: safeMax - visible.length }, (_, index) => ({ id: `empty-${index}`, text: "", empty: true })),
+    ...visible
+  ];
 }
 
 function commandForPanel(panelId, option) {
@@ -68,13 +103,61 @@ async function startTui() {
   const { Box, Text, render, useApp, useInput } = ink;
   const { useEffect, useMemo, useReducer, useRef, useState } = React;
 
+  function SectionTitle({ children, color = THEME.title }) {
+    return h(Text, { bold: true, color }, children);
+  }
+
+  function Badge({ status }) {
+    const tone = toneForStatus(status);
+    return h(Text, { color: tone.color, dimColor: tone.dim, bold: tone.label === "ready" || tone.label === "live" }, `[${status}]`);
+  }
+
+  function KeyHint({ label, text }) {
+    return h(Text, null,
+      h(Text, { bold: true, color: THEME.title }, ` ${label} `),
+      h(Text, { color: THEME.muted }, text)
+    );
+  }
+
+  function Progress({ percent, width = 14, animated = true }) {
+    const [tick, setTick] = useState(0);
+    useEffect(() => {
+      if (!animated) return undefined;
+      const timer = setInterval(() => {
+        setTick((value) => value + 1);
+      }, 500);
+      return () => clearInterval(timer);
+    }, [animated]);
+    return h(Text, { color: percent >= 100 ? THEME.status.done : THEME.status.info }, renderProgressBar(percent, width, tick, animated));
+  }
+
   function Header({ view, paused }) {
     const active = view.activeActivity ? `${view.activeActivity.name} Lv.${view.activeActivity.level}` : "无";
-    const project = view.activeProject ? `${view.activeProject.name} ${view.activeProject.progressPercent}% 成功率 ${Math.round(view.activeProject.successRate * 100)}%` : "无";
-    const learning = view.activeSkillLearning ? `${view.activeSkillLearning.name} ${view.activeSkillLearning.progressPercent}%` : "无";
-    return h(Box, { borderStyle: "round", paddingX: 1, flexDirection: "column" },
-      h(Text, { bold: true }, `《${view.title}》  ${view.profile.id}/${view.profile.name}  人物卡：${view.profile.characterCardName}  ${view.role.name}  当前活动：${active}  当前项目：${project}  当前学习：${learning}  ${paused ? "已暂停" : "自动结算中"}`),
-      h(Text, null, view.nextAdvice)
+    const project = view.activeProject ? `${view.activeProject.name} 工时 ${view.activeProject.progressPercent}% 成功率 ${Math.round(view.activeProject.successRate * 100)}%` : "无";
+    const learning = view.activeSkillLearning ? `${view.activeSkillLearning.name} 学习 ${view.activeSkillLearning.progressPercent}%` : "无";
+    return h(Box, { borderStyle: "round", borderColor: THEME.title, paddingX: 1, flexDirection: "column" },
+      h(Box, { gap: 1 },
+        h(Text, { bold: true, color: THEME.title }, `《${view.title}》`),
+        h(Text, { color: THEME.muted }, `${view.profile.id}/${view.profile.name}`),
+        h(Text, { color: THEME.panels.cards }, `人物卡：${view.profile.characterCardName}`),
+        h(Text, { color: THEME.status.info }, view.role.name),
+        paused
+          ? h(Text, { color: THEME.status.paused, bold: true }, "暂停")
+          : h(Text, { color: THEME.status.good }, "自动结算")
+      ),
+      h(Box, { gap: 2 },
+        h(Text, null, h(Text, { color: THEME.panels.activities }, "活动 "), active),
+        h(Text, null, h(Text, { color: THEME.panels.projects }, "项目 "), project),
+        h(Text, null, h(Text, { color: THEME.panels.skills }, "学习 "), learning)
+      ),
+      h(Text, { color: THEME.muted }, view.nextAdvice)
+    );
+  }
+
+  function ResourceLine({ item }) {
+    const tone = toneForResource(item);
+    return h(Text, { color: tone.color, bold: tone.label === "critical" },
+      `${item.name.padEnd(4, " ")} ${String(item.value).padStart(4, " ")}`
     );
   }
 
@@ -84,37 +167,41 @@ async function startTui() {
     const attrs = view.attributes.map((attr) => `${attr.name} ${attr.value}${attr.breakthrough ? `(+${attr.breakthrough})` : ""}`);
     const activityLevels = view.activityLevels.map((activity) => `${activity.active ? "*" : ""}${activity.name} Lv.${activity.level}`);
     return h(Box, { gap: 2 },
-      h(Box, { borderStyle: "single", paddingX: 1, flexDirection: "column", flexGrow: 1 },
-        h(Text, { bold: true }, "资源"),
+      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", flexGrow: 1 },
+        h(SectionTitle, { color: THEME.status.info }, "资源"),
         h(Box, { gap: 2 },
           h(Box, { flexDirection: "column" },
-            ...leftResources.map((item) => h(Text, { key: item.id }, `${item.name.padEnd(4, " ")} ${item.value}`))
+            ...leftResources.map((item) => h(ResourceLine, { key: item.id, item }))
           ),
           h(Box, { flexDirection: "column" },
-            ...rightResources.map((item) => h(Text, { key: item.id }, `${item.name.padEnd(4, " ")} ${item.value}`))
+            ...rightResources.map((item) => h(ResourceLine, { key: item.id, item }))
           )
         )
       ),
-      h(Box, { borderStyle: "single", paddingX: 1, flexDirection: "column", flexGrow: 1 },
-        h(Text, { bold: true }, "属性"),
+      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", flexGrow: 1 },
+        h(SectionTitle, { color: THEME.panels.cards }, "成长"),
         h(Text, null, attrs.slice(0, 3).join("  ")),
         h(Text, null, attrs.slice(3).join("  ")),
-        h(Text, null, `目标可领取：${view.goals.claimableCount}`),
-        h(Text, null, `累计活动：${view.stats.totalActiveSeconds}s`),
-        h(Text, { bold: true }, "活动等级"),
-        h(Text, null, activityLevels.slice(0, 5).join("  ")),
-        h(Text, null, activityLevels.slice(5).join("  "))
+        h(Text, null, `目标可领取：${view.goals.claimableCount}  累计活动：${view.stats.totalActiveSeconds}s`),
+        h(Text, { color: THEME.muted }, activityLevels.slice(0, 5).join("  ")),
+        h(Text, { color: THEME.muted }, activityLevels.slice(5).join("  "))
       )
     );
   }
 
   function TabBar({ activePanel }) {
     return h(Box, { gap: 1 },
-      ...PANELS.map((panel) => h(Text, {
-        key: panel.id,
-        inverse: panel.id === activePanel,
-        bold: panel.id === activePanel
-      }, ` ${panel.key} ${panel.label} `))
+      ...PANELS.map((panel) => {
+        const active = panel.id === activePanel;
+        const color = THEME.panels[panel.id] || THEME.status.neutral;
+        return h(Text, {
+          key: panel.id,
+          color,
+          inverse: active,
+          bold: active,
+          dimColor: !active
+        }, ` ${panel.key} ${panel.label} `);
+      })
     );
   }
 
@@ -126,30 +213,49 @@ async function startTui() {
     return [];
   }
 
+  function optionProgress(option) {
+    if (!Number.isFinite(option.progressPercent)) return null;
+    return {
+      label: option.progressLabel || "进度",
+      percent: option.progressPercent,
+      active: option.progressActive === true,
+      text: option.progressText || ""
+    };
+  }
+
+  function optionDetail(option) {
+    return option.progress
+      ? option.progress
+      : [
+          option.attributes && `属性 ${option.attributes}`,
+          option.resources && `资源 ${option.resources}`,
+          option.skills && `技能 ${option.skills}`,
+          option.activityLevels && `活动 ${option.activityLevels}`,
+          option.effects && `作用 ${option.effects}`,
+          option.cost && `花费 ${option.cost}`,
+          option.missing && `缺口 ${option.missing}`
+        ].filter(Boolean).join("；");
+  }
+
   function MainPanel({ activePanel, options, selectedIndex }) {
-    return h(Box, { borderStyle: "round", paddingX: 1, flexDirection: "column", minHeight: 12 },
+    const accent = THEME.panels[activePanel] || THEME.panel;
+    return h(Box, { borderStyle: "round", borderColor: accent, paddingX: 1, flexDirection: "column", minHeight: 12 },
       ...options.map((option, index) => {
         const selected = index === selectedIndex;
         const command = commandForPanel(activePanel, option);
-        const marker = selected ? ">" : " ";
-        const action = command ? "Enter" : "";
-        const detail = option.progress
-          ? option.progress
-          : [
-              option.attributes && `属性 ${option.attributes}`,
-              option.resources && `资源 ${option.resources}`,
-              option.skills && `技能 ${option.skills}`,
-              option.activityLevels && `活动 ${option.activityLevels}`,
-              option.effects && `作用 ${option.effects}`,
-              option.cost && `花费 ${option.cost}`,
-              option.missing && `缺口 ${option.missing}`
-            ].filter(Boolean).join("；");
+        const progress = optionProgress(option);
         return h(Box, { key: option.id, flexDirection: "column" },
-          h(Text, { inverse: selected, bold: selected },
-            `${marker} ${option.name} [${option.status}] ${action}`
+          h(Box, { gap: 1 },
+            h(Text, { color: selected ? accent : THEME.muted, bold: selected }, selected ? ">" : " "),
+            h(Text, { color: selected ? accent : THEME.text, bold: selected }, option.name),
+            h(Badge, { status: option.status }),
+            command ? h(Text, { color: THEME.muted }, "Enter") : null,
+            progress ? h(Text, { color: THEME.muted }, progress.label) : null,
+            progress ? h(Progress, { percent: progress.percent, width: 12, animated: progress.active }) : null,
+            progress && progress.text ? h(Text, { color: THEME.muted }, progress.text) : null
           ),
-          h(Text, { dimColor: true },
-            `  ${trimText([option.description, detail].filter(Boolean).join("  "), 100)}`
+          h(Text, { color: selected ? THEME.text : THEME.muted, dimColor: !selected },
+            `  ${trimText([option.description, optionDetail(option)].filter(Boolean).join("  "), 106)}`
           )
         );
       })
@@ -171,37 +277,56 @@ async function startTui() {
       .map((skill) => `${skill.name} ${skill.levelName}`);
     const activityLevels = view.activityLevels.map((activity) => `${activity.active ? "*" : ""}${activity.name} Lv.${activity.level}`);
 
-    return h(Box, { borderStyle: "round", paddingX: 1, flexDirection: "column", minHeight: 12 },
-      h(Text, { bold: true }, `${card.name}${card.id ? ` (${card.id})` : ""}`),
-      h(Text, { dimColor: true }, trimText(card.description, 110)),
-      card.background ? h(Text, { dimColor: true }, trimText(card.background, 110)) : null,
-      h(Text, { bold: true }, "初始卡面属性"),
+    return h(Box, { borderStyle: "round", borderColor: THEME.panels.cards, paddingX: 1, flexDirection: "column", minHeight: 12 },
+      h(Text, { bold: true, color: THEME.panels.cards }, `${card.name}${card.id ? ` (${card.id})` : ""}`),
+      h(Text, { color: THEME.muted }, trimText(card.description, 110)),
+      card.background ? h(Text, { color: THEME.muted }, trimText(card.background, 110)) : null,
+      h(SectionTitle, { color: THEME.status.info }, "初始卡面属性"),
       h(Text, null, initialAttrs.slice(0, 3).join("  ")),
       h(Text, null, initialAttrs.slice(3).join("  ")),
-      h(Text, { bold: true }, "当前属性"),
-      h(Text, null, currentAttrs.slice(0, 3).join("  ")),
-      h(Text, null, currentAttrs.slice(3).join("  ")),
-      h(Text, { bold: true }, "初始配置"),
+      h(SectionTitle, { color: THEME.status.good }, "当前属性"),
+      h(Text, { color: THEME.text }, currentAttrs.slice(0, 3).join("  ")),
+      h(Text, { color: THEME.text }, currentAttrs.slice(3).join("  ")),
+      h(SectionTitle, { color: THEME.status.info }, "初始配置"),
       h(Text, null, card.initialBonuses ? `资源：${card.initialBonuses.resources}` : "资源：未记录"),
       h(Text, null, card.initialBonuses ? `技能：${card.initialBonuses.skills}` : "技能：未记录"),
       h(Text, null, card.initialBonuses ? `活动等级：${card.initialBonuses.activityLevels}` : "活动等级：未记录"),
-      h(Text, { bold: true }, "当前成长"),
-      h(Text, null, `技能：${learnedSkills.length ? learnedSkills.join("，") : "暂无"}`),
-      h(Text, null, activityLevels.slice(0, 5).join("  ")),
-      h(Text, null, activityLevels.slice(5).join("  "))
+      h(SectionTitle, { color: THEME.title }, "当前成长"),
+      h(Text, { color: learnedSkills.length ? THEME.status.good : THEME.muted }, `技能：${learnedSkills.length ? learnedSkills.join("，") : "暂无"}`),
+      h(Text, { color: THEME.muted }, activityLevels.slice(0, 5).join("  ")),
+      h(Text, { color: THEME.muted }, activityLevels.slice(5).join("  "))
     );
   }
 
   function LogPanel({ logs }) {
-    return h(Box, { borderStyle: "single", paddingX: 1, flexDirection: "column", minHeight: 5 },
-      h(Text, { bold: true }, "日志"),
-      ...(logs.length ? logs : ["暂无日志。"]).map((log, index) => h(Text, { key: `${index}-${log}` }, trimText(log, 110)))
+    const rows = getLogRows(logs);
+    const latestId = logs.length ? logs[logs.length - 1].id : null;
+    return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", minHeight: 5 },
+      h(SectionTitle, { color: THEME.title }, "日志"),
+      ...rows.map((log) => {
+        const tone = log.empty
+          ? { color: THEME.muted, bold: false, dim: true }
+          : toneForLog(log.text, log.id === latestId ? 0 : 1);
+        return h(Text, {
+          key: log.id,
+          color: tone.color,
+          bold: tone.bold,
+          dimColor: tone.dim
+        }, trimText(log.text || " ", 110));
+      })
     );
   }
 
+  const MemoLogPanel = React.memo(LogPanel);
+
   function Footer({ paused }) {
-    return h(Box, { borderStyle: "single", paddingX: 1 },
-      h(Text, null, `Tab 切换  ↑/↓ 选择  Enter 执行/加载  D 两次删除档案  Space ${paused ? "恢复" : "暂停"}  Q 保存退出`)
+    return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
+      h(KeyHint, { label: "Tab", text: "切换" }),
+      h(KeyHint, { label: "↑/↓", text: "选择" }),
+      h(KeyHint, { label: "Enter", text: "执行/加载" }),
+      h(KeyHint, { label: "D D", text: "删除档案" }),
+      h(KeyHint, { label: "Space", text: paused ? "恢复" : "暂停" }),
+      h(KeyHint, { label: "Q", text: "保存退出" })
     );
   }
 
@@ -214,18 +339,26 @@ async function startTui() {
     const [pendingDeleteProfileId, setPendingDeleteProfileId] = useState(null);
     const [logs, setLogs] = useState([]);
     const [revision, refresh] = useReducer((value) => value + 1, 0);
+    const nextLogIdRef = useRef(0);
     const { exit } = useApp();
+
+    function addLogs(messages) {
+      const created = createLogEntries(messages, nextLogIdRef.current);
+      if (!created.entries.length) return;
+      nextLogIdRef.current = created.nextId;
+      setLogs((current) => appendLogEntries(current, created.entries));
+    }
 
     useEffect(() => {
       if (needsInitialProfile) {
-        setLogs((current) => pushLogs(current, ["请选择人物卡创建 default 档案。"]));
+        addLogs(["请选择人物卡创建 default 档案。"]);
         refresh();
         return;
       }
       const offline = settleTime(stateRef.current, Date.now(), { randomEvents: true });
       saveProfile(stateRef.current);
       if (offline.seconds > 0 || offline.messages.length) {
-        setLogs((current) => pushLogs(current, [`离线结算 ${offline.seconds} 秒。`, ...offline.messages]));
+        addLogs([`离线结算 ${offline.seconds} 秒。`, ...offline.messages]);
       }
       refresh();
     }, []);
@@ -235,7 +368,7 @@ async function startTui() {
         if (needsInitialProfile) return;
         if (paused) return;
         const result = settleTime(stateRef.current, Date.now(), { randomEvents: true });
-        if (result.messages.length) setLogs((current) => pushLogs(current, result.messages));
+        if (result.messages.length) addLogs(result.messages);
         saveProfile(stateRef.current);
         refresh();
       }, 3000);
@@ -288,17 +421,17 @@ async function startTui() {
             const next = createProfile("default", "默认档案", Date.now(), { characterCardId: selectedOption.id });
             replaceStateContents(stateRef.current, next);
             setActivePanel("activities");
-            setLogs((current) => pushLogs(current, [`已创建 default - 默认档案（${selectedOption.name}）。`]));
+            addLogs([`已创建 default - 默认档案（${selectedOption.name}）。`]);
             refresh();
           } catch (error) {
-            setLogs((current) => pushLogs(current, [error && error.message ? error.message : String(error)]));
+            addLogs([error && error.message ? error.message : String(error)]);
           }
           return;
         }
         const command = commandForPanel(activePanel, selectedOption);
         if (!command) return;
         const result = processCommand(stateRef.current, command, { randomEvents: true });
-        setLogs((current) => pushLogs(current, [`> ${command}`, ...result.messages]));
+        addLogs([`> ${command}`, ...result.messages]);
         if (result.exit) exit();
         refresh();
       }
@@ -308,11 +441,11 @@ async function startTui() {
         if (!command) return;
         if (pendingDeleteProfileId !== option.id) {
           setPendingDeleteProfileId(option.id);
-          setLogs((current) => pushLogs(current, [`再次按 D 删除档案：${option.id}`]));
+          addLogs([`再次按 D 删除档案：${option.id}`]);
           return;
         }
         const result = processCommand(stateRef.current, command, { randomEvents: true });
-        setLogs((current) => pushLogs(current, [`> ${command}`, ...result.messages]));
+        addLogs([`> ${command}`, ...result.messages]);
         setPendingDeleteProfileId(null);
         refresh();
       }
@@ -325,7 +458,7 @@ async function startTui() {
       activePanel === "cards" && !needsInitialProfile
         ? h(CharacterCardPanel, { view })
         : h(MainPanel, { activePanel, options, selectedIndex }),
-      h(LogPanel, { logs }),
+      h(MemoLogPanel, { logs }),
       h(Footer, { paused })
     );
   }
@@ -340,4 +473,11 @@ if (require.main === module) {
   });
 }
 
-module.exports = { startTui };
+module.exports = {
+  MAX_LOGS,
+  appendLogEntries,
+  createLogEntries,
+  getLogRows,
+  normalizeLogMessages,
+  startTui
+};
