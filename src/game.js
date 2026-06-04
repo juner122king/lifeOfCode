@@ -673,6 +673,11 @@ function formatSkillExpRewards(gained = {}) {
   return entries.length ? `技能经验：${entries.join("，")}` : "";
 }
 
+function formatDifficultyLabel(difficulty) {
+  const value = clamp(Math.floor(Number(difficulty) || 1), 1, 5);
+  return `${"★".repeat(value)}${"☆".repeat(5 - value)}（难度 ${value}）`;
+}
+
 function getMultipliers(state) {
   const multipliers = { code: 1, exp: 1, money: 1, bug: 1, debt: 1, pressure: 1 };
   const apply = (item, level = 1) => {
@@ -800,6 +805,13 @@ function formatResourceList(values = {}) {
   const entries = Object.entries(values)
     .filter(([, value]) => value)
     .map(([key, value]) => `${RESOURCE_NAMES[key] || key} ${value > 0 ? "+" : ""}${formatNumber(value)}`);
+  return entries.length ? entries.join("，") : "无";
+}
+
+function formatProjectResourceList(values = {}) {
+  const entries = Object.entries(values)
+    .filter(([, value]) => value)
+    .map(([key, value]) => `${RESOURCE_NAMES[key] || key} ${formatNumber(value)}`);
   return entries.length ? entries.join("，") : "无";
 }
 
@@ -1125,9 +1137,7 @@ function applyProjectRewards(state, project, options = {}) {
   const firstSuccess = !state.completedProjects.includes(project.id);
   const rewardScale = firstSuccess ? 1 : 0.05;
   const rewardMultiplier = options.rewardMultiplier || 1;
-  const expReward = (project.rewards.exp || 0) * rewardScale * rewardMultiplier;
   const moneyReward = (project.rewards.money || 0) * rewardScale * rewardMultiplier;
-  state.resources.exp += expReward;
   state.resources.money += moneyReward;
   if (firstSuccess) {
     state.resources.reputation += project.rewards.reputation || 0;
@@ -1138,7 +1148,6 @@ function applyProjectRewards(state, project, options = {}) {
   return {
     firstSuccess,
     rewards: {
-      exp: expReward,
       money: moneyReward,
       reputation: firstSuccess ? project.rewards.reputation || 0 : 0
     },
@@ -1179,7 +1188,7 @@ function settleProject(state, project, seconds, options = {}) {
   clearProjectProgress(state, project.id);
   messages.push(formatLines([
     `项目 ${project.name} 工时达标：成功率 ${formatPercent(successRate)}，交付失败。`,
-    `投入资源全部损失：${formatResourceList(project.requirements.resources || {})}`,
+    `投入资源全部损失：${formatProjectResourceList(project.requirements.resources || {})}`,
     formatSkillExpRewards(failedSkillExp),
     formatNextAdvice(state)
   ]));
@@ -1715,7 +1724,7 @@ function listContent(type) {
   if (type === "projects") {
     return content.projects.map((project) => {
       const skills = project.requirements.skills?.length ? project.requirements.skills.join(", ") : "无";
-      return `${project.id} - ${project.name}，难度 ${project.difficulty}，最少工时 ${formatDuration(getProjectRequiredSeconds(project))}，最高成功率 ${formatPercent(project.maxSuccessRate)}，技能 ${skills}，资源 ${formatResourceList(project.requirements.resources)}，活动 ${formatActivityRequirements({ activityLevels: project.requirements.activityLevels })}`;
+      return `${project.id} - ${project.name}，${formatDifficultyLabel(project.difficulty)}，最少工时 ${formatDuration(getProjectRequiredSeconds(project))}，最高成功率 ${formatPercent(project.maxSuccessRate)}，技能 ${skills}，投入 ${formatProjectResourceList(project.requirements.resources)}，活动 ${formatActivityRequirements({ activityLevels: project.requirements.activityLevels })}，奖励 ${formatSkillExpRewards(project.skillExpRewards)}。${project.description}`;
     }).join("\n");
   }
   return "可查看：list skills、list tools、list projects、list cards";
@@ -1939,14 +1948,16 @@ function getManagementOptions(state, type) {
       return {
         id: project.id,
         name: project.name,
-        description: `奖励：${formatResourceList(project.rewards)}`,
+        description: project.description,
         status: active ? "进行中" : inProgress ? "已暂停" : completed ? "已完成/可重复" : missing.length ? "条件不足" : "可开始",
         done: completed,
         available: missing.length === 0,
-        cost: progress.resourcesPaid ? "已投入" : formatResourceList(project.requirements.resources || {}),
-        effects: `难度 ${project.difficulty}；工时 ${formatDuration(progress.workedSeconds)}/${formatDuration(progress.requiredSeconds)}（${progress.progressPercent}%）；成功率 ${formatPercent(successRate)} / 最高 ${formatPercent(project.maxSuccessRate)}${deadlineText}`,
+        rewards: formatSkillExpRewards(project.skillExpRewards),
+        cost: progress.resourcesPaid ? "已投入" : formatProjectResourceList(project.requirements.resources || {}),
+        effects: `工时 ${formatDuration(progress.workedSeconds)}/${formatDuration(progress.requiredSeconds)}（${progress.progressPercent}%）；成功率 ${formatPercent(successRate)} / 最高 ${formatPercent(project.maxSuccessRate)}${deadlineText}`,
         missing: missing.join("、"),
         difficulty: project.difficulty,
+        difficultyLabel: formatDifficultyLabel(project.difficulty),
         maxSuccessRate: project.maxSuccessRate,
         successRate,
         minWorkHours: project.minWorkHours,
@@ -2255,7 +2266,7 @@ function submitProject(state, id) {
   const currentProgress = getProjectProgress(state, project);
   return formatLines([
     `${wasPaid ? "继续项目" : state.completedProjects.includes(id) ? "重复项目" : "开始项目"}：${project.name}。`,
-    wasPaid ? "" : `投入：${formatResourceList(Object.fromEntries(Object.entries(project.requirements.resources || {}).map(([key, value]) => [key, -value])))}`,
+    wasPaid ? "" : `投入：${formatProjectResourceList(Object.fromEntries(Object.entries(project.requirements.resources || {}).map(([key, value]) => [key, -value])))}`,
     `进度：${formatDuration(currentProgress.workedSeconds)}/${formatDuration(currentProgress.requiredSeconds)}（${currentProgress.progressPercent}%）。`,
     `Deadline：D${String(getWorldCalendar(deadline.dueWorldMinute).day).padStart(3, "0")} ${getWorldCalendar(deadline.dueWorldMinute).hhmm}。`,
     `难度 ${project.difficulty}，当前成功率 ${formatPercent(getProjectSuccessRate(state, project))}，最高 ${formatPercent(project.maxSuccessRate)}。`,

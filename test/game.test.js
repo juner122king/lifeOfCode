@@ -51,6 +51,13 @@ function unlockSkill(state, id, level = 1, exp = 0) {
   if (!state.unlockedSkills.includes(id)) state.unlockedSkills.push(id);
 }
 
+function settleActiveProjectToCompletion(state, rng = () => 0) {
+  const projectId = state.activeProjectId;
+  const progress = getProjectProgress(state, projectId);
+  state.projectProgress[projectId].workedSeconds = progress.requiredSeconds;
+  return settleTime(state, state.lastTick + 1000, { maxSeconds: 1, randomEvents: false, rng });
+}
+
 function createTempSaveRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "life-of-code-save-"));
 }
@@ -221,6 +228,18 @@ test("人物卡只应用初始状态，不自动开始活动", () => {
   const slacker = createNewState(1_700_000_000_000, { characterCardId: "laid-back-slacker" });
   assert.equal(getActivityLevel(slacker, "rest"), 2);
   assert.equal(slacker.activeActivityId, null);
+});
+
+test("项目内容提供描述、长工时且不含基础经验奖励", () => {
+  assert.ok(content.projects.every((project) => project.description && project.description.trim()));
+  assert.ok(content.projects.every((project) => !Object.hasOwn(project.rewards, "exp")));
+  assert.equal(content.projects.find((project) => project.id === "vanilla-widget").minWorkHours, 1);
+  assert.equal(content.projects.find((project) => project.id === "typed-form").minWorkHours, 2);
+  assert.equal(content.projects.find((project) => project.id === "component-library").minWorkHours, 4);
+  assert.equal(content.projects.find((project) => project.id === "blog").minWorkHours, 8);
+  assert.equal(content.projects.find((project) => project.id === "admin").minWorkHours, 18);
+  assert.equal(content.projects.find((project) => project.id === "flash-sale").minWorkHours, 30);
+  assert.equal(content.projects.find((project) => project.id === "rag-assistant").minWorkHours, 36);
 });
 
 test("旧单存档作为 default 档案兼容加载", () => {
@@ -604,7 +623,7 @@ test("新增项目组件库内卷可开始并在成功 RNG 下交付", () => {
   assert.equal(state.resources.docs, 14);
   assert.equal(state.resources.tests, 10);
 
-  const result = settleTime(state, start + 4_200_000, { randomEvents: false, rng: () => 0 });
+  const result = settleActiveProjectToCompletion(state, () => 0);
 
   assert.match(result.messages.join("\n"), /交付成功/);
   assert.ok(state.completedProjects.includes("component-library"));
@@ -683,16 +702,18 @@ test("项目达标后会自动成功并发放奖励", () => {
   unlockSkill(state, "html-css");
   submitProject(state, "homepage");
 
-  const result = settleTime(state, start + 1_000_000, { randomEvents: false, rng: () => 0 });
+  const beforeExp = state.resources.exp;
+  const result = settleActiveProjectToCompletion(state, () => 0);
 
   assert.match(result.messages.join("\n"), /交付成功/);
   assert.equal(state.completedProjects.includes("homepage"), true);
   assert.equal(state.activeProjectId, null);
   assert.equal(state.projectProgress.homepage, undefined);
+  assert.equal(state.resources.exp, beforeExp);
   assert.ok(state.resources.reputation > 0);
 });
 
-test("重复项目只给技能经验和少量经验金钱", () => {
+test("重复项目只给技能经验和少量金钱", () => {
   const start = 1_700_000_000_000;
   const state = createNewState(start);
   state.resources.codeLines = 256;
@@ -701,7 +722,7 @@ test("重复项目只给技能经验和少量经验金钱", () => {
   unlockSkill(state, "html-css");
 
   submitProject(state, "homepage");
-  settleTime(state, start + 1_000_000, { randomEvents: false, rng: () => 0 });
+  settleActiveProjectToCompletion(state, () => 0);
   const first = {
     exp: state.resources.exp,
     money: state.resources.money,
@@ -713,13 +734,13 @@ test("重复项目只给技能经验和少量经验金钱", () => {
   state.resources.codeLines += 128;
   state.resources.docs += 13;
   submitProject(state, "homepage");
-  const result = settleTime(state, start + 2_000_000, { randomEvents: false, rng: () => 0 });
+  const result = settleActiveProjectToCompletion(state, () => 0);
 
   assert.match(result.messages.join("\n"), /重复交付/);
   assert.equal(state.completedProjects.filter((id) => id === "homepage").length, 1);
   assert.equal(state.stats.totalProjects, first.totalProjects);
   assert.equal(state.resources.reputation, first.reputation);
-  assert.equal(Math.floor(state.resources.exp - first.exp), 2);
+  assert.equal(state.resources.exp, first.exp);
   assert.equal(Math.floor(state.resources.money - first.money), 3);
   assert.ok(getSkillProgress(state, "html-css").exp > first.skillExp);
 });
@@ -733,14 +754,14 @@ test("新增训练项目可重复提供目标技能经验", () => {
   unlockSkill(state, "javascript");
 
   assert.match(submitProject(state, "vanilla-widget"), /开始项目：原生 JS 小组件/);
-  settleTime(state, start + 2_000_000, { randomEvents: false, rng: () => 0 });
+  settleActiveProjectToCompletion(state, () => 0);
   const firstExp = getSkillProgress(state, "javascript").exp;
 
   state.resources.codeLines += 192;
   state.resources.docs += 13;
   state.resources.tests += 13;
   assert.match(submitProject(state, "vanilla-widget"), /重复项目：原生 JS 小组件/);
-  settleTime(state, start + 4_000_000, { randomEvents: false, rng: () => 0 });
+  settleActiveProjectToCompletion(state, () => 0);
 
   assert.ok(firstExp >= 70);
   assert.ok(getSkillProgress(state, "javascript").exp >= firstExp + 70);
@@ -762,7 +783,7 @@ test("项目失败会清空进度且不返还已投入资源", () => {
   submitProject(state, "homepage");
   const afterInvestment = { codeLines: state.resources.codeLines, docs: state.resources.docs };
 
-  const result = settleTime(state, start + 1_000_000, { randomEvents: false, rng: () => 1 });
+  const result = settleActiveProjectToCompletion(state, () => 1);
 
   assert.match(result.messages.join("\n"), /交付失败/);
   assert.equal(state.completedProjects.includes("homepage"), false);
@@ -1149,7 +1170,11 @@ test("management options 标出技能、工具和项目动作状态", () => {
   assert.match(tool.effects, /代码产出 x1\.06/);
   assert.equal(project.status, "条件不足");
   assert.equal(project.command, "project homepage");
-  assert.match(project.effects, /难度 1/);
+  assert.match(project.description, /个人品牌/);
+  assert.match(project.rewards, /技能经验：HTML\/CSS \+80/);
+  assert.equal(project.cost, "代码 128，文档 13");
+  assert.equal(project.difficultyLabel, "★☆☆☆☆（难度 1）");
+  assert.doesNotMatch(project.effects, /难度 1/);
   assert.match(project.effects, /成功率/);
   assert.equal(promoteAction.command, "promote");
 });

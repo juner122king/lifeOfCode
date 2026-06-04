@@ -500,6 +500,7 @@ async function startTui() {
   function compactOptionMeta(option) {
     const progress = getOptionProgress(option);
     return [
+      option.difficultyLabel || "",
       Number.isFinite(option.level) ? `Lv.${option.level}` : "",
       progress ? `${progress.label} ${progress.percent}%` : "",
       option.missing ? "有缺口" : ""
