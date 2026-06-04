@@ -484,6 +484,25 @@ test("learn 消耗资源并启动耗时学习，完成后才解锁技能", () =>
   assert.match(result.messages.join("\n"), /技能 HTML\/CSS 学习完成/);
   assert.ok(state.unlockedSkills.includes("html-css"));
   assert.equal(getSkillProgress(state, "html-css").level, 1);
+  assert.equal(state.activeSkillLearningId, null);
+  assert.equal(state.skillLearningProgress["html-css"], undefined);
+  assert.equal(getGameViewModel(state).activeSkillLearning, null);
+  assert.equal(getGameViewModel(state).actions.stopActivity, null);
+});
+
+test("已学会的技能不会继续保留为当前学习", () => {
+  const state = createNewState();
+  unlockSkill(state, "html-css");
+  state.activeSkillLearningId = "html-css";
+  state.skillLearningProgress["html-css"] = { workedSeconds: 600, resourcesPaid: true };
+
+  const view = getGameViewModel(state);
+
+  assert.equal(state.activeSkillLearningId, null);
+  assert.equal(state.skillLearningProgress["html-css"], undefined);
+  assert.equal(view.activeSkillLearning, null);
+  assert.equal(view.actions.stopActivity, null);
+  assert.match(formatState(state), /当前学习：无/);
 });
 
 test("新增程序员技术包内容通过现有选项接口展示", () => {

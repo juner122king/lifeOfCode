@@ -279,9 +279,7 @@ function normalizeState(raw, now = Date.now()) {
     stats: { ...fresh.stats, ...(raw && raw.stats) }
   };
   normalized.unlockedSkills = normalizeUnlockedSkills(raw && raw.unlockedSkills, normalized.skillProgress);
-  if (normalized.activeSkillLearningId && getSkillLevel(normalized, normalized.activeSkillLearningId) > 0) {
-    normalized.activeSkillLearningId = null;
-  }
+  clearCompletedSkillLearning(normalized);
   if (normalized.activeSkillLearningId) {
     normalized.activeActivityId = null;
     normalized.activeProjectId = null;
@@ -1094,6 +1092,19 @@ function clearSkillLearningProgress(state, skillId) {
   if (state.activeSkillLearningId === skillId) state.activeSkillLearningId = null;
 }
 
+function clearCompletedSkillLearning(state) {
+  const skillId = state.activeSkillLearningId;
+  if (!skillId) return false;
+  const skill = itemById(content.skills, skillId);
+  if (!skill) {
+    state.activeSkillLearningId = null;
+    return true;
+  }
+  if (getSkillLevel(state, skillId) <= 0) return false;
+  clearSkillLearningProgress(state, skillId);
+  return true;
+}
+
 function settleSkillLearning(state, skill, seconds, options = {}) {
   const progress = ensureSkillLearningProgress(state, skill.id);
   progress.workedSeconds += seconds * (options.workMultiplier || 1);
@@ -1178,10 +1189,7 @@ function settleProject(state, project, seconds, options = {}) {
 function getActiveMode(state) {
   const activeSkill = itemById(content.skills, state.activeSkillLearningId);
   if (activeSkill && getSkillLevel(state, activeSkill.id) <= 0) return { type: "skill", item: activeSkill };
-  if (state.activeSkillLearningId && (!activeSkill || getSkillLevel(state, state.activeSkillLearningId) > 0)) {
-    if (activeSkill) clearSkillLearningProgress(state, activeSkill.id);
-    else state.activeSkillLearningId = null;
-  }
+  clearCompletedSkillLearning(state);
 
   const activeProject = projectById(state.activeProjectId);
   if (activeProject) return { type: "project", item: activeProject };
@@ -1289,6 +1297,7 @@ function getWorkModifiers(state, type, item, overtime) {
 }
 
 function settleTime(state, now = Date.now(), options = {}) {
+  clearCompletedSkillLearning(state);
   const maxSeconds = options.maxSeconds ?? OFFLINE_CAP_SECONDS;
   const elapsedSeconds = Math.max(0, Math.floor((now - state.lastTick) / 1000));
   const seconds = Math.min(elapsedSeconds, maxSeconds);
@@ -1379,6 +1388,7 @@ function settleTime(state, now = Date.now(), options = {}) {
 
   state.lastTick = now;
   clampState(state);
+  clearCompletedSkillLearning(state);
   return { seconds, messages };
 }
 
@@ -1607,6 +1617,7 @@ function claimAllGoals(state) {
 }
 
 function formatNextAdvice(state) {
+  clearCompletedSkillLearning(state);
   const claimable = getClaimableGoals(state);
   if (claimable.length) return `建议：目标 ${claimable[0].name} 已完成，先 claim ${claimable[0].id} 领取奖励。`;
   if (state.activeSkillLearningId) return "建议：技能学习中，wait 或保持在线完成学习。";
@@ -1620,6 +1631,7 @@ function formatNextAdvice(state) {
 }
 
 function formatState(state) {
+  clearCompletedSkillLearning(state);
   const role = roleById(state.currentRole);
   const active = activityById(state.activeActivityId);
   const activeProject = projectById(state.activeProjectId);
@@ -1795,6 +1807,7 @@ function getCharacterCardOptions(options = {}) {
 }
 
 function getSkillLevelEntries(state) {
+  clearCompletedSkillLearning(state);
   return content.skills.map((skill) => {
     const progress = getSkillProgress(state, skill.id);
     return {
@@ -1827,6 +1840,7 @@ function getActivityLevelEntries(state) {
 }
 
 function getManagementOptions(state, type) {
+  clearCompletedSkillLearning(state);
   if (type === "skills") {
     return content.skills.map((skill) => {
       const progress = getSkillProgress(state, skill.id);
@@ -1967,6 +1981,7 @@ function getManagementOptions(state, type) {
 }
 
 function getGameViewModel(state) {
+  clearCompletedSkillLearning(state);
   const role = roleById(state.currentRole);
   const characterCard = characterCardById(state.characterCardId);
   const active = activityById(state.activeActivityId);
