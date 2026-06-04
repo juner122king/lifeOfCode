@@ -275,6 +275,18 @@ function formatTuiNumber(value, digits = 1) {
   return numeric.toFixed(digits).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
 }
 
+function roundTuiNumber(value, digits = 1) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  const scale = 10 ** digits;
+  return Math.round(numeric * scale) / scale;
+}
+
+function getAttributeUpgradeRequired(currentValue) {
+  const value = Math.floor(Number(currentValue) || 0);
+  return value >= 100 ? 0 : 50 + value * 5;
+}
+
 function getCharacterCardAttributeRows(view) {
   const initialAttributes = new Map(
     ((view && view.characterCard && view.characterCard.initialAttributes) || [])
@@ -286,16 +298,33 @@ function getCharacterCardAttributeRows(view) {
     const effectiveValue = Number(attr.effective) || 0;
     const exp = Math.floor(Number(attr.exp) || 0);
     const initial = initialAttributes.get(attr.id);
-    const initialValue = initial ? Math.floor(Number(initial.value) || 0) : "未记录";
+    const hasInitialValue = Boolean(initial && Number.isFinite(Number(initial.value)));
+    const numericInitialValue = hasInitialValue ? Math.floor(Number(initial.value) || 0) : 0;
+    const initialValue = hasInitialValue ? numericInitialValue : "未记录";
+    const growthValue = roundTuiNumber(hasInitialValue ? Math.max(0, effectiveValue - numericInitialValue) : Math.max(0, effectiveValue));
+    const initialPercent = hasInitialValue ? clampProgressPercent(numericInitialValue) : 0;
+    const totalPercent = clampProgressPercent(effectiveValue);
+    const growthPercent = Math.max(0, totalPercent - initialPercent);
+    const upgradeRequired = getAttributeUpgradeRequired(currentValue);
+    const upgradePercent = upgradeRequired > 0 ? clampProgressPercent(exp / upgradeRequired * 100) : 100;
     return {
       id: attr.id,
       name: attr.name,
+      label: `${attr.name} ${currentValue}`,
       initialValue,
       currentValue,
       effectiveValue,
+      growthValue,
       exp,
+      upgradeRequired,
+      upgradePercent,
       progressPercent: clampProgressPercent(currentValue),
-      progressText: `初始 ${initialValue} / 当前 ${currentValue} / 有效 ${formatTuiNumber(effectiveValue)} / 经验 ${exp}`
+      initialPercent,
+      growthPercent,
+      growthText: `+${formatTuiNumber(growthValue)}`,
+      expText: upgradeRequired > 0 ? `${exp}/${upgradeRequired}` : "满级",
+      expMeter: { id: "exp", label: "经验", percent: upgradePercent, color: "exp" },
+      progressText: `成长+加成 +${formatTuiNumber(growthValue)}`
     };
   });
 }
@@ -353,6 +382,37 @@ async function startTui() {
       return () => clearInterval(timer);
     }, [animated]);
     return h(Text, { color: percent >= 100 ? THEME.status.done : THEME.status.info }, renderProgressBar(percent, width, tick, animated));
+  }
+
+  function AttributeProgress({ row, width = 14 }) {
+    const safeWidth = Math.max(4, Math.floor(Number(width) || 14));
+    const initialCells = Math.min(safeWidth, Math.round(clampProgressPercent(row.initialPercent) / 100 * safeWidth));
+    const totalCells = Math.min(safeWidth, Math.round(clampProgressPercent(row.initialPercent + row.growthPercent) / 100 * safeWidth));
+    const growthCells = Math.max(0, totalCells - initialCells);
+    const emptyCells = Math.max(0, safeWidth - initialCells - growthCells);
+    return h(Text, null,
+      h(Text, { color: THEME.muted }, "["),
+      initialCells ? h(Text, { color: THEME.status.info }, "#".repeat(initialCells)) : null,
+      growthCells ? h(Text, { color: THEME.status.good }, "#".repeat(growthCells)) : null,
+      emptyCells ? h(Text, { color: THEME.panel }, "-".repeat(emptyCells)) : null,
+      h(Text, { color: THEME.muted }, "]")
+    );
+  }
+
+  function MiniProgress({ label, percent, color = THEME.status.neutral, width = 4, text = "", showPercent = false }) {
+    const safeWidth = Math.max(3, Math.floor(Number(width) || 4));
+    const safePercent = clampProgressPercent(percent);
+    const filled = Math.round(safePercent / 100 * safeWidth);
+    const empty = Math.max(0, safeWidth - filled);
+    return h(Text, null,
+      h(Text, { color: THEME.muted }, label),
+      h(Text, { color: THEME.muted }, "["),
+      filled ? h(Text, { color }, "#".repeat(filled)) : null,
+      empty ? h(Text, { color: THEME.panel }, "-".repeat(empty)) : null,
+      h(Text, { color: THEME.muted }, "]"),
+      showPercent ? h(Text, { color: THEME.muted }, ` ${String(safePercent).padStart(3, " ")}%`) : null,
+      text ? h(Text, { color: THEME.muted }, ` ${text}`) : null
+    );
   }
 
   function Header({ view, paused, budget }) {
@@ -511,7 +571,7 @@ async function startTui() {
     const mainWidth = Math.max(48, budget.terminalColumns - 6);
     const summaryWidth = budget.narrow ? mainWidth : Math.max(28, Math.floor(mainWidth * 0.36));
     const detailWidth = budget.narrow ? mainWidth : Math.max(34, mainWidth - summaryWidth - 3);
-    const attrBarWidth = Math.min(18, Math.max(8, detailWidth - 28));
+    const attrBarWidth = Math.min(14, Math.max(6, detailWidth - 36));
     const maxAttributeRows = Math.max(1, budget.mainHeight - (budget.narrow ? 8 : 4));
     const summaryRows = [
       { color: THEME.muted, text: card.description },
@@ -534,11 +594,21 @@ async function startTui() {
       ))
     );
     const attributes = h(Box, { flexDirection: "column", flexGrow: 1 },
-      h(SectionTitle, { color: THEME.status.good }, "属性详情"),
+      h(Box, { gap: 1 },
+        h(SectionTitle, { color: THEME.status.good }, "属性详情")
+      ),
       ...attributeRows.slice(0, maxAttributeRows).map((row) => h(Box, { key: row.id, gap: 1 },
-        h(Text, { color: THEME.text, bold: true }, trimText(row.name, 4).padEnd(4, " ")),
-        h(Progress, { percent: row.progressPercent, width: attrBarWidth, animated: false }),
-        h(Text, { color: THEME.muted }, trimText(row.progressText, Math.max(16, detailWidth - attrBarWidth - 8)))
+        h(Text, { color: THEME.text, bold: true }, trimText(row.label, 7).padEnd(7, " ")),
+        h(AttributeProgress, { row, width: attrBarWidth }),
+        h(Text, { color: THEME.status.good }, row.growthText),
+        h(MiniProgress, {
+          label: row.expMeter.label,
+          percent: row.expMeter.percent,
+          color: THEME.status.warn,
+          width: 6,
+          text: row.expText,
+          showPercent: true
+        })
       ))
     );
 

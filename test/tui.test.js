@@ -185,15 +185,26 @@ test("getCharacterCardAttributeRows pairs initial card attributes with current g
   const learning = rows.find((row) => row.id === "learning");
 
   assert.equal(learning.name, "学习");
+  assert.equal(learning.label, "学习 84");
   assert.equal(learning.initialValue, 72);
   assert.equal(learning.currentValue, 84);
   assert.equal(learning.effectiveValue, 84.6);
+  assert.equal(learning.growthValue, 12.6);
   assert.equal(learning.exp, 57);
+  assert.equal(learning.upgradeRequired, 470);
+  assert.equal(learning.upgradePercent, 12);
   assert.equal(learning.progressPercent, 84);
-  assert.match(learning.progressText, /初始 72/);
-  assert.match(learning.progressText, /当前 84/);
-  assert.match(learning.progressText, /有效 84.6/);
-  assert.match(learning.progressText, /经验 57/);
+  assert.equal(learning.initialPercent, 72);
+  assert.equal(learning.growthPercent, 12);
+  assert.equal(learning.growthText, "+12.6");
+  assert.equal(learning.expText, "57/470");
+  assert.deepEqual(learning.expMeter, { id: "exp", label: "经验", percent: 12, color: "exp" });
+  assert.equal(learning.meters, undefined);
+  assert.equal(learning.progressText, "成长+加成 +12.6");
+  assert.doesNotMatch(learning.progressText, /初始 72/);
+  assert.doesNotMatch(learning.progressText, /当前 84/);
+  assert.doesNotMatch(learning.progressText, /有效 84.6/);
+  assert.doesNotMatch(learning.progressText, /经验 57/);
 });
 
 test("getCharacterCardAttributeRows clamps progress to current base attribute", () => {
@@ -217,12 +228,23 @@ test("getCharacterCardAttributeRows keeps current attributes for legacy profiles
   const logic = rows.find((row) => row.id === "logic");
 
   assert.equal(view.characterCard.legacy, true);
+  assert.equal(logic.label, "逻辑 43");
   assert.equal(logic.initialValue, "未记录");
   assert.equal(logic.currentValue, 43);
+  assert.equal(logic.growthValue, 43);
+  assert.equal(logic.upgradeRequired, 265);
+  assert.equal(logic.upgradePercent, 4);
   assert.equal(logic.progressPercent, 43);
-  assert.match(logic.progressText, /初始 未记录/);
-  assert.match(logic.progressText, /当前 43/);
-  assert.match(logic.progressText, /经验 12/);
+  assert.equal(logic.initialPercent, 0);
+  assert.equal(logic.growthPercent, 43);
+  assert.equal(logic.growthText, "+43");
+  assert.equal(logic.expText, "12/265");
+  assert.deepEqual(logic.expMeter, { id: "exp", label: "经验", percent: 4, color: "exp" });
+  assert.equal(logic.meters, undefined);
+  assert.equal(logic.progressText, "成长+加成 +43");
+  assert.doesNotMatch(logic.progressText, /初始 未记录/);
+  assert.doesNotMatch(logic.progressText, /当前 43/);
+  assert.doesNotMatch(logic.progressText, /经验 12/);
 });
 
 test("profile enter on new profile enters character card selection mode", () => {
