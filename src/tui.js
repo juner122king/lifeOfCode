@@ -33,6 +33,9 @@ const PANELS = [
 ];
 
 const MAX_LOGS = 6;
+const MIN_LIST_PAGE_SIZE = 3;
+const DEFAULT_TERMINAL_ROWS = 24;
+const DEFAULT_TERMINAL_COLUMNS = 80;
 
 function trimText(value, length) {
   const text = String(value || "");
@@ -77,6 +80,70 @@ function commandForPanel(panelId, option) {
   return option.command;
 }
 
+function getPageWindow(optionsLength, selectedIndex, pageSize) {
+  const length = Math.max(0, Math.floor(Number(optionsLength) || 0));
+  const size = Math.max(MIN_LIST_PAGE_SIZE, Math.floor(Number(pageSize) || MIN_LIST_PAGE_SIZE));
+  if (length === 0) return { start: 0, end: 0, page: 0, pageCount: 0, pageSize: size };
+  const safeSelected = Math.max(0, Math.min(length - 1, Math.floor(Number(selectedIndex) || 0)));
+  const pageCount = Math.max(1, Math.ceil(length / size));
+  const page = Math.min(pageCount - 1, Math.floor(safeSelected / size));
+  const start = page * size;
+  const end = Math.min(length, start + size);
+  return { start, end, page, pageCount, pageSize: size };
+}
+
+function calculateLayoutBudget(rows, columns) {
+  const terminalRows = Math.max(12, Math.floor(Number(rows) || DEFAULT_TERMINAL_ROWS));
+  const terminalColumns = Math.max(40, Math.floor(Number(columns) || DEFAULT_TERMINAL_COLUMNS));
+  const compact = terminalRows <= 24;
+  const narrow = terminalColumns < 100;
+  const headerHeight = 4;
+  const resourceHeight = 5;
+  const tabHeight = 1;
+  const footerHeight = 3;
+  const logHeight = compact ? 4 : terminalRows < 30 ? 5 : 6;
+  const reserved = headerHeight + resourceHeight + tabHeight + footerHeight + logHeight;
+  const mainHeight = Math.max(5, terminalRows - reserved);
+  const listHeight = narrow ? Math.max(5, Math.floor(mainHeight / 2)) : mainHeight;
+  const detailHeight = narrow ? Math.max(3, mainHeight - listHeight) : mainHeight;
+  const pageSize = Math.max(MIN_LIST_PAGE_SIZE, listHeight - 2);
+
+  return {
+    terminalRows,
+    terminalColumns,
+    narrow,
+    headerHeight,
+    resourceHeight,
+    tabHeight,
+    footerHeight,
+    logHeight,
+    mainHeight,
+    listHeight,
+    detailHeight,
+    pageSize
+  };
+}
+
+function formatOptionDetail(option) {
+  if (!option) return [];
+  return [
+    option.description && { label: "描述", value: option.description },
+    Number.isFinite(option.level) && { label: "等级", value: `${option.levelName || `Lv.${option.level}`}${Number.isFinite(option.exp) && Number.isFinite(option.nextExp) && option.nextExp > 0 ? ` ${option.exp}/${option.nextExp}` : ""}` },
+    option.requirements && { label: "需求", value: option.requirements },
+    option.attributes && { label: "属性", value: option.attributes },
+    option.resources && { label: "资源", value: option.resources },
+    option.skills && { label: "技能", value: option.skills },
+    option.activityLevels && { label: "活动", value: option.activityLevels },
+    option.progress && { label: "进度", value: option.progress },
+    option.output && { label: "输出", value: option.output },
+    option.rewards && { label: "奖励", value: option.rewards },
+    option.cost && { label: "花费", value: option.cost },
+    option.effects && { label: "作用", value: option.effects },
+    option.missing && { label: "缺口", value: option.missing },
+    option.command && { label: "命令", value: option.command }
+  ].filter((entry) => entry && String(entry.value || "").trim());
+}
+
 async function startTui() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     if (!defaultProfileExists()) {
@@ -99,8 +166,9 @@ async function startTui() {
 
   const React = await import("react");
   const ink = await import("ink");
+  const Spinner = (await import("ink-spinner")).default;
   const h = React.createElement;
-  const { Box, Text, render, useApp, useInput } = ink;
+  const { Box, Text, render, useApp, useInput, useStdout } = ink;
   const { useEffect, useMemo, useReducer, useRef, useState } = React;
 
   function SectionTitle({ children, color = THEME.title }) {
@@ -131,11 +199,13 @@ async function startTui() {
     return h(Text, { color: percent >= 100 ? THEME.status.done : THEME.status.info }, renderProgressBar(percent, width, tick, animated));
   }
 
-  function Header({ view, paused }) {
+  function Header({ view, paused, budget }) {
     const active = view.activeActivity ? `${view.activeActivity.name} Lv.${view.activeActivity.level}` : "无";
     const project = view.activeProject ? `${view.activeProject.name} 工时 ${view.activeProject.progressPercent}% 成功率 ${Math.round(view.activeProject.successRate * 100)}%` : "无";
     const learning = view.activeSkillLearning ? `${view.activeSkillLearning.name} 学习 ${view.activeSkillLearning.progressPercent}%` : "无";
-    return h(Box, { borderStyle: "round", borderColor: THEME.title, paddingX: 1, flexDirection: "column" },
+    const detail = `活动 ${active}  项目 ${project}  学习 ${learning}`;
+    const width = Math.max(48, budget.terminalColumns - 6);
+    return h(Box, { borderStyle: "round", borderColor: THEME.title, paddingX: 1, flexDirection: "column", height: budget.headerHeight },
       h(Box, { gap: 1 },
         h(Text, { bold: true, color: THEME.title }, `《${view.title}》`),
         h(Text, { color: THEME.muted }, `${view.profile.id}/${view.profile.name}`),
@@ -143,14 +213,9 @@ async function startTui() {
         h(Text, { color: THEME.status.info }, view.role.name),
         paused
           ? h(Text, { color: THEME.status.paused, bold: true }, "暂停")
-          : h(Text, { color: THEME.status.good }, "自动结算")
+          : h(Text, { color: THEME.status.good }, h(Spinner, { type: "dots" }), " 自动结算")
       ),
-      h(Box, { gap: 2 },
-        h(Text, null, h(Text, { color: THEME.panels.activities }, "活动 "), active),
-        h(Text, null, h(Text, { color: THEME.panels.projects }, "项目 "), project),
-        h(Text, null, h(Text, { color: THEME.panels.skills }, "学习 "), learning)
-      ),
-      h(Text, { color: THEME.muted }, view.nextAdvice)
+      h(Text, { color: THEME.muted }, trimText(`${detail}  ${view.nextAdvice}`, width))
     );
   }
 
@@ -161,30 +226,25 @@ async function startTui() {
     );
   }
 
-  function ResourcePanel({ view }) {
-    const leftResources = view.resources.slice(0, 8);
-    const rightResources = view.resources.slice(8);
+  function ResourcePanel({ view, budget }) {
+    const resourceRows = [
+      view.resources.slice(0, 4),
+      view.resources.slice(4, 8),
+      view.resources.slice(8, 13)
+    ].map((items) => items.map((item) => `${item.name} ${item.value}`).join("  "));
     const attrs = view.attributes.map((attr) => `${attr.name} ${attr.value}${attr.breakthrough ? `(+${attr.breakthrough})` : ""}`);
     const activityLevels = view.activityLevels.map((activity) => `${activity.active ? "*" : ""}${activity.name} Lv.${activity.level}`);
-    return h(Box, { gap: 2 },
-      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", flexGrow: 1 },
+    const width = Math.max(38, Math.floor((budget.terminalColumns - 8) / 2));
+    return h(Box, { gap: 2, height: budget.resourceHeight },
+      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", flexGrow: 1, height: budget.resourceHeight },
         h(SectionTitle, { color: THEME.status.info }, "资源"),
-        h(Box, { gap: 2 },
-          h(Box, { flexDirection: "column" },
-            ...leftResources.map((item) => h(ResourceLine, { key: item.id, item }))
-          ),
-          h(Box, { flexDirection: "column" },
-            ...rightResources.map((item) => h(ResourceLine, { key: item.id, item }))
-          )
-        )
+        ...resourceRows.map((line, index) => h(Text, { key: `res-${index}`, color: index === 2 ? THEME.muted : THEME.text }, trimText(line, width)))
       ),
-      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", flexGrow: 1 },
+      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", flexGrow: 1, height: budget.resourceHeight },
         h(SectionTitle, { color: THEME.panels.cards }, "成长"),
-        h(Text, null, attrs.slice(0, 3).join("  ")),
-        h(Text, null, attrs.slice(3).join("  ")),
-        h(Text, null, `目标可领取：${view.goals.claimableCount}  累计活动：${view.stats.totalActiveSeconds}s`),
-        h(Text, { color: THEME.muted }, activityLevels.slice(0, 5).join("  ")),
-        h(Text, { color: THEME.muted }, activityLevels.slice(5).join("  "))
+        h(Text, null, trimText(attrs.join("  "), width)),
+        h(Text, null, trimText(`目标可领取：${view.goals.claimableCount}  累计活动：${view.stats.totalActiveSeconds}s`, width)),
+        h(Text, { color: THEME.muted }, trimText(activityLevels.join("  "), width))
       )
     );
   }
@@ -223,46 +283,70 @@ async function startTui() {
     };
   }
 
-  function optionDetail(option) {
-    return option.progress
-      ? option.progress
-      : [
-          option.attributes && `属性 ${option.attributes}`,
-          option.resources && `资源 ${option.resources}`,
-          option.skills && `技能 ${option.skills}`,
-          option.activityLevels && `活动 ${option.activityLevels}`,
-          option.effects && `作用 ${option.effects}`,
-          option.cost && `花费 ${option.cost}`,
-          option.missing && `缺口 ${option.missing}`
-        ].filter(Boolean).join("；");
+  function compactOptionMeta(option) {
+    const progress = optionProgress(option);
+    return [
+      Number.isFinite(option.level) ? `Lv.${option.level}` : "",
+      progress ? `${progress.label} ${progress.percent}%` : "",
+      option.missing ? "有缺口" : ""
+    ].filter(Boolean).join("  ");
   }
 
-  function MainPanel({ activePanel, options, selectedIndex }) {
+  function DetailPanel({ activePanel, option, height, width }) {
     const accent = THEME.panels[activePanel] || THEME.panel;
-    return h(Box, { borderStyle: "round", borderColor: accent, paddingX: 1, flexDirection: "column", minHeight: 12 },
-      ...options.map((option, index) => {
-        const selected = index === selectedIndex;
-        const command = commandForPanel(activePanel, option);
-        const progress = optionProgress(option);
-        return h(Box, { key: option.id, flexDirection: "column" },
-          h(Box, { gap: 1 },
-            h(Text, { color: selected ? accent : THEME.muted, bold: selected }, selected ? ">" : " "),
-            h(Text, { color: selected ? accent : THEME.text, bold: selected }, option.name),
-            h(Badge, { status: option.status }),
-            command ? h(Text, { color: THEME.muted }, "Enter") : null,
-            progress ? h(Text, { color: THEME.muted }, progress.label) : null,
-            progress ? h(Progress, { percent: progress.percent, width: 12, animated: progress.active }) : null,
-            progress && progress.text ? h(Text, { color: THEME.muted }, progress.text) : null
-          ),
-          h(Text, { color: selected ? THEME.text : THEME.muted, dimColor: !selected },
-            `  ${trimText([option.description, optionDetail(option)].filter(Boolean).join("  "), 106)}`
+    const details = formatOptionDetail(option);
+    const progress = optionProgress(option);
+    const contentWidth = Math.max(24, width - 4);
+    const maxRows = Math.max(1, height - 3 - (progress ? 1 : 0));
+    return h(Box, { borderStyle: "round", borderColor: accent, paddingX: 1, flexDirection: "column", height },
+      option
+        ? h(Box, { gap: 1 },
+            h(Text, { color: accent, bold: true }, trimText(option.name, Math.max(10, contentWidth - 14))),
+            h(Badge, { status: option.status })
           )
-        );
-      })
+        : h(Text, { color: THEME.muted }, "暂无选项"),
+      progress ? h(Box, { gap: 1 },
+        h(Text, { color: THEME.muted }, progress.label),
+        h(Progress, { percent: progress.percent, width: Math.min(18, Math.max(8, contentWidth - 18)), animated: progress.active }),
+        progress.text ? h(Text, { color: THEME.muted }, trimText(progress.text, 18)) : null
+      ) : null,
+      ...details.slice(0, maxRows).map((entry, index) => h(Text, { key: `${entry.label}-${index}`, color: entry.label === "缺口" ? THEME.status.warn : THEME.text },
+        `${entry.label}：${trimText(entry.value, contentWidth - entry.label.length - 1)}`
+      ))
     );
   }
 
-  function CharacterCardPanel({ view }) {
+  function MainPanel({ activePanel, options, selectedIndex, budget }) {
+    const accent = THEME.panels[activePanel] || THEME.panel;
+    const page = getPageWindow(options.length, selectedIndex, budget.pageSize);
+    const visibleOptions = options.slice(page.start, page.end);
+    const selectedOption = options[selectedIndex];
+    const mainWidth = budget.terminalColumns - 2;
+    const listWidth = budget.narrow ? mainWidth : Math.max(30, Math.floor(mainWidth * 0.38));
+    const detailWidth = budget.narrow ? mainWidth : Math.max(34, mainWidth - listWidth - 2);
+    const list = h(Box, { borderStyle: "round", borderColor: accent, paddingX: 1, flexDirection: "column", height: budget.listHeight, width: budget.narrow ? undefined : listWidth },
+      h(Text, { color: THEME.muted }, `第 ${page.pageCount ? page.page + 1 : 0}/${page.pageCount} 页  ${options.length} 项`),
+      ...visibleOptions.map((option, offset) => {
+        const absoluteIndex = page.start + offset;
+        const selected = absoluteIndex === selectedIndex;
+        const meta = compactOptionMeta(option);
+        const nameWidth = Math.max(8, listWidth - 22);
+        return h(Box, { key: option.id, gap: 1 },
+          h(Text, { color: selected ? accent : THEME.muted, bold: selected }, selected ? ">" : " "),
+          h(Text, { color: selected ? accent : THEME.text, bold: selected }, trimText(option.name, nameWidth)),
+          h(Badge, { status: option.status }),
+          meta ? h(Text, { color: THEME.muted }, trimText(meta, 18)) : null
+        );
+      })
+    );
+    const detail = h(DetailPanel, { activePanel, option: selectedOption, height: budget.detailHeight, width: detailWidth });
+    return h(Box, { flexDirection: budget.narrow ? "column" : "row", gap: budget.narrow ? 0 : 1, height: budget.mainHeight },
+      list,
+      detail
+    );
+  }
+
+  function CharacterCardPanel({ view, budget }) {
     const card = view.characterCard;
     const currentAttrs = view.attributes.map((attr) => {
       const effective = Number(attr.effective).toFixed(1).replace(/\.0$/, "");
@@ -277,31 +361,38 @@ async function startTui() {
       .map((skill) => `${skill.name} ${skill.levelName}`);
     const activityLevels = view.activityLevels.map((activity) => `${activity.active ? "*" : ""}${activity.name} Lv.${activity.level}`);
 
-    return h(Box, { borderStyle: "round", borderColor: THEME.panels.cards, paddingX: 1, flexDirection: "column", minHeight: 12 },
+    const width = Math.max(48, budget.terminalColumns - 6);
+    const rows = [
+      { color: THEME.muted, text: card.description },
+      { color: THEME.muted, text: card.background || "" },
+      { title: "初始卡面属性", color: THEME.status.info },
+      { text: initialAttrs.join("  ") },
+      { title: "当前属性", color: THEME.status.good },
+      { color: THEME.text, text: currentAttrs.join("  ") },
+      { title: "初始配置", color: THEME.status.info },
+      { text: card.initialBonuses ? `资源：${card.initialBonuses.resources}` : "资源：未记录" },
+      { text: card.initialBonuses ? `技能：${card.initialBonuses.skills}` : "技能：未记录" },
+      { text: card.initialBonuses ? `活动等级：${card.initialBonuses.activityLevels}` : "活动等级：未记录" },
+      { title: "当前成长", color: THEME.title },
+      { color: learnedSkills.length ? THEME.status.good : THEME.muted, text: `技能：${learnedSkills.length ? learnedSkills.join("，") : "暂无"}` },
+      { color: THEME.muted, text: activityLevels.join("  ") }
+    ];
+    const maxRows = Math.max(1, budget.mainHeight - 3);
+    return h(Box, { borderStyle: "round", borderColor: THEME.panels.cards, paddingX: 1, flexDirection: "column", height: budget.mainHeight },
       h(Text, { bold: true, color: THEME.panels.cards }, `${card.name}${card.id ? ` (${card.id})` : ""}`),
-      h(Text, { color: THEME.muted }, trimText(card.description, 110)),
-      card.background ? h(Text, { color: THEME.muted }, trimText(card.background, 110)) : null,
-      h(SectionTitle, { color: THEME.status.info }, "初始卡面属性"),
-      h(Text, null, initialAttrs.slice(0, 3).join("  ")),
-      h(Text, null, initialAttrs.slice(3).join("  ")),
-      h(SectionTitle, { color: THEME.status.good }, "当前属性"),
-      h(Text, { color: THEME.text }, currentAttrs.slice(0, 3).join("  ")),
-      h(Text, { color: THEME.text }, currentAttrs.slice(3).join("  ")),
-      h(SectionTitle, { color: THEME.status.info }, "初始配置"),
-      h(Text, null, card.initialBonuses ? `资源：${card.initialBonuses.resources}` : "资源：未记录"),
-      h(Text, null, card.initialBonuses ? `技能：${card.initialBonuses.skills}` : "技能：未记录"),
-      h(Text, null, card.initialBonuses ? `活动等级：${card.initialBonuses.activityLevels}` : "活动等级：未记录"),
-      h(SectionTitle, { color: THEME.title }, "当前成长"),
-      h(Text, { color: learnedSkills.length ? THEME.status.good : THEME.muted }, `技能：${learnedSkills.length ? learnedSkills.join("，") : "暂无"}`),
-      h(Text, { color: THEME.muted }, activityLevels.slice(0, 5).join("  ")),
-      h(Text, { color: THEME.muted }, activityLevels.slice(5).join("  "))
+      ...rows.filter((row) => row.title || row.text).slice(0, maxRows).map((row, index) => (
+        row.title
+          ? h(SectionTitle, { key: `card-${index}`, color: row.color }, row.title)
+          : h(Text, { key: `card-${index}`, color: row.color || THEME.text }, trimText(row.text, width))
+      ))
     );
   }
 
-  function LogPanel({ logs }) {
-    const rows = getLogRows(logs);
+  function LogPanel({ logs, budget }) {
+    const visibleLogCount = Math.max(1, budget.logHeight - 2);
+    const rows = getLogRows(logs, visibleLogCount);
     const latestId = logs.length ? logs[logs.length - 1].id : null;
-    return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", minHeight: 5 },
+    return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: budget.logHeight },
       h(SectionTitle, { color: THEME.title }, "日志"),
       ...rows.map((log) => {
         const tone = log.empty
@@ -312,7 +403,7 @@ async function startTui() {
           color: tone.color,
           bold: tone.bold,
           dimColor: tone.dim
-        }, trimText(log.text || " ", 110));
+        }, trimText(log.text || " ", Math.max(32, budget.terminalColumns - 6)));
       })
     );
   }
@@ -323,6 +414,7 @@ async function startTui() {
     return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
       h(KeyHint, { label: "Tab", text: "切换" }),
       h(KeyHint, { label: "↑/↓", text: "选择" }),
+      h(KeyHint, { label: "PgUp/PgDn", text: "翻页" }),
       h(KeyHint, { label: "Enter", text: "执行/加载" }),
       h(KeyHint, { label: "D D", text: "删除档案" }),
       h(KeyHint, { label: "Space", text: paused ? "恢复" : "暂停" }),
@@ -341,6 +433,7 @@ async function startTui() {
     const [revision, refresh] = useReducer((value) => value + 1, 0);
     const nextLogIdRef = useRef(0);
     const { exit } = useApp();
+    const { stdout } = useStdout();
 
     function addLogs(messages) {
       const created = createLogEntries(messages, nextLogIdRef.current);
@@ -381,6 +474,7 @@ async function startTui() {
     }, [activePanel, revision, needsInitialProfile]);
     const selectedIndex = Math.min(selected[activePanel] || 0, Math.max(0, options.length - 1));
     const view = getGameViewModel(stateRef.current);
+    const budget = calculateLayoutBudget(stdout && stdout.rows, stdout && stdout.columns);
 
     useInput((input, key) => {
       if (input.toLowerCase() === "q") {
@@ -411,6 +505,16 @@ async function startTui() {
       }
       if (key.downArrow) {
         setSelected((current) => ({ ...current, [activePanel]: Math.min(Math.max(0, options.length - 1), selectedIndex + 1) }));
+        setPendingDeleteProfileId(null);
+        return;
+      }
+      if (key.pageUp) {
+        setSelected((current) => ({ ...current, [activePanel]: Math.max(0, selectedIndex - budget.pageSize) }));
+        setPendingDeleteProfileId(null);
+        return;
+      }
+      if (key.pageDown) {
+        setSelected((current) => ({ ...current, [activePanel]: Math.min(Math.max(0, options.length - 1), selectedIndex + budget.pageSize) }));
         setPendingDeleteProfileId(null);
         return;
       }
@@ -452,13 +556,13 @@ async function startTui() {
     });
 
     return h(Box, { flexDirection: "column", paddingX: 1 },
-      h(Header, { view, paused }),
-      h(ResourcePanel, { view }),
+      h(Header, { view, paused, budget }),
+      h(ResourcePanel, { view, budget }),
       h(TabBar, { activePanel }),
       activePanel === "cards" && !needsInitialProfile
-        ? h(CharacterCardPanel, { view })
-        : h(MainPanel, { activePanel, options, selectedIndex }),
-      h(MemoLogPanel, { logs }),
+        ? h(CharacterCardPanel, { view, budget })
+        : h(MainPanel, { activePanel, options, selectedIndex, budget }),
+      h(MemoLogPanel, { logs, budget }),
       h(Footer, { paused })
     );
   }
@@ -476,7 +580,10 @@ if (require.main === module) {
 module.exports = {
   MAX_LOGS,
   appendLogEntries,
+  calculateLayoutBudget,
   createLogEntries,
+  formatOptionDetail,
+  getPageWindow,
   getLogRows,
   normalizeLogMessages,
   startTui
