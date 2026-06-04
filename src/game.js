@@ -54,6 +54,51 @@ const SKILL_EXP_THRESHOLDS = { 1: 120, 2: 320, 3: 700, 4: 1250 };
 const SKILL_UPGRADE_MIN_KNOWLEDGE = { 2: 120, 3: 280, 4: 520, 5: 900 };
 const SKILL_UPGRADE_KNOWLEDGE_MULTIPLIERS = { 2: 2, 3: 4, 4: 7, 5: 11 };
 const SKILL_UPGRADE_RESOURCE_MULTIPLIERS = { 2: 1, 3: 2, 4: 4, 5: 7 };
+const WORLD_START_MINUTES = 9 * 60;
+const MINUTES_PER_DAY = 24 * 60;
+const DAYS_PER_WEEK = 7;
+const WEEKS_PER_MONTH = 4;
+const MONTHS_PER_YEAR = 12;
+const DAYS_PER_MONTH = DAYS_PER_WEEK * WEEKS_PER_MONTH;
+const DAYS_PER_YEAR = DAYS_PER_MONTH * MONTHS_PER_YEAR;
+const WEEKDAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+const DAILY_ACTION_BASE_MINUTES = 480;
+const DAILY_ACTION_LIMIT_BUCKETS = [360, 420, 480, 540, 600];
+const WEEKLY_FOCUS_CONFIG = {
+  learning: { name: "学习周", learning: 1.3, project: 0.8, skill: 1.3, activity: 1 },
+  project: { name: "项目周", learning: 0.8, project: 1.3, skill: 0.8, activity: 1 },
+  freelance: { name: "外包周", money: 1.3, pressure: 1.2, activity: 1 },
+  quality: { name: "质量周", quality: 1.3, code: 0.85, money: 0.85, project: 1, activity: 1 },
+  balanced: { name: "均衡周", activity: 1, project: 1, skill: 1, learning: 1 }
+};
+const WORLD_EVENTS = [
+  {
+    id: "ai-boom",
+    name: "AI 热潮",
+    startDay: 29,
+    endDay: 84,
+    message: "Y1 M2-M3 AI 热潮，LLM Agent 学习与项目技能经验 x2。",
+    skillExpMultipliers: { "llm-agent": 2 },
+    projectRewardMultiplier: 1.1
+  },
+  {
+    id: "hiring-freeze",
+    name: "招聘冻结",
+    startDay: 113,
+    endDay: 140,
+    message: "市场招聘冻结，项目金钱奖励 -20%，压力 +5。",
+    projectRewardMultiplier: 0.8,
+    pressure: 5
+  },
+  {
+    id: "open-source-season",
+    name: "开源季",
+    startDay: 169,
+    endDay: 196,
+    message: "开源季开始，开源协作和文档类产出更容易获得声望。",
+    reputation: 1
+  }
+];
 
 function roleById(id) {
   return content.roles.find((role) => role.id === id);
@@ -160,6 +205,12 @@ function createNewState(now = Date.now(), options = {}) {
     activeActivityId: null,
     activeProjectId: null,
     projectProgress: {},
+    worldTimeMinutes: WORLD_START_MINUTES,
+    dailyActionMinutesUsed: 0,
+    currentDailyActionMinutesLimit: DAILY_ACTION_BASE_MINUTES,
+    weeklyFocus: "balanced",
+    triggeredWorldEvents: [],
+    activeProjectDeadlines: {},
     activityLevels: createActivityMap(() => 1),
     activityExp: createActivityMap(() => 0),
     activityStats: {
@@ -184,7 +235,9 @@ function createNewState(now = Date.now(), options = {}) {
       totalProjects: 0
     }
   };
+  state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
   if (options.characterCardId) applyCharacterCard(state, options.characterCardId);
+  state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
   return state;
 }
 
@@ -202,6 +255,12 @@ function normalizeState(raw, now = Date.now()) {
     activeActivityId: activityById(raw && raw.activeActivityId) ? raw.activeActivityId : null,
     activeProjectId: projectById(raw && raw.activeProjectId) ? raw.activeProjectId : null,
     projectProgress: normalizeProjectProgress(raw && raw.projectProgress),
+    worldTimeMinutes: normalizeWorldTimeMinutes(raw && raw.worldTimeMinutes),
+    dailyActionMinutesUsed: Math.max(0, Number(raw && raw.dailyActionMinutesUsed) || 0),
+    currentDailyActionMinutesLimit: normalizeDailyLimit(raw && raw.currentDailyActionMinutesLimit, fresh.currentDailyActionMinutesLimit),
+    weeklyFocus: normalizeWeeklyFocus(raw && raw.weeklyFocus),
+    triggeredWorldEvents: Array.isArray(raw && raw.triggeredWorldEvents) ? raw.triggeredWorldEvents.filter((id) => WORLD_EVENTS.some((event) => event.id === id)) : [],
+    activeProjectDeadlines: normalizeProjectDeadlines(raw && raw.activeProjectDeadlines),
     activityLevels: normalizeActivityMap(raw && raw.activityLevels, 1),
     activityExp: normalizeActivityMap(raw && raw.activityExp, 0),
     activityStats: normalizeActivityStats(raw && raw.activityStats),
@@ -228,8 +287,39 @@ function normalizeState(raw, now = Date.now()) {
     normalized.activeProjectId = null;
   }
   if (normalized.activeProjectId) normalized.activeActivityId = null;
+  normalized.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(normalized);
   clampState(normalized);
   return normalized;
+}
+
+function normalizeWorldTimeMinutes(value) {
+  const minutes = Number(value);
+  return Number.isFinite(minutes) && minutes >= 0 ? Math.floor(minutes) : WORLD_START_MINUTES;
+}
+
+function normalizeDailyLimit(value, fallback) {
+  const minutes = Number(value);
+  return Number.isFinite(minutes) && minutes > 0 ? Math.floor(minutes) : fallback;
+}
+
+function normalizeWeeklyFocus(value) {
+  return WEEKLY_FOCUS_CONFIG[value] ? value : "balanced";
+}
+
+function normalizeProjectDeadlines(raw) {
+  const result = {};
+  for (const project of content.projects || []) {
+    const deadline = raw && raw[project.id];
+    const dueWorldMinute = Number(deadline && deadline.dueWorldMinute);
+    const failed = Boolean(deadline && deadline.failed);
+    if (Number.isFinite(dueWorldMinute) || failed) {
+      result[project.id] = {
+        dueWorldMinute: Number.isFinite(dueWorldMinute) ? Math.max(0, Math.floor(dueWorldMinute)) : null,
+        failed
+      };
+    }
+  }
+  return result;
 }
 
 function normalizeActivityMap(raw, fallback) {
@@ -267,6 +357,9 @@ function normalizeProjectProgress(raw) {
     const resourcesPaid = Boolean(progress.resourcesPaid);
     if (workedSeconds > 0 || resourcesPaid) {
       result[project.id] = { workedSeconds, resourcesPaid };
+      if (Number.isFinite(Number(progress.dueWorldMinute))) {
+        result[project.id].dueWorldMinute = Math.max(0, Math.floor(Number(progress.dueWorldMinute)));
+      }
     }
   }
   return result;
@@ -311,6 +404,137 @@ function getNormalizedSkillLevel(skillProgress, id) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function getWorldCalendar(worldTimeMinutes = WORLD_START_MINUTES) {
+  const totalMinutes = normalizeWorldTimeMinutes(worldTimeMinutes);
+  const dayIndex = Math.floor(totalMinutes / MINUTES_PER_DAY);
+  const minuteOfDay = totalMinutes % MINUTES_PER_DAY;
+  const year = Math.floor(dayIndex / DAYS_PER_YEAR) + 1;
+  const dayOfYear = dayIndex % DAYS_PER_YEAR + 1;
+  const month = Math.floor((dayOfYear - 1) / DAYS_PER_MONTH) + 1;
+  const dayOfMonth = (dayOfYear - 1) % DAYS_PER_MONTH + 1;
+  const weekOfMonth = Math.floor((dayOfMonth - 1) / DAYS_PER_WEEK) + 1;
+  const weekdayIndex = (dayOfMonth - 1) % DAYS_PER_WEEK;
+  const hour = Math.floor(minuteOfDay / 60);
+  const minute = minuteOfDay % 60;
+  const hhmm = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  return {
+    totalMinutes,
+    dayIndex,
+    day: dayIndex + 1,
+    year,
+    month,
+    weekOfMonth,
+    weekdayIndex,
+    weekday: WEEKDAY_NAMES[weekdayIndex],
+    hour,
+    minute,
+    hhmm,
+    full: `第${year}年 ${month}月 第${weekOfMonth}周 ${WEEKDAY_NAMES[weekdayIndex]} 第${dayIndex + 1}天 ${hhmm}`,
+    short: `Y${year} M${String(month).padStart(2, "0")} W${weekOfMonth} ${WEEKDAY_NAMES[weekdayIndex]} D${String(dayIndex + 1).padStart(3, "0")} ${hhmm}`
+  };
+}
+
+function formatWorldCalendar(state, style = "full") {
+  const calendar = getWorldCalendar(state.worldTimeMinutes);
+  return style === "short" ? calendar.short : calendar.full;
+}
+
+function closestDailyBucket(value) {
+  const clamped = clamp(value, DAILY_ACTION_LIMIT_BUCKETS[0], DAILY_ACTION_LIMIT_BUCKETS.at(-1));
+  return DAILY_ACTION_LIMIT_BUCKETS.reduce((best, current) => (
+    Math.abs(current - clamped) < Math.abs(best - clamped) ? current : best
+  ), DAILY_ACTION_LIMIT_BUCKETS[0]);
+}
+
+function calculateDailyActionMinutesLimit(state) {
+  const roleAdjustments = { intern: 0, junior: 60, middle: 120, senior: 60 };
+  let minutes = DAILY_ACTION_BASE_MINUTES + (roleAdjustments[state.currentRole] || 0);
+  const energy = Number(state.resources && state.resources.energy) || 0;
+  const pressure = Number(state.resources && state.resources.pressure) || 0;
+  if (energy >= 80) minutes += 60;
+  if (energy < 50) minutes -= 60;
+  if (energy < 30) minutes -= 60;
+  if (pressure >= 50) minutes -= 60;
+  if (pressure >= 70) minutes -= 60;
+  return closestDailyBucket(minutes);
+}
+
+function getWeeklyFocus(state) {
+  const id = normalizeWeeklyFocus(state.weeklyFocus);
+  return { id, ...WEEKLY_FOCUS_CONFIG[id] };
+}
+
+function formatWeeklyFocus(state) {
+  return getWeeklyFocus(state).name;
+}
+
+function setWeeklyFocus(state, id) {
+  if (!WEEKLY_FOCUS_CONFIG[id]) return `没有这个周重点：${id}。可选：learning、project、freelance、quality、balanced。`;
+  state.weeklyFocus = id;
+  return `本周重点已设为：${WEEKLY_FOCUS_CONFIG[id].name}。`;
+}
+
+function getDailyTimeStatus(state) {
+  const limit = Math.max(1, Number(state.currentDailyActionMinutesLimit) || calculateDailyActionMinutesLimit(state));
+  const used = Math.max(0, Number(state.dailyActionMinutesUsed) || 0);
+  return {
+    used,
+    limit,
+    remaining: Math.max(0, limit - used),
+    overtime: used > limit,
+    label: `${formatNumber(used)}/${formatNumber(limit)}m`
+  };
+}
+
+function getActiveWorldEvents(state) {
+  const day = getWorldCalendar(state.worldTimeMinutes).day;
+  return WORLD_EVENTS.filter((event) => day >= event.startDay && day <= event.endDay);
+}
+
+function formatWorldEvents(state) {
+  const events = getActiveWorldEvents(state);
+  return formatLines([
+    `世界日历：${formatWorldCalendar(state)}`,
+    events.length ? "当前事件：" : "当前事件：暂无",
+    ...events.map((event) => `${event.id} - ${event.name}：${event.message}`)
+  ]);
+}
+
+function getSkillExpMultiplier(state, skillId) {
+  return getActiveWorldEvents(state).reduce((multiplier, event) => multiplier * (event.skillExpMultipliers && event.skillExpMultipliers[skillId] || 1), 1);
+}
+
+function getProjectRewardMultiplier(state) {
+  return getActiveWorldEvents(state).reduce((multiplier, event) => multiplier * (event.projectRewardMultiplier || 1), 1);
+}
+
+function getNearestDeadline(state) {
+  const entries = Object.entries(state.activeProjectDeadlines || {})
+    .map(([id, deadline]) => {
+      const project = projectById(id);
+      if (!project || !Number.isFinite(Number(deadline.dueWorldMinute)) || deadline.failed) return null;
+      const daysRemaining = Math.ceil((deadline.dueWorldMinute - state.worldTimeMinutes) / MINUTES_PER_DAY);
+      return {
+        id,
+        name: project.name,
+        dueWorldMinute: deadline.dueWorldMinute,
+        dueDay: getWorldCalendar(deadline.dueWorldMinute).day,
+        daysRemaining,
+        overdue: deadline.dueWorldMinute < state.worldTimeMinutes
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.dueWorldMinute - b.dueWorldMinute);
+  return entries[0] || null;
+}
+
+function formatNearestDeadline(state) {
+  const deadline = getNearestDeadline(state);
+  if (!deadline) return "最近 Deadline：暂无";
+  const remaining = deadline.overdue ? `已逾期 ${Math.abs(deadline.daysRemaining)} 天` : `剩余 ${deadline.daysRemaining} 天`;
+  return `最近 Deadline：${deadline.name} D${String(deadline.dueDay).padStart(3, "0")}（${remaining}）`;
 }
 
 function clampState(state) {
@@ -369,7 +593,7 @@ function getActivityLevel(state, id) {
 }
 
 function activityLevelCost(level) {
-  return 60 + level * 40;
+  return 120 + level * 80;
 }
 
 function addActivityExp(state, id, amount) {
@@ -464,6 +688,12 @@ function getMultipliers(state) {
     if (level > 0) apply(skill, level);
   });
   state.ownedTools.map((id) => itemById(content.tools, id)).filter(Boolean).forEach(apply);
+  multipliers.code = Math.min(1.8, multipliers.code);
+  multipliers.exp = Math.min(1.6, multipliers.exp);
+  multipliers.money = Math.min(1.6, multipliers.money);
+  multipliers.bug = Math.max(0.55, multipliers.bug);
+  multipliers.debt = Math.max(0.55, multipliers.debt);
+  multipliers.pressure = Math.max(0.55, multipliers.pressure);
   return multipliers;
 }
 
@@ -484,7 +714,8 @@ function getProductionRisk(state) {
 function getProjectRiskScore(state) {
   const bugRisk = clamp((state.resources.bugs || 0) / 100, 0, 1) * 0.4;
   const debtRisk = clamp((state.resources.techDebt || 0) / 180, 0, 1) * 0.35;
-  const pressureRisk = clamp((state.resources.pressure || 0) / 100, 0, 1) * 0.25;
+  const communicationRelief = attributeBonus(state, "communication", 0.003, 0.22);
+  const pressureRisk = clamp((state.resources.pressure || 0) / 100, 0, 1) * 0.25 * (1 - communicationRelief);
   return bugRisk + debtRisk + pressureRisk;
 }
 
@@ -493,7 +724,12 @@ function getProjectSuccessRate(state, projectOrId) {
   if (!project) return 0;
   const maxSuccessRate = clamp(Number(project.maxSuccessRate) || 0.9, 0.15, 1);
   const difficulty = clamp(Number(project.difficulty) || 1, 1, 5);
-  return clamp(maxSuccessRate - getProjectRiskScore(state) * difficulty * 0.12, 0.15, maxSuccessRate);
+  let rate = maxSuccessRate - getProjectRiskScore(state) * difficulty * 0.12;
+  const deadline = state.activeProjectDeadlines && state.activeProjectDeadlines[project.id];
+  if (deadline && Number(deadline.dueWorldMinute) < Number(state.worldTimeMinutes || WORLD_START_MINUTES)) {
+    rate -= 0.12;
+  }
+  return clamp(rate, 0.15, maxSuccessRate);
 }
 
 function getProjectRequiredSeconds(projectOrId) {
@@ -743,27 +979,39 @@ function applyResourceDelta(state, key, rawDelta) {
   return state.resources[key] - before;
 }
 
-function settleActivity(state, activity, seconds) {
+function settleActivity(state, activity, seconds, options = {}) {
   const level = getActivityLevel(state, activity.id);
   const activityMultiplier = 1 + (level - 1) * 0.08;
   const attributeMultiplier = 1 + attributeBonus(state, activity.primaryAttribute, 0.0025, 0.22);
   const multipliers = getMultipliers(state);
   const risk = getProductionRisk(state);
+  const maxEnergy = (roleById(state.currentRole) || content.roles[0]).maxEnergy;
   const lowEnergy = activity.id !== "rest" && state.resources.energy <= 0;
-  const energyFactor = lowEnergy ? 0.35 : 1;
-  const positiveFactor = activityMultiplier * attributeMultiplier * energyFactor;
+  const energyFactor = activity.id === "rest" ? 1 : clamp(0.35 + 0.65 * (state.resources.energy || 0) / maxEnergy, 0.35, 1);
+  const lowEnergyPenalty = activity.id !== "rest" && state.resources.energy < 30 ? 0.8 : 1;
+  const overtimeFactor = options.overtime ? 0.45 : 1;
+  const focus = getWeeklyFocus(state);
+  const learningFocusFactor = focus.id === "learning" && activity.id === "study" ? focus.learning : 1;
+  const qualityActivityIds = new Set(["bug-hunting", "refactoring", "testing", "code-review"]);
+  const qualityFactor = focus.id === "quality" && qualityActivityIds.has(activity.id) ? focus.quality : 1;
+  const positiveFactor = activityMultiplier * attributeMultiplier * energyFactor * lowEnergyPenalty * overtimeFactor * learningFocusFactor * qualityFactor;
   const deltas = {};
 
   if (activity.energyCostPerSecond > 0) {
-    deltas.energy = applyResourceDelta(state, "energy", -activity.energyCostPerSecond * seconds);
+    const focusRelief = attributeBonus(state, "focus", 0.0025, 0.2);
+    deltas.energy = applyResourceDelta(state, "energy", -activity.energyCostPerSecond * (1 - focusRelief) * seconds);
   }
 
   for (const [key, value] of Object.entries(activity.effectsPerSecond || {})) {
     let delta = value * seconds;
     if (delta > 0) delta *= positiveFactor;
+    if (key === "energy" && delta > 0) delta *= 1 + attributeBonus(state, "resilience", 0.0025, 0.2);
     if (key === "codeLines" && delta > 0) delta *= multipliers.code * risk.codeEfficiency;
     if (key === "exp" && delta > 0) delta *= multipliers.exp;
     if (key === "money" && delta > 0) delta *= multipliers.money;
+    if (key === "money" && delta > 0 && focus.id === "freelance") delta *= focus.money;
+    if (key === "codeLines" && delta > 0 && focus.id === "quality") delta *= focus.code;
+    if (key === "money" && delta > 0 && focus.id === "quality") delta *= focus.money;
     if (key === "bugs" && delta < 0) delta *= 1 + attributeBonus(state, "logic", 0.004, 0.32);
     if (key === "techDebt" && delta < 0) delta *= 1 + attributeBonus(state, "logic", 0.003, 0.24);
     if (key === "pressure" && delta < 0) delta *= 1 + attributeBonus(state, "resilience", 0.004, 0.32);
@@ -776,7 +1024,11 @@ function settleActivity(state, activity, seconds) {
     if (key === "bugs") delta *= multipliers.bug * risk.bugDebtBoost;
     if (key === "techDebt") delta *= multipliers.debt;
     if (key === "pressure") delta *= multipliers.pressure;
+    if (key === "pressure" && focus.id === "freelance") delta *= focus.pressure;
+    if (key === "bugs" && state.resources.energy < 10) delta *= 3;
     if (lowEnergy && key === "pressure") delta *= 1.8;
+    if (options.overtime && (key === "bugs" || key === "techDebt")) delta *= 1.8;
+    if (options.overtime && key === "pressure") delta *= 1.5;
     const applied = applyResourceDelta(state, key, delta);
     deltas[key] = (deltas[key] || 0) + applied;
   }
@@ -784,18 +1036,21 @@ function settleActivity(state, activity, seconds) {
   if (lowEnergy) {
     deltas.pressure = (deltas.pressure || 0) + applyResourceDelta(state, "pressure", seconds * 0.006);
   }
+  if (options.overtime) {
+    deltas.pressure = (deltas.pressure || 0) + applyResourceDelta(state, "pressure", seconds * 0.003);
+  }
 
   state.stats.totalCodeLines += Math.max(0, deltas.codeLines || 0);
   state.stats.totalBugsFixed += Math.max(0, -(deltas.bugs || 0));
   state.activityStats.totalActiveSeconds += seconds;
   state.activityStats.byActivity[activity.id] = (state.activityStats.byActivity[activity.id] || 0) + seconds;
 
-  const levelUps = addActivityExp(state, activity.id, activity.activityExpPerSecond * seconds * attributeMultiplier);
+  const levelUps = addActivityExp(state, activity.id, activity.activityExpPerSecond * seconds * attributeMultiplier * overtimeFactor * learningFocusFactor * qualityFactor);
   for (const [attr, amount] of Object.entries(activity.attributeExpPerMinute || {})) {
     addAttributeExp(state, attr, amount * seconds / 60);
   }
 
-  return { deltas, levelUps, lowEnergy };
+  return { deltas, levelUps, lowEnergy: lowEnergy || (activity.id !== "rest" && state.resources.energy <= 0) };
 }
 
 function ensureProjectProgress(state, projectId) {
@@ -808,6 +1063,7 @@ function ensureProjectProgress(state, projectId) {
 function clearProjectProgress(state, projectId) {
   delete state.projectProgress[projectId];
   if (state.activeProjectId === projectId) state.activeProjectId = null;
+  if (state.activeProjectDeadlines) delete state.activeProjectDeadlines[projectId];
 }
 
 function ensureSkillLearningProgress(state, skillId) {
@@ -822,7 +1078,8 @@ function getSkillLearningProgress(state, skillOrId) {
   const id = skill && skill.id;
   const progress = id && state.skillLearningProgress[id] ? state.skillLearningProgress[id] : {};
   const workedSeconds = Math.max(0, Number(progress.workedSeconds) || 0);
-  const requiredSeconds = Math.max(1, Number(skill && skill.learningSeconds) || 600);
+  const learningRelief = attributeBonus(state, "learning", 0.0025, 0.2);
+  const requiredSeconds = Math.max(1, Math.round((Number(skill && skill.learningSeconds) || 600) * (1 - learningRelief)));
   return {
     workedSeconds,
     requiredSeconds,
@@ -837,9 +1094,9 @@ function clearSkillLearningProgress(state, skillId) {
   if (state.activeSkillLearningId === skillId) state.activeSkillLearningId = null;
 }
 
-function settleSkillLearning(state, skill, seconds) {
+function settleSkillLearning(state, skill, seconds, options = {}) {
   const progress = ensureSkillLearningProgress(state, skill.id);
-  progress.workedSeconds += seconds;
+  progress.workedSeconds += seconds * (options.workMultiplier || 1);
   const currentProgress = getSkillLearningProgress(state, skill);
   if (currentProgress.workedSeconds < currentProgress.requiredSeconds) return [];
 
@@ -855,9 +1112,12 @@ function settleSkillLearning(state, skill, seconds) {
 
 function applyProjectRewards(state, project, options = {}) {
   const firstSuccess = !state.completedProjects.includes(project.id);
-  const rewardScale = firstSuccess ? 1 : 0.15;
-  state.resources.exp += (project.rewards.exp || 0) * rewardScale;
-  state.resources.money += (project.rewards.money || 0) * rewardScale;
+  const rewardScale = firstSuccess ? 1 : 0.05;
+  const rewardMultiplier = options.rewardMultiplier || 1;
+  const expReward = (project.rewards.exp || 0) * rewardScale * rewardMultiplier;
+  const moneyReward = (project.rewards.money || 0) * rewardScale * rewardMultiplier;
+  state.resources.exp += expReward;
+  state.resources.money += moneyReward;
   if (firstSuccess) {
     state.resources.reputation += project.rewards.reputation || 0;
     state.completedProjects.push(project.id);
@@ -867,8 +1127,8 @@ function applyProjectRewards(state, project, options = {}) {
   return {
     firstSuccess,
     rewards: {
-      exp: (project.rewards.exp || 0) * rewardScale,
-      money: (project.rewards.money || 0) * rewardScale,
+      exp: expReward,
+      money: moneyReward,
       reputation: firstSuccess ? project.rewards.reputation || 0 : 0
     },
     skillExp: addSkillExp(state, project.skillExpRewards, options.skillExpMultiplier || 1)
@@ -877,7 +1137,7 @@ function applyProjectRewards(state, project, options = {}) {
 
 function settleProject(state, project, seconds, options = {}) {
   const progress = ensureProjectProgress(state, project.id);
-  progress.workedSeconds += seconds;
+  progress.workedSeconds += seconds * (options.workMultiplier || 1);
   const projectProgress = getProjectProgress(state, project);
   const messages = [];
 
@@ -889,7 +1149,10 @@ function settleProject(state, project, seconds, options = {}) {
   const rng = options.rng || Math.random;
   const roll = rng();
   if (roll <= successRate) {
-    const rewardResult = applyProjectRewards(state, project);
+    const rewardResult = applyProjectRewards(state, project, {
+      rewardMultiplier: options.rewardMultiplier || 1,
+      skillExpMultiplier: options.skillExpMultiplier || 1
+    });
     clearProjectProgress(state, project.id);
     messages.push(formatLines([
       `项目 ${project.name} 工时达标：成功率 ${formatPercent(successRate)}，交付成功。`,
@@ -912,63 +1175,194 @@ function settleProject(state, project, seconds, options = {}) {
   return messages;
 }
 
+function getActiveMode(state) {
+  const activeSkill = itemById(content.skills, state.activeSkillLearningId);
+  if (activeSkill && getSkillLevel(state, activeSkill.id) <= 0) return { type: "skill", item: activeSkill };
+  if (state.activeSkillLearningId && (!activeSkill || getSkillLevel(state, state.activeSkillLearningId) > 0)) {
+    if (activeSkill) clearSkillLearningProgress(state, activeSkill.id);
+    else state.activeSkillLearningId = null;
+  }
+
+  const activeProject = projectById(state.activeProjectId);
+  if (activeProject) return { type: "project", item: activeProject };
+  if (state.activeProjectId && !activeProject) state.activeProjectId = null;
+
+  const activity = activityById(state.activeActivityId);
+  if (activity) return { type: "activity", item: activity };
+  if (state.activeActivityId && !activity) state.activeActivityId = null;
+  return { type: "idle", item: null };
+}
+
+function startNewWorldDay(state, messages = []) {
+  state.dailyActionMinutesUsed = 0;
+  state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
+  applyResourceDelta(state, "energy", 20);
+  applyResourceDelta(state, "pressure", -5);
+  messages.push(`新的一天：${formatWorldCalendar(state, "short")}，今日可用时间 ${state.currentDailyActionMinutesLimit}m。`);
+}
+
+function applyWorldEventTriggers(state, fromDay, toDay, messages = []) {
+  if (toDay < fromDay) return;
+  state.triggeredWorldEvents = Array.isArray(state.triggeredWorldEvents) ? state.triggeredWorldEvents : [];
+  for (const event of WORLD_EVENTS) {
+    if (state.triggeredWorldEvents.includes(event.id)) continue;
+    if (event.startDay >= fromDay && event.startDay <= toDay) {
+      state.triggeredWorldEvents.push(event.id);
+      if (event.pressure) applyResourceDelta(state, "pressure", event.pressure);
+      if (event.reputation) applyResourceDelta(state, "reputation", event.reputation);
+      messages.push(`世界事件：${event.name}。${event.message}`);
+    }
+  }
+}
+
+function ensureProjectDeadline(state, project) {
+  state.activeProjectDeadlines = state.activeProjectDeadlines || {};
+  const existing = state.activeProjectDeadlines[project.id];
+  if (existing && Number.isFinite(Number(existing.dueWorldMinute))) return existing;
+  const progress = state.projectProgress[project.id];
+  if (progress && Number.isFinite(Number(progress.dueWorldMinute))) {
+    state.activeProjectDeadlines[project.id] = { dueWorldMinute: progress.dueWorldMinute, failed: false };
+    return state.activeProjectDeadlines[project.id];
+  }
+  const currentDay = getWorldCalendar(state.worldTimeMinutes).day;
+  const deadlineDay = Number.isFinite(Number(project.deadlineDay))
+    ? Math.max(currentDay, Math.floor(Number(project.deadlineDay)))
+    : currentDay + Math.max(2, Math.ceil(Number(project.deadlineDays) || (3 + Number(project.difficulty || 1) * 2)));
+  const dueWorldMinute = (deadlineDay - 1) * MINUTES_PER_DAY + 18 * 60;
+  state.activeProjectDeadlines[project.id] = { dueWorldMinute, failed: false };
+  if (progress) progress.dueWorldMinute = dueWorldMinute;
+  return state.activeProjectDeadlines[project.id];
+}
+
+function checkProjectDeadlines(state, messages = []) {
+  state.activeProjectDeadlines = state.activeProjectDeadlines || {};
+  for (const [id, deadline] of Object.entries(state.activeProjectDeadlines)) {
+    if (deadline.failed || !Number.isFinite(Number(deadline.dueWorldMinute))) continue;
+    const project = projectById(id);
+    if (!project) continue;
+    if (state.completedProjects.includes(id)) {
+      delete state.activeProjectDeadlines[id];
+      continue;
+    }
+    const overdueMinutes = state.worldTimeMinutes - deadline.dueWorldMinute;
+    if (overdueMinutes < 0) continue;
+    const graceMinutes = 2 * MINUTES_PER_DAY;
+    if (!deadline.warned) {
+      deadline.warned = true;
+      applyResourceDelta(state, "pressure", 10);
+      messages.push(`Deadline 逾期：${project.name} 已超过 D${getWorldCalendar(deadline.dueWorldMinute).day}，成功率和奖励将受惩罚。`);
+    }
+    if (overdueMinutes >= graceMinutes) {
+      deadline.failed = true;
+      clearProjectProgress(state, id);
+      state.resources.reputation = Math.max(0, state.resources.reputation - 2);
+      applyResourceDelta(state, "pressure", 18);
+      messages.push(`项目失败：${project.name} 超过宽限期，投入损失，声望下降。`);
+    }
+  }
+}
+
+function getWorkModifiers(state, type, item, overtime) {
+  const focus = getWeeklyFocus(state);
+  let workMultiplier = overtime ? 0.5 : 1;
+  let rewardMultiplier = getProjectRewardMultiplier(state);
+  let skillExpMultiplier = 1;
+  if (type === "project") {
+    if (focus.id === "project") workMultiplier *= focus.project;
+    if (focus.id === "learning") workMultiplier *= focus.project;
+    const deadline = ensureProjectDeadline(state, item);
+    if (deadline && Number(deadline.dueWorldMinute) < state.worldTimeMinutes) {
+      workMultiplier *= 0.85;
+      rewardMultiplier *= 0.75;
+    }
+    for (const skillId of Object.keys(item.skillExpRewards || {})) {
+      skillExpMultiplier = Math.max(skillExpMultiplier, getSkillExpMultiplier(state, skillId));
+    }
+  }
+  if (type === "skill") {
+    if (focus.id === "learning") workMultiplier *= focus.skill;
+    if (focus.id === "project") workMultiplier *= focus.skill;
+    if (state.resources.energy < 15) workMultiplier *= 0.5;
+  }
+  if (state.resources.energy < 30 && type === "project") workMultiplier *= 0.8;
+  return { workMultiplier, rewardMultiplier, skillExpMultiplier };
+}
+
 function settleTime(state, now = Date.now(), options = {}) {
   const maxSeconds = options.maxSeconds ?? OFFLINE_CAP_SECONDS;
   const elapsedSeconds = Math.max(0, Math.floor((now - state.lastTick) / 1000));
   const seconds = Math.min(elapsedSeconds, maxSeconds);
   const messages = [];
+  const applyWorldEffects = options.randomEvents !== false;
 
   if (seconds <= 0) {
     state.lastTick = now;
     return { seconds: 0, messages };
   }
 
-  const activeSkill = itemById(content.skills, state.activeSkillLearningId);
-  if (activeSkill) {
-    if (getSkillLevel(state, activeSkill.id) > 0) {
-      clearSkillLearningProgress(state, activeSkill.id);
-      state.lastTick = now;
-      return { seconds, messages };
-    }
-    messages.push(...settleSkillLearning(state, activeSkill, seconds));
-    state.lastTick = now;
-    clampState(state);
-    return { seconds, messages };
-  }
-
-  if (state.activeSkillLearningId && !activeSkill) {
-    state.activeSkillLearningId = null;
-  }
-
-  const activeProject = projectById(state.activeProjectId);
-  if (activeProject) {
-    messages.push(...settleProject(state, activeProject, seconds, options));
-    state.lastTick = now;
-    clampState(state);
-    return { seconds, messages };
-  }
-
-  if (state.activeProjectId && !activeProject) {
-    state.activeProjectId = null;
-  }
-
-  const activity = activityById(state.activeActivityId);
-  if (!activity) {
-    state.lastTick = now;
-    return { seconds, messages };
-  }
-
   const beforeResources = snapshotResources(state.resources);
-  const result = settleActivity(state, activity, seconds);
+  const result = { deltas: {}, levelUps: 0, lowEnergy: false, overtime: false, activityName: null, activeSeconds: 0 };
+  let remainingMinutes = seconds;
+  state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
+  if (applyWorldEffects) applyWorldEventTriggers(state, getWorldCalendar(state.worldTimeMinutes).day, getWorldCalendar(state.worldTimeMinutes).day, messages);
+
+  while (remainingMinutes > 0) {
+    const currentCalendar = getWorldCalendar(state.worldTimeMinutes);
+    const minutesToNextDay = MINUTES_PER_DAY - (state.worldTimeMinutes % MINUTES_PER_DAY);
+    const segmentMinutes = Math.min(60, remainingMinutes, minutesToNextDay);
+    const beforeDay = currentCalendar.day;
+    const mode = getActiveMode(state);
+    const hasActiveWork = mode.type !== "idle";
+    const overtime = applyWorldEffects && hasActiveWork && state.dailyActionMinutesUsed >= state.currentDailyActionMinutesLimit;
+    if (hasActiveWork) {
+      state.dailyActionMinutesUsed += segmentMinutes;
+      result.overtime = result.overtime || overtime;
+      result.activeSeconds += segmentMinutes;
+      if (mode.type === "activity") {
+        result.activityName = mode.item.name;
+        const segment = settleActivity(state, mode.item, segmentMinutes, { overtime });
+        for (const [key, value] of Object.entries(segment.deltas || {})) {
+          result.deltas[key] = (result.deltas[key] || 0) + value;
+        }
+        result.levelUps += segment.levelUps || 0;
+        result.lowEnergy = result.lowEnergy || segment.lowEnergy;
+      } else if (mode.type === "skill") {
+        const modifiers = getWorkModifiers(state, "skill", mode.item, overtime);
+        messages.push(...settleSkillLearning(state, mode.item, segmentMinutes, modifiers));
+      } else if (mode.type === "project") {
+        const modifiers = getWorkModifiers(state, "project", mode.item, overtime);
+        messages.push(...settleProject(state, mode.item, segmentMinutes, { ...options, ...modifiers }));
+      }
+    }
+
+    state.worldTimeMinutes += segmentMinutes;
+    remainingMinutes -= segmentMinutes;
+    const afterDay = getWorldCalendar(state.worldTimeMinutes).day;
+    if (afterDay !== beforeDay) {
+      if (applyWorldEffects) {
+        startNewWorldDay(state, messages);
+        applyWorldEventTriggers(state, beforeDay + 1, afterDay, messages);
+      } else {
+        state.dailyActionMinutesUsed = 0;
+        state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
+      }
+    }
+    if (applyWorldEffects) checkProjectDeadlines(state, messages);
+  }
+
   const changedResources = formatChangedResources(beforeResources, state.resources);
-  if (changedResources) {
-    messages.push(`${activity.name} ${seconds} 秒：${changedResources}。`);
+  if (result.activityName && changedResources) {
+    messages.push(`${result.activityName} ${result.activeSeconds} 秒：${changedResources}。`);
   }
   if (result.levelUps > 0) {
-    messages.push(`${activity.name}提升到 Lv.${getActivityLevel(state, activity.id)}。`);
+    const activity = activityById(state.activeActivityId);
+    messages.push(`${result.activityName}提升到 Lv.${activity ? getActivityLevel(state, activity.id) : ""}。`);
   }
   if (result.lowEnergy) {
     messages.push("精力耗尽，当前活动收益下降，压力额外上升。");
+  }
+  if (result.overtime) {
+    messages.push("今日预算已耗尽，进入低效加班：产出下降，压力和质量风险上升。");
   }
 
   if (options.randomEvents && seconds > 0) {
@@ -1233,10 +1627,17 @@ function formatState(state) {
   const projectProgress = activeProject ? getProjectProgress(state, activeProject) : null;
   const skillLearningProgress = activeSkill ? getSkillLearningProgress(state, activeSkill) : null;
   const learnedSkills = content.skills.filter((skill) => getSkillLevel(state, skill.id) > 0).map((skill) => formatSkillProgress(state, skill.id));
+  const dailyTime = getDailyTimeStatus(state);
+  const activeEvents = getActiveWorldEvents(state);
   return [
     `档案：${state.profileId} - ${state.profileName}`,
     `人物卡：${getCharacterCardName(state.characterCardId)}`,
     `职位：${role ? role.name : state.currentRole}`,
+    `世界时间：${formatWorldCalendar(state)}`,
+    `今日预算：${dailyTime.label}（剩余 ${formatNumber(dailyTime.remaining)}m）`,
+    `本周重点：${formatWeeklyFocus(state)}`,
+    `当前事件：${activeEvents.length ? activeEvents.map((event) => event.name).join("，") : "暂无"}`,
+    formatNearestDeadline(state),
     `当前活动：${active ? `${active.name} Lv.${getActivityLevel(state, active.id)}` : "无"}`,
     `当前项目：${activeProject ? `${activeProject.name} 工时 ${projectProgress.progressPercent}%（成功率 ${formatPercent(getProjectSuccessRate(state, activeProject))}）` : "无"}`,
     `当前学习：${activeSkill ? `${activeSkill.name} 学习 ${skillLearningProgress.progressPercent}%` : "无"}`,
@@ -1262,8 +1663,10 @@ function helpText() {
     "命令：",
     "  status                 查看状态",
     "  activities             查看活动列表",
+    "  events                 查看当前世界事件",
     "  start <id>             开始一个持续活动",
     "  stop                   停止当前活动",
+    "  week <focus>           设置本周重点：learning|project|freelance|quality|balanced",
     "  learn <id>             开始或继续学习技能",
     "  upgrade <id>           消耗技能经验和资源升级技能",
     "  buy <id>               买工具",
@@ -1515,6 +1918,10 @@ function getManagementOptions(state, type) {
       const inProgress = progress.resourcesPaid;
       const missing = missingProjectRequirements(state, project, { skipResources: progress.resourcesPaid });
       const successRate = getProjectSuccessRate(state, project);
+      const deadline = state.activeProjectDeadlines && state.activeProjectDeadlines[project.id];
+      const deadlineText = deadline && Number.isFinite(Number(deadline.dueWorldMinute))
+        ? `；Deadline D${String(getWorldCalendar(deadline.dueWorldMinute).day).padStart(3, "0")}`
+        : "";
       return {
         id: project.id,
         name: project.name,
@@ -1523,7 +1930,7 @@ function getManagementOptions(state, type) {
         done: completed,
         available: missing.length === 0,
         cost: progress.resourcesPaid ? "已投入" : formatResourceList(project.requirements.resources || {}),
-        effects: `难度 ${project.difficulty}；工时 ${formatDuration(progress.workedSeconds)}/${formatDuration(progress.requiredSeconds)}（${progress.progressPercent}%）；成功率 ${formatPercent(successRate)} / 最高 ${formatPercent(project.maxSuccessRate)}`,
+        effects: `难度 ${project.difficulty}；工时 ${formatDuration(progress.workedSeconds)}/${formatDuration(progress.requiredSeconds)}（${progress.progressPercent}%）；成功率 ${formatPercent(successRate)} / 最高 ${formatPercent(project.maxSuccessRate)}${deadlineText}`,
         missing: missing.join("、"),
         difficulty: project.difficulty,
         maxSuccessRate: project.maxSuccessRate,
@@ -1569,9 +1976,25 @@ function getGameViewModel(state) {
   const activeSkillProgress = activeSkill ? getSkillLearningProgress(state, activeSkill) : null;
   const claimableGoals = getClaimableGoals(state);
   const currentMainGoal = getCurrentMainGoal(state);
+  const calendar = getWorldCalendar(state.worldTimeMinutes);
+  const dailyTime = getDailyTimeStatus(state);
+  const weeklyFocus = getWeeklyFocus(state);
+  const activeWorldEvents = getActiveWorldEvents(state).map((event) => ({
+    id: event.id,
+    name: event.name,
+    message: event.message,
+    startDay: event.startDay,
+    endDay: event.endDay
+  }));
+  const nearestDeadline = getNearestDeadline(state);
 
   return {
     title: "代码人生",
+    calendar,
+    dailyTime,
+    weeklyFocus,
+    activeWorldEvents,
+    nearestDeadline,
     profile: {
       id: state.profileId,
       name: state.profileName,
@@ -1813,11 +2236,13 @@ function submitProject(state, id) {
   state.activeProjectId = project.id;
   state.activeSkillLearningId = null;
   state.activeActivityId = null;
+  const deadline = ensureProjectDeadline(state, project);
   const currentProgress = getProjectProgress(state, project);
   return formatLines([
     `${wasPaid ? "继续项目" : state.completedProjects.includes(id) ? "重复项目" : "开始项目"}：${project.name}。`,
     wasPaid ? "" : `投入：${formatResourceList(Object.fromEntries(Object.entries(project.requirements.resources || {}).map(([key, value]) => [key, -value])))}`,
     `进度：${formatDuration(currentProgress.workedSeconds)}/${formatDuration(currentProgress.requiredSeconds)}（${currentProgress.progressPercent}%）。`,
+    `Deadline：D${String(getWorldCalendar(deadline.dueWorldMinute).day).padStart(3, "0")} ${getWorldCalendar(deadline.dueWorldMinute).hhmm}。`,
     `难度 ${project.difficulty}，当前成功率 ${formatPercent(getProjectSuccessRate(state, project))}，最高 ${formatPercent(project.maxSuccessRate)}。`,
     formatNextAdvice(state)
   ]);
@@ -2124,6 +2549,12 @@ function processCommand(state, input, options = {}) {
     case "activities":
       messages.push(formatActivities(state));
       break;
+    case "events":
+      messages.push(formatWorldEvents(state));
+      break;
+    case "week":
+      messages.push(arg ? setWeeklyFocus(state, arg) : `本周重点：${formatWeeklyFocus(state)}。用法：week <learning|project|freelance|quality|balanced>`);
+      break;
     case "start":
       messages.push(arg ? startActivity(state, arg) : "用法：start <activityId>");
       break;
@@ -2322,6 +2753,7 @@ module.exports = {
   DEFAULT_ATTRIBUTES,
   OFFLINE_CAP_SECONDS,
   SAVE_PATH,
+  WORLD_START_MINUTES,
   addAttributeExp,
   buyTool,
   claimGoal,
@@ -2337,7 +2769,11 @@ module.exports = {
   formatGoals,
   formatGoalSummary,
   formatLiveStatus,
+  formatNearestDeadline,
   formatState,
+  formatWorldCalendar,
+  formatWorldEvents,
+  calculateDailyActionMinutesLimit,
   getActivityLevel,
   getActivityOptions,
   getActivityProgress,
@@ -2349,11 +2785,13 @@ module.exports = {
   getGoalOptions,
   getManagementOptions,
   getMultipliers,
+  getNearestDeadline,
   getProductionRisk,
   getProfileOptions,
   getProjectProgress,
   getProjectSuccessRate,
   getSkillProgress,
+  getWorldCalendar,
   helpText,
   learnSkill,
   listContent,

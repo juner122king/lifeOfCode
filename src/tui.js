@@ -80,6 +80,115 @@ function commandForPanel(panelId, option) {
   return option.command;
 }
 
+function shouldExitProfileCreationMode(input, key = {}) {
+  const value = String(input || "").toLowerCase();
+  return Boolean(key.escape || key.tab || PANELS.some((panel) => panel.key.toLowerCase() === value));
+}
+
+function getProfilePageOptions(state, options = {}) {
+  if (options.creatingProfile) return getCharacterCardOptions({ now: options.profileCreationStartedAt || options.now });
+  return getProfileOptions(state, options);
+}
+
+function handleProfileEnterKeypress(state, option, options = {}) {
+  if (!option) {
+    return {
+      creatingProfile: Boolean(options.creatingProfile),
+      profileCreationStartedAt: options.profileCreationStartedAt || null,
+      messages: [],
+      changed: false,
+      exit: false
+    };
+  }
+
+  if (!options.creatingProfile && option.id === "profile-new") {
+    return {
+      creatingProfile: true,
+      profileCreationStartedAt: options.now ?? Date.now(),
+      messages: ["请选择人物卡创建新档案。"],
+      changed: false,
+      exit: false
+    };
+  }
+
+  const command = option.command;
+  if (!command) {
+    return {
+      creatingProfile: Boolean(options.creatingProfile),
+      profileCreationStartedAt: options.profileCreationStartedAt || null,
+      messages: [],
+      changed: false,
+      exit: false
+    };
+  }
+
+  const result = processCommand(state, command, options);
+  return {
+    creatingProfile: false,
+    profileCreationStartedAt: null,
+    messages: [`> ${command}`, ...result.messages],
+    changed: true,
+    exit: result.exit
+  };
+}
+
+function resolveProfileDeleteKeypress(option, pendingProfileId) {
+  const command = option && option.deleteCommand;
+  if (!command) return { pendingProfileId: null, command: null, message: null };
+  if (pendingProfileId !== option.id) {
+    return {
+      pendingProfileId: option.id,
+      command: null,
+      message: `再次按 D 删除档案：${option.id}`
+    };
+  }
+  return { pendingProfileId: null, command, message: null };
+}
+
+function profileDeleteUnavailableMessage(option) {
+  if (!option) return "没有选中可删除的档案。";
+  if (option.id === "profile-new" || option.id === "profile-save") return "请选择具体档案后再按 D D 删除。";
+  if (option.current) return "不能删除当前正在使用的档案。";
+  if (option.id === "default") return "default 档案不能删除。";
+  return `这个档案不能删除：${option.id}`;
+}
+
+function handleProfileDeleteKeypress(state, option, pendingProfileId, options = {}) {
+  if (options.creatingProfile) {
+    return {
+      pendingProfileId: null,
+      messages: ["正在选择人物卡，请先取消或完成新建档案。"],
+      changed: false,
+      exit: false
+    };
+  }
+
+  const action = resolveProfileDeleteKeypress(option, pendingProfileId);
+  if (action.message) {
+    return {
+      pendingProfileId: action.pendingProfileId,
+      messages: [action.message],
+      changed: false,
+      exit: false
+    };
+  }
+  if (!action.command) {
+    return {
+      pendingProfileId: action.pendingProfileId,
+      messages: [profileDeleteUnavailableMessage(option)],
+      changed: false,
+      exit: false
+    };
+  }
+  const result = processCommand(state, action.command, options);
+  return {
+    pendingProfileId: action.pendingProfileId,
+    messages: [`> ${action.command}`, ...result.messages],
+    changed: true,
+    exit: result.exit
+  };
+}
+
 function getPageWindow(optionsLength, selectedIndex, pageSize) {
   const length = Math.max(0, Math.floor(Number(optionsLength) || 0));
   const size = Math.max(MIN_LIST_PAGE_SIZE, Math.floor(Number(pageSize) || MIN_LIST_PAGE_SIZE));
@@ -97,7 +206,7 @@ function calculateLayoutBudget(rows, columns) {
   const terminalColumns = Math.max(40, Math.floor(Number(columns) || DEFAULT_TERMINAL_COLUMNS));
   const compact = terminalRows <= 24;
   const narrow = terminalColumns < 100;
-  const headerHeight = 4;
+  const headerHeight = 5;
   const resourceHeight = 5;
   const tabHeight = 1;
   const footerHeight = 3;
@@ -205,6 +314,12 @@ async function startTui() {
     const learning = view.activeSkillLearning ? `${view.activeSkillLearning.name} 学习 ${view.activeSkillLearning.progressPercent}%` : "无";
     const detail = `活动 ${active}  项目 ${project}  学习 ${learning}`;
     const width = Math.max(48, budget.terminalColumns - 6);
+    const calendarLine = budget.narrow
+      ? `${view.calendar.short} | 今日 ${view.dailyTime.label}`
+      : `${view.calendar.short}  今日 ${view.dailyTime.label}  本周 ${view.weeklyFocus.name}  ${view.nearestDeadline ? `Deadline ${view.nearestDeadline.name} D${String(view.nearestDeadline.dueDay).padStart(3, "0")}` : "Deadline 暂无"}`;
+    const eventLine = view.activeWorldEvents.length
+      ? `事件 ${view.activeWorldEvents.map((event) => event.name).join("，")}  ${view.nearestDeadline ? `最近 ${view.nearestDeadline.name} D${String(view.nearestDeadline.dueDay).padStart(3, "0")}` : "最近 Deadline 暂无"}`
+      : `${view.nearestDeadline ? `最近 Deadline ${view.nearestDeadline.name} D${String(view.nearestDeadline.dueDay).padStart(3, "0")}` : "最近 Deadline 暂无"}`;
     return h(Box, { borderStyle: "round", borderColor: THEME.title, paddingX: 1, flexDirection: "column", height: budget.headerHeight },
       h(Box, { gap: 1 },
         h(Text, { bold: true, color: THEME.title }, `《${view.title}》`),
@@ -215,7 +330,9 @@ async function startTui() {
           ? h(Text, { color: THEME.status.paused, bold: true }, "暂停")
           : h(Text, { color: THEME.status.good }, h(Spinner, { type: "dots" }), " 自动结算")
       ),
-      h(Text, { color: THEME.muted }, trimText(`${detail}  ${view.nextAdvice}`, width))
+      h(Text, { color: THEME.status.info }, trimText(calendarLine, width)),
+      h(Text, { color: THEME.muted }, trimText(detail, width)),
+      h(Text, { color: THEME.muted }, trimText(`${eventLine}  ${view.nextAdvice}`, width))
     );
   }
 
@@ -410,7 +527,18 @@ async function startTui() {
 
   const MemoLogPanel = React.memo(LogPanel);
 
-  function Footer({ paused }) {
+  function Footer({ paused, creatingProfile }) {
+    if (creatingProfile) {
+      return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
+        h(KeyHint, { label: "Tab", text: "切换" }),
+        h(KeyHint, { label: "↑/↓", text: "选择" }),
+        h(KeyHint, { label: "PgUp/PgDn", text: "翻页" }),
+        h(KeyHint, { label: "Enter", text: "选择人物卡" }),
+        h(KeyHint, { label: "Esc", text: "取消" }),
+        h(KeyHint, { label: "Space", text: paused ? "恢复" : "暂停" }),
+        h(KeyHint, { label: "Q", text: "保存退出" })
+      );
+    }
     return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
       h(KeyHint, { label: "Tab", text: "切换" }),
       h(KeyHint, { label: "↑/↓", text: "选择" }),
@@ -428,7 +556,8 @@ async function startTui() {
     const [activePanel, setActivePanel] = useState(needsInitialProfile ? "cards" : "activities");
     const [selected, setSelected] = useState({});
     const [paused, setPaused] = useState(false);
-    const [pendingDeleteProfileId, setPendingDeleteProfileId] = useState(null);
+    const [profileCreationStartedAt, setProfileCreationStartedAt] = useState(null);
+    const pendingDeleteProfileIdRef = useRef(null);
     const [logs, setLogs] = useState([]);
     const [revision, refresh] = useReducer((value) => value + 1, 0);
     const nextLogIdRef = useRef(0);
@@ -470,11 +599,18 @@ async function startTui() {
 
     const options = useMemo(() => {
       if (needsInitialProfile && activePanel === "cards") return getCharacterCardOptions();
+      if (activePanel === "profiles") {
+        return getProfilePageOptions(stateRef.current, {
+          creatingProfile: profileCreationStartedAt !== null,
+          profileCreationStartedAt
+        });
+      }
       return getPanelOptions(stateRef.current, activePanel);
-    }, [activePanel, revision, needsInitialProfile]);
+    }, [activePanel, revision, needsInitialProfile, profileCreationStartedAt]);
     const selectedIndex = Math.min(selected[activePanel] || 0, Math.max(0, options.length - 1));
     const view = getGameViewModel(stateRef.current);
     const budget = calculateLayoutBudget(stdout && stdout.rows, stdout && stdout.columns);
+    const creatingProfile = activePanel === "profiles" && profileCreationStartedAt !== null;
 
     useInput((input, key) => {
       if (input.toLowerCase() === "q") {
@@ -489,33 +625,41 @@ async function startTui() {
       if (key.tab) {
         const currentIndex = PANELS.findIndex((panel) => panel.id === activePanel);
         setActivePanel(PANELS[(currentIndex + 1) % PANELS.length].id);
-        setPendingDeleteProfileId(null);
+        if (shouldExitProfileCreationMode(input, key)) setProfileCreationStartedAt(null);
+        pendingDeleteProfileIdRef.current = null;
         return;
       }
       const shortcut = PANELS.find((panel) => panel.key.toLowerCase() === input.toLowerCase());
       if (shortcut) {
         setActivePanel(shortcut.id);
-        setPendingDeleteProfileId(null);
+        if (shouldExitProfileCreationMode(input, key)) setProfileCreationStartedAt(null);
+        pendingDeleteProfileIdRef.current = null;
+        return;
+      }
+      if (creatingProfile && shouldExitProfileCreationMode(input, key)) {
+        setProfileCreationStartedAt(null);
+        pendingDeleteProfileIdRef.current = null;
+        addLogs(["已取消新建档案。"]);
         return;
       }
       if (key.upArrow) {
         setSelected((current) => ({ ...current, [activePanel]: Math.max(0, selectedIndex - 1) }));
-        setPendingDeleteProfileId(null);
+        pendingDeleteProfileIdRef.current = null;
         return;
       }
       if (key.downArrow) {
         setSelected((current) => ({ ...current, [activePanel]: Math.min(Math.max(0, options.length - 1), selectedIndex + 1) }));
-        setPendingDeleteProfileId(null);
+        pendingDeleteProfileIdRef.current = null;
         return;
       }
       if (key.pageUp) {
         setSelected((current) => ({ ...current, [activePanel]: Math.max(0, selectedIndex - budget.pageSize) }));
-        setPendingDeleteProfileId(null);
+        pendingDeleteProfileIdRef.current = null;
         return;
       }
       if (key.pageDown) {
         setSelected((current) => ({ ...current, [activePanel]: Math.min(Math.max(0, options.length - 1), selectedIndex + budget.pageSize) }));
-        setPendingDeleteProfileId(null);
+        pendingDeleteProfileIdRef.current = null;
         return;
       }
       if (key.return) {
@@ -532,6 +676,19 @@ async function startTui() {
           }
           return;
         }
+        if (activePanel === "profiles") {
+          const selectedOption = options[selectedIndex];
+          const result = handleProfileEnterKeypress(stateRef.current, selectedOption, {
+            creatingProfile,
+            profileCreationStartedAt,
+            randomEvents: true
+          });
+          setProfileCreationStartedAt(result.creatingProfile ? result.profileCreationStartedAt : null);
+          addLogs(result.messages);
+          if (result.exit) exit();
+          if (result.changed || result.creatingProfile !== creatingProfile) refresh();
+          return;
+        }
         const command = commandForPanel(activePanel, selectedOption);
         if (!command) return;
         const result = processCommand(stateRef.current, command, { randomEvents: true });
@@ -541,17 +698,11 @@ async function startTui() {
       }
       if (input.toLowerCase() === "d" && activePanel === "profiles") {
         const option = options[selectedIndex];
-        const command = option && option.deleteCommand;
-        if (!command) return;
-        if (pendingDeleteProfileId !== option.id) {
-          setPendingDeleteProfileId(option.id);
-          addLogs([`再次按 D 删除档案：${option.id}`]);
-          return;
-        }
-        const result = processCommand(stateRef.current, command, { randomEvents: true });
-        addLogs([`> ${command}`, ...result.messages]);
-        setPendingDeleteProfileId(null);
-        refresh();
+        const result = handleProfileDeleteKeypress(stateRef.current, option, pendingDeleteProfileIdRef.current, { creatingProfile, randomEvents: true });
+        pendingDeleteProfileIdRef.current = result.pendingProfileId;
+        addLogs(result.messages);
+        if (result.exit) exit();
+        if (result.changed) refresh();
       }
     });
 
@@ -563,7 +714,7 @@ async function startTui() {
         ? h(CharacterCardPanel, { view, budget })
         : h(MainPanel, { activePanel, options, selectedIndex, budget }),
       h(MemoLogPanel, { logs, budget }),
-      h(Footer, { paused })
+      h(Footer, { paused, creatingProfile })
     );
   }
 
@@ -583,8 +734,14 @@ module.exports = {
   calculateLayoutBudget,
   createLogEntries,
   formatOptionDetail,
+  getProfilePageOptions,
   getPageWindow,
   getLogRows,
+  handleProfileEnterKeypress,
+  handleProfileDeleteKeypress,
   normalizeLogMessages,
+  profileDeleteUnavailableMessage,
+  resolveProfileDeleteKeypress,
+  shouldExitProfileCreationMode,
   startTui
 };

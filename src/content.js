@@ -142,7 +142,77 @@ const characterCards = [
   }
 ];
 
-const activities = [
+const POSITIVE_ACTIVITY_RESOURCE_SCALE = {
+  codeLines: 0.55,
+  tests: 0.55,
+  docs: 0.55,
+  architecture: 0.55,
+  knowledge: 0.55,
+  leads: 0.55,
+  exp: 0.5,
+  money: 0.5,
+  reputation: 0.5,
+  energy: 0.16 / 0.28
+};
+const NEGATIVE_QUALITY_SCALE = { bugs: 0.65, techDebt: 0.65, pressure: 0.65 };
+const RISK_SCALE = { bugs: 1.15, techDebt: 1.15, pressure: 1.15 };
+const PROJECT_RESOURCE_SCALE = { 1: 1.6, 2: 2, 3: 2.4, 4: 3, 5: 3.5 };
+const PROJECT_WORK_SCALE = { 1: 1.5, 2: 1.75, 3: 2, 4: 2.25, 5: 2.5 };
+
+function roundBalance(value) {
+  return Math.round(value * 10000) / 10000;
+}
+
+function scaleActivityEffects(effects = {}) {
+  return Object.fromEntries(Object.entries(effects).map(([key, value]) => {
+    if (value > 0) return [key, roundBalance(value * (POSITIVE_ACTIVITY_RESOURCE_SCALE[key] || 1))];
+    if (value < 0) return [key, roundBalance(value * (NEGATIVE_QUALITY_SCALE[key] || 1))];
+    return [key, value];
+  }));
+}
+
+function scaleActivityRisks(risks = {}) {
+  return Object.fromEntries(Object.entries(risks).map(([key, value]) => [key, roundBalance(value * (RISK_SCALE[key] || 1))]));
+}
+
+function scaleActivity(activity) {
+  return {
+    ...activity,
+    activityExpPerSecond: roundBalance(activity.activityExpPerSecond * 0.45),
+    effectsPerSecond: scaleActivityEffects(activity.effectsPerSecond),
+    risksPerSecond: scaleActivityRisks(activity.risksPerSecond)
+  };
+}
+
+function scaleCodeMultiplier(value) {
+  return roundBalance(1 + (value - 1) * 0.7);
+}
+
+function scaleSkill(skillConfig) {
+  if (!skillConfig.multipliers || !skillConfig.multipliers.code) return skillConfig;
+  return {
+    ...skillConfig,
+    multipliers: {
+      ...skillConfig.multipliers,
+      code: scaleCodeMultiplier(skillConfig.multipliers.code)
+    }
+  };
+}
+
+function scaleProjectResources(resources = {}, difficulty = 1) {
+  const scale = PROJECT_RESOURCE_SCALE[difficulty] || 1;
+  return Object.fromEntries(Object.entries(resources).map(([key, value]) => [key, Math.ceil(value * scale)]));
+}
+
+function scaleProjectRewards(rewards = {}) {
+  return {
+    ...rewards,
+    exp: rewards.exp ? Math.ceil(rewards.exp * 0.75) : rewards.exp,
+    money: rewards.money ? Math.ceil(rewards.money * 0.75) : rewards.money
+  };
+}
+
+const rawActivities = [
   {
     id: "feature-coding",
     name: "写功能",
@@ -282,13 +352,13 @@ const activities = [
     name: "提示词工程",
     description: "把“帮我写个功能”包装成结构化上下文和验收标准。",
     tier: 3,
-    primaryAttribute: "learning",
+    primaryAttribute: "creativity",
     requirements: { activityLevels: { study: 3, documentation: 2 } },
     activityExpPerSecond: 0.4,
     energyCostPerSecond: 0.03,
-    effectsPerSecond: { knowledge: 0.08, docs: 0.05, codeLines: 0.12, exp: 0.07 },
+    effectsPerSecond: { knowledge: 0.1, docs: 0.08, leads: 0.02, codeLines: 0.04, exp: 0.07 },
     risksPerSecond: { techDebt: 0.004, pressure: 0.004 },
-    attributeExpPerMinute: { learning: 2, creativity: 1 }
+    attributeExpPerMinute: { creativity: 2, learning: 1 }
   },
   {
     id: "incident-response",
@@ -316,6 +386,8 @@ const activities = [
   }
 ];
 
+const activities = rawActivities.map(scaleActivity);
+
 const skillTierDefaults = {
   1: { cost: { knowledge: 120, exp: 160, money: 80 }, learningSeconds: 600 },
   2: { cost: { knowledge: 300, exp: 420, money: 220 }, learningSeconds: 1200 },
@@ -329,6 +401,7 @@ function roundCost(cost, multiplier) {
 }
 
 function skill(config) {
+  config = scaleSkill(config);
   const defaults = skillTierDefaults[config.tier];
   return {
     ...config,
@@ -383,28 +456,28 @@ const tools = [
     name: "二手笔记本",
     description: "风扇声音像 CI 在跑全量测试。",
     cost: { money: 80 },
-    multipliers: { code: 1.12 }
+    multipliers: { code: 1.06 }
   },
   {
     id: "keyboard",
     name: "机械键盘",
     description: "手感提升，同事忍耐力下降。",
     cost: { money: 180 },
-    multipliers: { code: 1.1, exp: 1.04 }
+    multipliers: { code: 1.06, exp: 1.04 }
   },
   {
     id: "jetbrains",
     name: "JetBrains 全家桶",
     description: "自动补全让你短暂相信自己很聪明。",
     cost: { money: 520 },
-    multipliers: { code: 1.22, bug: 0.9, pressure: 0.94 }
+    multipliers: { code: 1.12, bug: 0.9, pressure: 0.94 }
   },
   {
     id: "ai-assistant",
     name: "AI 编程助手",
     description: "产出更快，但 code review 还是要自己扛。",
     cost: { money: 900 },
-    multipliers: { code: 1.32, exp: 1.08, debt: 1.1, pressure: 1.06 }
+    multipliers: { code: 1.18, exp: 1.08, debt: 1.1, pressure: 1.06 }
   },
   {
     id: "api-client",
@@ -451,18 +524,20 @@ function splitSkillExp(skills, amount) {
 function project(config) {
   const template = projectTemplates[config.difficulty];
   const skills = config.skills || [];
+  const resources = config.resources || template.resources;
+  const rewards = config.rewards || template.rewards;
   return {
     id: config.id,
     name: config.name,
     difficulty: config.difficulty,
     maxSuccessRate: config.maxSuccessRate || template.maxSuccessRate,
-    minWorkHours: config.minWorkHours || template.minWorkHours,
+    minWorkHours: roundBalance((config.minWorkHours || template.minWorkHours) * (PROJECT_WORK_SCALE[config.difficulty] || 1)),
     requirements: {
-      resources: config.resources || template.resources,
+      resources: scaleProjectResources(resources, config.difficulty),
       skills,
       activityLevels: config.activityLevels || {}
     },
-    rewards: config.rewards || template.rewards,
+    rewards: scaleProjectRewards(rewards),
     skillExpRewards: config.skillExpRewards || splitSkillExp(skills, config.skillExp || (config.difficulty * 90)),
     attributeExp: config.attributeExp || {}
   };

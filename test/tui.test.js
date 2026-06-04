@@ -1,5 +1,14 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
+const {
+  createProfile,
+  getCharacterCardOptions,
+  getProfileOptions,
+  loadProfile
+} = require("../src/game");
 const {
   MAX_LOGS,
   appendLogEntries,
@@ -7,9 +16,19 @@ const {
   createLogEntries,
   formatOptionDetail,
   getPageWindow,
+  getProfilePageOptions,
   getLogRows,
-  normalizeLogMessages
+  handleProfileEnterKeypress,
+  handleProfileDeleteKeypress,
+  normalizeLogMessages,
+  profileDeleteUnavailableMessage,
+  resolveProfileDeleteKeypress,
+  shouldExitProfileCreationMode
 } = require("../src/tui");
+
+function createTempSaveRoot() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "life-of-code-tui-save-"));
+}
 
 test("normalizeLogMessages keeps non-empty log lines in order", () => {
   assert.deepEqual(normalizeLogMessages(["first\nsecond", "", null, "third"]), ["first", "second", "third"]);
@@ -126,4 +145,136 @@ test("formatOptionDetail summarizes common option fields", () => {
     { label: "缺口", value: "金钱 20" },
     { label: "命令", value: "learn react" }
   ]);
+});
+
+test("profile enter on new profile enters character card selection mode", () => {
+  const saveRoot = createTempSaveRoot();
+  createProfile("default", "默认档案", 1_700_000_000_000, { saveRoot, characterCardId: "academy-prodigy" });
+  const state = loadProfile("default", 1_700_000_001_000, { saveRoot });
+  const option = getProfileOptions(state, { saveRoot, now: 1_700_000_002_000 }).find((item) => item.id === "profile-new");
+
+  const result = handleProfileEnterKeypress(state, option, { saveRoot, now: 1_700_000_003_000 });
+
+  assert.equal(result.creatingProfile, true);
+  assert.equal(result.profileCreationStartedAt, 1_700_000_003_000);
+  assert.equal(result.changed, false);
+  assert.match(result.messages.join("\n"), /请选择人物卡/);
+  assert.equal(state.profileId, "default");
+});
+
+test("profile creation mode options are stable character card commands", () => {
+  const saveRoot = createTempSaveRoot();
+  createProfile("default", "默认档案", 1_700_000_000_000, { saveRoot, characterCardId: "academy-prodigy" });
+  const state = loadProfile("default", 1_700_000_001_000, { saveRoot });
+
+  const options = getProfilePageOptions(state, {
+    saveRoot,
+    creatingProfile: true,
+    profileCreationStartedAt: 1_700_000_000_000,
+    now: 1_700_000_999_000
+  });
+
+  assert.deepEqual(options.map((item) => item.id), getCharacterCardOptions({ now: 1_700_000_000_000 }).map((item) => item.id));
+  assert.equal(
+    options.find((item) => item.id === "indie-hacker").command,
+    "profile new profile-20231114221320-indie-hacker --card indie-hacker 野路子独立开发者"
+  );
+});
+
+test("profile creation mode enter creates and switches to selected character card profile", () => {
+  const saveRoot = createTempSaveRoot();
+  createProfile("default", "默认档案", 1_700_000_000_000, { saveRoot, characterCardId: "academy-prodigy" });
+  const state = loadProfile("default", 1_700_000_001_000, { saveRoot });
+  const option = getProfilePageOptions(state, {
+    saveRoot,
+    creatingProfile: true,
+    profileCreationStartedAt: 1_700_000_010_000
+  }).find((item) => item.id === "indie-hacker");
+
+  const result = handleProfileEnterKeypress(state, option, {
+    saveRoot,
+    creatingProfile: true,
+    profileCreationStartedAt: 1_700_000_010_000,
+    now: 1_700_000_020_000
+  });
+
+  assert.equal(result.creatingProfile, false);
+  assert.equal(result.changed, true);
+  assert.equal(state.profileId, "profile-20231114221330-indie-hacker");
+  assert.equal(state.profileName, "野路子独立开发者");
+  assert.equal(state.characterCardId, "indie-hacker");
+  assert.match(result.messages.join("\n"), /已创建并切换到档案/);
+});
+
+test("resolveProfileDeleteKeypress confirms deletable profile on the second D", () => {
+  const option = {
+    id: "work",
+    deleteCommand: "profile delete work confirm"
+  };
+
+  const first = resolveProfileDeleteKeypress(option, null);
+  assert.equal(first.pendingProfileId, "work");
+  assert.equal(first.command, null);
+  assert.match(first.message, /再次按 D 删除档案：work/);
+
+  const second = resolveProfileDeleteKeypress(option, first.pendingProfileId);
+  assert.equal(second.pendingProfileId, null);
+  assert.equal(second.command, "profile delete work confirm");
+  assert.equal(second.message, null);
+});
+
+test("resolveProfileDeleteKeypress ignores non-deletable profile options", () => {
+  const action = resolveProfileDeleteKeypress({ id: "default", deleteCommand: null }, "work");
+
+  assert.deepEqual(action, { pendingProfileId: null, command: null, message: null });
+});
+
+test("handleProfileDeleteKeypress deletes the selected profile after confirmation", () => {
+  const saveRoot = createTempSaveRoot();
+  createProfile("default", "默认档案", 1_700_000_000_000, { saveRoot, characterCardId: "academy-prodigy" });
+  createProfile("work", "工作档案", 1_700_000_001_000, { saveRoot, characterCardId: "determined-switcher" });
+  const state = loadProfile("default", 1_700_000_002_000, { saveRoot });
+  const option = getProfileOptions(state, { saveRoot, now: 1_700_000_003_000 }).find((item) => item.id === "work");
+  const savePath = path.join(saveRoot, "profiles", "work.json");
+
+  const first = handleProfileDeleteKeypress(state, option, null, { saveRoot, now: 1_700_000_004_000 });
+  assert.equal(first.pendingProfileId, "work");
+  assert.equal(first.changed, false);
+  assert.equal(fs.existsSync(savePath), true);
+
+  const second = handleProfileDeleteKeypress(state, option, first.pendingProfileId, { saveRoot, now: 1_700_000_005_000 });
+  assert.equal(second.pendingProfileId, null);
+  assert.equal(second.changed, true);
+  assert.match(second.messages.join("\n"), /已删除档案：work/);
+  assert.equal(fs.existsSync(savePath), false);
+});
+
+test("profile delete keypress is blocked while choosing a character card", () => {
+  const saveRoot = createTempSaveRoot();
+  createProfile("default", "默认档案", 1_700_000_000_000, { saveRoot, characterCardId: "academy-prodigy" });
+  createProfile("work", "工作档案", 1_700_000_001_000, { saveRoot, characterCardId: "determined-switcher" });
+  const state = loadProfile("default", 1_700_000_002_000, { saveRoot });
+  const option = getProfileOptions(state, { saveRoot, now: 1_700_000_003_000 }).find((item) => item.id === "work");
+  const savePath = path.join(saveRoot, "profiles", "work.json");
+
+  const result = handleProfileDeleteKeypress(state, option, "work", { saveRoot, creatingProfile: true, now: 1_700_000_004_000 });
+
+  assert.equal(result.pendingProfileId, null);
+  assert.equal(result.changed, false);
+  assert.match(result.messages.join("\n"), /正在选择人物卡/);
+  assert.equal(fs.existsSync(savePath), true);
+});
+
+test("profile creation mode exits on escape, tab, and panel shortcuts", () => {
+  assert.equal(shouldExitProfileCreationMode("", { escape: true }), true);
+  assert.equal(shouldExitProfileCreationMode("", { tab: true }), true);
+  assert.equal(shouldExitProfileCreationMode("f", {}), true);
+  assert.equal(shouldExitProfileCreationMode("a", {}), true);
+  assert.equal(shouldExitProfileCreationMode("d", {}), false);
+});
+
+test("profile delete keypress reports why an option cannot be deleted", () => {
+  assert.match(profileDeleteUnavailableMessage({ id: "profile-save" }), /请选择具体档案/);
+  assert.match(profileDeleteUnavailableMessage({ id: "default" }), /default 档案不能删除/);
+  assert.match(profileDeleteUnavailableMessage({ id: "work", current: true }), /不能删除当前/);
 });

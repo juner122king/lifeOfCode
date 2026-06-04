@@ -7,6 +7,7 @@ const content = require("../src/content");
 const {
   DEFAULT_ATTRIBUTES,
   OFFLINE_CAP_SECONDS,
+  calculateDailyActionMinutesLimit,
   addAttributeExp,
   characterCardById,
   buyTool,
@@ -17,6 +18,7 @@ const {
   formatActivities,
   formatGoals,
   formatLiveStatus,
+  formatWorldCalendar,
   formatState,
   getActivityLevel,
   getActivityOptions,
@@ -30,6 +32,7 @@ const {
   getProjectProgress,
   getProjectSuccessRate,
   getSkillProgress,
+  getWorldCalendar,
   learnSkill,
   listProfiles,
   normalizeState,
@@ -91,6 +94,98 @@ test("旧存档会补齐活动字段、职业资源和目标领取记录", () =>
   assert.equal(state.attributes.learning, DEFAULT_ATTRIBUTES.learning);
   assert.equal(getEffectiveAttribute(state, "logic"), 104);
   assert.equal(state.characterCardId, null);
+});
+
+test("新存档初始化世界日历、每日预算和周重点", () => {
+  const state = createNewState();
+
+  assert.equal(formatWorldCalendar(state, "short"), "Y1 M01 W1 周一 D001 09:00");
+  assert.equal(state.dailyActionMinutesUsed, 0);
+  assert.equal(state.currentDailyActionMinutesLimit, 540);
+  assert.equal(state.weeklyFocus, "balanced");
+  assert.deepEqual(state.triggeredWorldEvents, []);
+  assert.deepEqual(state.activeProjectDeadlines, {});
+});
+
+test("世界时间按现实秒推进为游戏分钟并跨周月年", () => {
+  const start = 1_700_000_000_000;
+  const state = createNewState(start);
+
+  settleTime(state, start + 60_000, { randomEvents: false });
+  assert.equal(getWorldCalendar(state.worldTimeMinutes).hhmm, "10:00");
+
+  state.worldTimeMinutes = (7 - 1) * 24 * 60 + 23 * 60 + 59;
+  settleTime(state, state.lastTick + 60_000, { randomEvents: false });
+  let calendar = getWorldCalendar(state.worldTimeMinutes);
+  assert.equal(calendar.weekOfMonth, 2);
+  assert.equal(calendar.weekday, "周一");
+
+  state.worldTimeMinutes = 28 * 24 * 60 - 1;
+  settleTime(state, state.lastTick + 60_000, { randomEvents: false });
+  calendar = getWorldCalendar(state.worldTimeMinutes);
+  assert.equal(calendar.month, 2);
+  assert.equal(calendar.day, 29);
+
+  state.worldTimeMinutes = 336 * 24 * 60 - 1;
+  settleTime(state, state.lastTick + 60_000, { randomEvents: false });
+  calendar = getWorldCalendar(state.worldTimeMinutes);
+  assert.equal(calendar.year, 2);
+  assert.equal(calendar.day, 337);
+});
+
+test("动态每日预算随职位、精力和压力变化", () => {
+  const intern = createNewState();
+  assert.equal(calculateDailyActionMinutesLimit(intern), 540);
+
+  intern.resources.energy = 40;
+  assert.equal(calculateDailyActionMinutesLimit(intern), 420);
+
+  intern.resources.energy = 20;
+  intern.resources.pressure = 70;
+  assert.equal(calculateDailyActionMinutesLimit(intern), 360);
+
+  intern.currentRole = "middle";
+  intern.resources.energy = 100;
+  intern.resources.pressure = 0;
+  assert.equal(calculateDailyActionMinutesLimit(intern), 600);
+});
+
+test("预算耗尽后加班降低主动产出并增加压力", () => {
+  const start = 1_700_000_000_000;
+  const normal = createNewState(start);
+  const overtime = createNewState(start);
+  overtime.dailyActionMinutesUsed = overtime.currentDailyActionMinutesLimit;
+  startActivity(normal, "feature-coding");
+  startActivity(overtime, "feature-coding");
+
+  settleTime(normal, start + 60_000, { randomEvents: true, rng: () => 1 });
+  const result = settleTime(overtime, start + 60_000, { randomEvents: true, rng: () => 1 });
+
+  assert.ok(overtime.resources.codeLines < normal.resources.codeLines);
+  assert.ok(overtime.resources.pressure > normal.resources.pressure);
+  assert.match(result.messages.join("\n"), /低效加班/);
+});
+
+test("世界事件按游戏日历触发并展示在事件命令和 ViewModel", () => {
+  const start = 1_700_000_000_000;
+  const state = createNewState(start);
+  state.worldTimeMinutes = 28 * 24 * 60 - 1;
+
+  const result = settleTime(state, start + 2_000, { randomEvents: true, rng: () => 1 });
+  assert.match(result.messages.join("\n"), /世界事件：AI 热潮/);
+  assert.ok(state.triggeredWorldEvents.includes("ai-boom"));
+  assert.match(processCommand(state, "events", { now: start + 2_000, randomEvents: false }).messages.join("\n"), /AI 热潮/);
+  assert.equal(getGameViewModel(state).activeWorldEvents[0].id, "ai-boom");
+});
+
+test("week 命令设置本周重点并进入 ViewModel", () => {
+  const state = createNewState();
+
+  const message = processCommand(state, "week project", { randomEvents: false }).messages.join("\n");
+
+  assert.match(message, /项目周/);
+  assert.equal(state.weeklyFocus, "project");
+  assert.equal(getGameViewModel(state).weeklyFocus.name, "项目周");
 });
 
 test("人物卡数据完整且活动等级奖励受限", () => {
@@ -295,7 +390,9 @@ test("活动经验达到阈值后升级", () => {
   startActivity(state, "feature-coding");
 
   settleTime(state, now + 300_000, { randomEvents: false });
+  assert.equal(getActivityLevel(state, "feature-coding"), 1);
 
+  settleTime(state, now + 1_000_000, { randomEvents: false });
   assert.ok(getActivityLevel(state, "feature-coding") > 1);
   assert.ok(getActivityProgress(state, "feature-coding").exp >= 0);
 });
@@ -330,10 +427,10 @@ test("活动结算只显示可见整数变化并附带当前总数", () => {
 test("活动升级但资源没有可见变化时仍显示升级消息", () => {
   const now = 1_700_000_000_000;
   const state = createNewState(now);
-  state.activityExp.rest = 99.5;
+  state.activityExp.rest = 199.5;
   startActivity(state, "rest");
 
-  const result = settleTime(state, now + 4_000, { randomEvents: false });
+  const result = settleTime(state, now + 5_000, { randomEvents: false });
 
   assert.deepEqual(result.messages, ["休息恢复提升到 Lv.2。"]);
 });
@@ -369,7 +466,7 @@ test("learn 消耗资源并启动耗时学习，完成后才解锁技能", () =>
   startActivity(state, "study");
   settleTime(state, now + 300_000, { randomEvents: false });
 
-  assert.ok(state.resources.knowledge > 30);
+  assert.ok(state.resources.knowledge > 15);
   state.resources.knowledge = 60;
   state.resources.exp = 100;
   state.resources.money = 100;
@@ -471,9 +568,9 @@ test("新增活动代码评审满足条件后可启动并改善质量资产", ()
 test("新增项目组件库内卷可开始并在成功 RNG 下交付", () => {
   const start = 1_700_000_000_000;
   const state = createNewState(start);
-  state.resources.codeLines = 300;
-  state.resources.docs = 30;
-  state.resources.tests = 40;
+  state.resources.codeLines = 600;
+  state.resources.docs = 50;
+  state.resources.tests = 60;
   unlockSkill(state, "typescript", 2);
   unlockSkill(state, "react", 2);
   state.activityLevels["feature-coding"] = 4;
@@ -484,16 +581,16 @@ test("新增项目组件库内卷可开始并在成功 RNG 下交付", () => {
 
   assert.match(message, /开始项目：组件库内卷/);
   assert.equal(state.activeProjectId, "component-library");
-  assert.equal(state.resources.codeLines, 40);
-  assert.equal(state.resources.docs, 12);
-  assert.equal(state.resources.tests, 15);
+  assert.equal(state.resources.codeLines, 80);
+  assert.equal(state.resources.docs, 14);
+  assert.equal(state.resources.tests, 10);
 
-  const result = settleTime(state, start + 2_400_000, { randomEvents: false, rng: () => 0 });
+  const result = settleTime(state, start + 4_200_000, { randomEvents: false, rng: () => 0 });
 
   assert.match(result.messages.join("\n"), /交付成功/);
   assert.ok(state.completedProjects.includes("component-library"));
   assert.equal(state.activeProjectId, null);
-  assert.ok(state.resources.money >= 250);
+  assert.ok(state.resources.money >= 190);
 });
 
 test("testing、documentation、freelancing、rest 分别产出对应资源", () => {
@@ -531,8 +628,8 @@ test("项目会检查条件，开始时投入资源并按工时推进", () => {
 
   assert.match(submitProject(state, "homepage"), /项目条件不足/);
 
-  state.resources.codeLines = 100;
-  state.resources.docs = 10;
+  state.resources.codeLines = 128;
+  state.resources.docs = 13;
   state.resources.exp = 100;
   state.resources.money = 100;
   state.resources.knowledge = 30;
@@ -545,8 +642,8 @@ test("项目会检查条件，开始时投入资源并按工时推进", () => {
   assert.equal(state.activeProjectId, "homepage");
   assert.equal(state.activeActivityId, null);
   assert.equal(state.projectProgress.homepage.resourcesPaid, true);
-  assert.equal(state.resources.codeLines, 20);
-  assert.equal(state.resources.docs, 2);
+  assert.equal(state.resources.codeLines, 0);
+  assert.equal(state.resources.docs, 0);
   assert.equal(state.completedProjects.includes("homepage"), false);
 
   settleTime(state, state.lastTick + 300_000, { randomEvents: false });
@@ -558,8 +655,8 @@ test("项目会检查条件，开始时投入资源并按工时推进", () => {
 test("项目达标后会自动成功并发放奖励", () => {
   const start = 1_700_000_000_000;
   const state = createNewState(start);
-  state.resources.codeLines = 100;
-  state.resources.docs = 10;
+  state.resources.codeLines = 128;
+  state.resources.docs = 13;
   state.resources.exp = 100;
   state.resources.money = 100;
   state.resources.knowledge = 30;
@@ -567,7 +664,7 @@ test("项目达标后会自动成功并发放奖励", () => {
   unlockSkill(state, "html-css");
   submitProject(state, "homepage");
 
-  const result = settleTime(state, start + 700_000, { randomEvents: false, rng: () => 0 });
+  const result = settleTime(state, start + 1_000_000, { randomEvents: false, rng: () => 0 });
 
   assert.match(result.messages.join("\n"), /交付成功/);
   assert.equal(state.completedProjects.includes("homepage"), true);
@@ -579,13 +676,13 @@ test("项目达标后会自动成功并发放奖励", () => {
 test("重复项目只给技能经验和少量经验金钱", () => {
   const start = 1_700_000_000_000;
   const state = createNewState(start);
-  state.resources.codeLines = 220;
-  state.resources.docs = 30;
+  state.resources.codeLines = 256;
+  state.resources.docs = 26;
   state.activityLevels["feature-coding"] = 2;
   unlockSkill(state, "html-css");
 
   submitProject(state, "homepage");
-  settleTime(state, start + 700_000, { randomEvents: false, rng: () => 0 });
+  settleTime(state, start + 1_000_000, { randomEvents: false, rng: () => 0 });
   const first = {
     exp: state.resources.exp,
     money: state.resources.money,
@@ -594,37 +691,37 @@ test("重复项目只给技能经验和少量经验金钱", () => {
     skillExp: getSkillProgress(state, "html-css").exp
   };
 
-  state.resources.codeLines += 100;
-  state.resources.docs += 10;
+  state.resources.codeLines += 128;
+  state.resources.docs += 13;
   submitProject(state, "homepage");
-  const result = settleTime(state, start + 1_400_000, { randomEvents: false, rng: () => 0 });
+  const result = settleTime(state, start + 2_000_000, { randomEvents: false, rng: () => 0 });
 
   assert.match(result.messages.join("\n"), /重复交付/);
   assert.equal(state.completedProjects.filter((id) => id === "homepage").length, 1);
   assert.equal(state.stats.totalProjects, first.totalProjects);
   assert.equal(state.resources.reputation, first.reputation);
-  assert.equal(Math.floor(state.resources.exp - first.exp), 9);
-  assert.equal(Math.floor(state.resources.money - first.money), 12);
+  assert.equal(Math.floor(state.resources.exp - first.exp), 2);
+  assert.equal(Math.floor(state.resources.money - first.money), 3);
   assert.ok(getSkillProgress(state, "html-css").exp > first.skillExp);
 });
 
 test("新增训练项目可重复提供目标技能经验", () => {
   const start = 1_700_000_000_000;
   const state = createNewState(start);
-  state.resources.codeLines = 260;
-  state.resources.docs = 20;
-  state.resources.tests = 20;
+  state.resources.codeLines = 400;
+  state.resources.docs = 30;
+  state.resources.tests = 30;
   unlockSkill(state, "javascript");
 
   assert.match(submitProject(state, "vanilla-widget"), /开始项目：原生 JS 小组件/);
-  settleTime(state, start + 1_300_000, { randomEvents: false, rng: () => 0 });
+  settleTime(state, start + 2_000_000, { randomEvents: false, rng: () => 0 });
   const firstExp = getSkillProgress(state, "javascript").exp;
 
-  state.resources.codeLines += 140;
-  state.resources.docs += 10;
-  state.resources.tests += 10;
+  state.resources.codeLines += 192;
+  state.resources.docs += 13;
+  state.resources.tests += 13;
   assert.match(submitProject(state, "vanilla-widget"), /重复项目：原生 JS 小组件/);
-  settleTime(state, start + 2_600_000, { randomEvents: false, rng: () => 0 });
+  settleTime(state, start + 4_000_000, { randomEvents: false, rng: () => 0 });
 
   assert.ok(firstExp >= 70);
   assert.ok(getSkillProgress(state, "javascript").exp >= firstExp + 70);
@@ -633,8 +730,8 @@ test("新增训练项目可重复提供目标技能经验", () => {
 test("项目失败会清空进度且不返还已投入资源", () => {
   const start = 1_700_000_000_000;
   const state = createNewState(start);
-  state.resources.codeLines = 100;
-  state.resources.docs = 10;
+  state.resources.codeLines = 128;
+  state.resources.docs = 13;
   state.resources.exp = 100;
   state.resources.money = 100;
   state.resources.knowledge = 30;
@@ -646,7 +743,7 @@ test("项目失败会清空进度且不返还已投入资源", () => {
   submitProject(state, "homepage");
   const afterInvestment = { codeLines: state.resources.codeLines, docs: state.resources.docs };
 
-  const result = settleTime(state, start + 700_000, { randomEvents: false, rng: () => 1 });
+  const result = settleTime(state, start + 1_000_000, { randomEvents: false, rng: () => 1 });
 
   assert.match(result.messages.join("\n"), /交付失败/);
   assert.equal(state.completedProjects.includes("homepage"), false);
@@ -658,8 +755,8 @@ test("项目失败会清空进度且不返还已投入资源", () => {
 
 test("项目会占用当前活动位，普通活动会暂停项目", () => {
   const state = createNewState();
-  state.resources.codeLines = 100;
-  state.resources.docs = 10;
+  state.resources.codeLines = 128;
+  state.resources.docs = 13;
   state.resources.exp = 100;
   state.resources.money = 100;
   state.resources.knowledge = 30;
@@ -677,8 +774,8 @@ test("项目会占用当前活动位，普通活动会暂停项目", () => {
 
 test("stop 可以暂停当前项目并保留进度", () => {
   const state = createNewState();
-  state.resources.codeLines = 100;
-  state.resources.docs = 10;
+  state.resources.codeLines = 128;
+  state.resources.docs = 13;
   state.resources.exp = 100;
   state.resources.money = 100;
   state.resources.knowledge = 30;
@@ -832,6 +929,68 @@ test("技能和工具倍率会影响活动产出", () => {
   assert.ok(boosted.resources.codeLines > baseline.resources.codeLines);
 });
 
+test("长时间活动结算按 60 秒分段并体现精力衰减", () => {
+  const start = 1_700_000_000_000;
+  const once = createNewState(start);
+  const stepped = createNewState(start);
+  startActivity(once, "feature-coding");
+  startActivity(stepped, "feature-coding");
+
+  settleTime(once, start + 3_600_000, { randomEvents: false });
+  for (let index = 1; index <= 60; index += 1) {
+    settleTime(stepped, start + index * 60_000, { randomEvents: false });
+  }
+
+  assert.equal(Math.floor(once.resources.codeLines), Math.floor(stepped.resources.codeLines));
+  assert.equal(Math.floor(once.resources.energy), Math.floor(stepped.resources.energy));
+  assert.ok(once.resources.energy <= 1);
+});
+
+test("低精力会渐进降低非休息活动产出", () => {
+  const start = 1_700_000_000_000;
+  const full = createNewState(start);
+  const tired = createNewState(start);
+  tired.resources.energy = 10;
+  startActivity(full, "feature-coding");
+  startActivity(tired, "feature-coding");
+
+  settleTime(full, start + 60_000, { randomEvents: false });
+  settleTime(tired, start + 60_000, { randomEvents: false });
+
+  assert.ok(tired.resources.codeLines < full.resources.codeLines);
+  assert.ok(tired.resources.pressure >= full.resources.pressure);
+});
+
+test("沟通属性会缓解压力对项目成功率的影响", () => {
+  const lowCommunication = createNewState();
+  const highCommunication = createNewState();
+  lowCommunication.resources.pressure = 100;
+  highCommunication.resources.pressure = 100;
+  highCommunication.attributes.communication = 100;
+
+  assert.ok(getProjectSuccessRate(highCommunication, "todo") > getProjectSuccessRate(lowCommunication, "todo"));
+});
+
+test("提示词工程使用创造属性并偏向知识文档线索", () => {
+  const start = 1_700_000_000_000;
+  const lowCreativity = createNewState(start);
+  const highCreativity = createNewState(start);
+  lowCreativity.attributes.creativity = 1;
+  highCreativity.attributes.creativity = 100;
+  for (const state of [lowCreativity, highCreativity]) {
+    state.activityLevels.study = 3;
+    state.activityLevels.documentation = 2;
+    startActivity(state, "prompt-engineering");
+    settleTime(state, start + 60_000, { randomEvents: false });
+  }
+
+  const activity = content.activities.find((item) => item.id === "prompt-engineering");
+  assert.equal(activity.primaryAttribute, "creativity");
+  assert.ok(activity.effectsPerSecond.docs > activity.effectsPerSecond.codeLines);
+  assert.ok(highCreativity.resources.docs > lowCreativity.resources.docs);
+  assert.ok(highCreativity.resources.knowledge > lowCreativity.resources.knowledge);
+});
+
 test("离线收益不超过 8 小时上限", () => {
   const start = 1_700_000_000_000;
   const capped = createNewState(start);
@@ -933,7 +1092,7 @@ test("activity options 标出锁定、当前活动、等级和命令", () => {
   assert.equal(active.progressLabel, "等级进度");
   assert.equal(active.progressPercent, 0);
   assert.equal(active.progressActive, true);
-  assert.match(active.progressText, /0\/100/);
+  assert.match(active.progressText, /0\/200/);
   assert.equal(options.find((item) => item.id === "study").progressActive, false);
   assert.equal(locked.status, "未解锁");
   assert.equal(locked.command, null);
@@ -965,10 +1124,10 @@ test("management options 标出技能、工具和项目动作状态", () => {
 
   assert.equal(skill.status, "可学习");
   assert.equal(skill.command, "learn html-css");
-  assert.match(skill.effects, /代码产出 x1\.02/);
+  assert.match(skill.effects, /代码产出 x1\.01/);
   assert.equal(tool.status, "可购买");
   assert.equal(tool.command, "buy used-laptop");
-  assert.match(tool.effects, /代码产出 x1\.12/);
+  assert.match(tool.effects, /代码产出 x1\.06/);
   assert.equal(project.status, "条件不足");
   assert.equal(project.command, "project homepage");
   assert.match(project.effects, /难度 1/);
@@ -1007,8 +1166,8 @@ test("skill options use explicit progress semantics", () => {
 
 test("project options mark work progress and animate only the active project", () => {
   const state = createNewState();
-  state.resources.codeLines = 100;
-  state.resources.docs = 10;
+  state.resources.codeLines = 128;
+  state.resources.docs = 13;
   state.resources.exp = 100;
   state.resources.money = 100;
   state.resources.knowledge = 30;
