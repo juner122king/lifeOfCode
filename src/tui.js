@@ -263,6 +263,43 @@ function getOptionProgress(option, options = {}) {
   };
 }
 
+function clampProgressPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.min(100, Math.floor(numeric)));
+}
+
+function formatTuiNumber(value, digits = 1) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "0";
+  return numeric.toFixed(digits).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+}
+
+function getCharacterCardAttributeRows(view) {
+  const initialAttributes = new Map(
+    ((view && view.characterCard && view.characterCard.initialAttributes) || [])
+      .map((attr) => [attr.id, attr])
+  );
+
+  return ((view && view.attributes) || []).map((attr) => {
+    const currentValue = Math.floor(Number(attr.value) || 0);
+    const effectiveValue = Number(attr.effective) || 0;
+    const exp = Math.floor(Number(attr.exp) || 0);
+    const initial = initialAttributes.get(attr.id);
+    const initialValue = initial ? Math.floor(Number(initial.value) || 0) : "未记录";
+    return {
+      id: attr.id,
+      name: attr.name,
+      initialValue,
+      currentValue,
+      effectiveValue,
+      exp,
+      progressPercent: clampProgressPercent(currentValue),
+      progressText: `初始 ${initialValue} / 当前 ${currentValue} / 有效 ${formatTuiNumber(effectiveValue)} / 经验 ${exp}`
+    };
+  });
+}
+
 async function startTui() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     if (!defaultProfileExists()) {
@@ -465,43 +502,49 @@ async function startTui() {
 
   function CharacterCardPanel({ view, budget }) {
     const card = view.characterCard;
-    const currentAttrs = view.attributes.map((attr) => {
-      const effective = Number(attr.effective).toFixed(1).replace(/\.0$/, "");
-      const breakthrough = attr.breakthrough ? ` +${attr.breakthrough}` : "";
-      return `${attr.name} ${attr.value}${breakthrough} / 有效 ${effective} / 经验 ${Math.floor(attr.exp || 0)}`;
-    });
-    const initialAttrs = card.initialAttributes.length
-      ? card.initialAttributes.map((attr) => `${attr.name} ${attr.value}`)
-      : ["未记录初始属性"];
+    const attributeRows = getCharacterCardAttributeRows(view);
     const learnedSkills = view.skillLevels
       .filter((skill) => skill.level > 0)
       .map((skill) => `${skill.name} ${skill.levelName}`);
     const activityLevels = view.activityLevels.map((activity) => `${activity.active ? "*" : ""}${activity.name} Lv.${activity.level}`);
 
-    const width = Math.max(48, budget.terminalColumns - 6);
-    const rows = [
+    const mainWidth = Math.max(48, budget.terminalColumns - 6);
+    const summaryWidth = budget.narrow ? mainWidth : Math.max(28, Math.floor(mainWidth * 0.36));
+    const detailWidth = budget.narrow ? mainWidth : Math.max(34, mainWidth - summaryWidth - 3);
+    const attrBarWidth = Math.min(18, Math.max(8, detailWidth - 28));
+    const maxAttributeRows = Math.max(1, budget.mainHeight - (budget.narrow ? 8 : 4));
+    const summaryRows = [
       { color: THEME.muted, text: card.description },
       { color: THEME.muted, text: card.background || "" },
-      { title: "初始卡面属性", color: THEME.status.info },
-      { text: initialAttrs.join("  ") },
-      { title: "当前属性", color: THEME.status.good },
-      { color: THEME.text, text: currentAttrs.join("  ") },
       { title: "初始配置", color: THEME.status.info },
       { text: card.initialBonuses ? `资源：${card.initialBonuses.resources}` : "资源：未记录" },
       { text: card.initialBonuses ? `技能：${card.initialBonuses.skills}` : "技能：未记录" },
       { text: card.initialBonuses ? `活动等级：${card.initialBonuses.activityLevels}` : "活动等级：未记录" },
       { title: "当前成长", color: THEME.title },
       { color: learnedSkills.length ? THEME.status.good : THEME.muted, text: `技能：${learnedSkills.length ? learnedSkills.join("，") : "暂无"}` },
-      { color: THEME.muted, text: activityLevels.join("  ") }
+      { color: THEME.muted, text: `活动：${activityLevels.join("  ")}` }
     ];
-    const maxRows = Math.max(1, budget.mainHeight - 3);
-    return h(Box, { borderStyle: "round", borderColor: THEME.panels.cards, paddingX: 1, flexDirection: "column", height: budget.mainHeight },
+    const summary = h(Box, { flexDirection: "column", width: budget.narrow ? undefined : summaryWidth },
       h(Text, { bold: true, color: THEME.panels.cards }, `${card.name}${card.id ? ` (${card.id})` : ""}`),
-      ...rows.filter((row) => row.title || row.text).slice(0, maxRows).map((row, index) => (
+      card.legacy ? h(Text, { color: THEME.status.warn }, "旧档案：未绑定初始人物卡。") : null,
+      ...summaryRows.filter((row) => row.title || row.text).slice(0, Math.max(1, budget.mainHeight - 3)).map((row, index) => (
         row.title
-          ? h(SectionTitle, { key: `card-${index}`, color: row.color }, row.title)
-          : h(Text, { key: `card-${index}`, color: row.color || THEME.text }, trimText(row.text, width))
+          ? h(SectionTitle, { key: `summary-${index}`, color: row.color }, row.title)
+          : h(Text, { key: `summary-${index}`, color: row.color || THEME.text }, trimText(row.text, summaryWidth))
       ))
+    );
+    const attributes = h(Box, { flexDirection: "column", flexGrow: 1 },
+      h(SectionTitle, { color: THEME.status.good }, "属性详情"),
+      ...attributeRows.slice(0, maxAttributeRows).map((row) => h(Box, { key: row.id, gap: 1 },
+        h(Text, { color: THEME.text, bold: true }, trimText(row.name, 4).padEnd(4, " ")),
+        h(Progress, { percent: row.progressPercent, width: attrBarWidth, animated: false }),
+        h(Text, { color: THEME.muted }, trimText(row.progressText, Math.max(16, detailWidth - attrBarWidth - 8)))
+      ))
+    );
+
+    return h(Box, { borderStyle: "round", borderColor: THEME.panels.cards, paddingX: 1, flexDirection: budget.narrow ? "column" : "row", gap: budget.narrow ? 0 : 2, height: budget.mainHeight },
+      summary,
+      attributes
     );
   }
 
@@ -734,6 +777,7 @@ module.exports = {
   calculateLayoutBudget,
   createLogEntries,
   formatOptionDetail,
+  getCharacterCardAttributeRows,
   getOptionProgress,
   getProfilePageOptions,
   getPageWindow,

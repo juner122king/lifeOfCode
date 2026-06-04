@@ -4,8 +4,10 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const {
+  createNewState,
   createProfile,
   getCharacterCardOptions,
+  getGameViewModel,
   getProfileOptions,
   loadProfile
 } = require("../src/game");
@@ -15,6 +17,7 @@ const {
   calculateLayoutBudget,
   createLogEntries,
   formatOptionDetail,
+  getCharacterCardAttributeRows,
   getOptionProgress,
   getPageWindow,
   getProfilePageOptions,
@@ -169,6 +172,57 @@ test("getOptionProgress freezes animated progress while paused", () => {
     text: "4 分钟/10 分钟"
   });
   assert.equal(getOptionProgress({ name: "无进度" }), null);
+});
+
+test("getCharacterCardAttributeRows pairs initial card attributes with current growth", () => {
+  const state = createNewState(1_700_000_000_000, { characterCardId: "academy-prodigy" });
+  state.attributes.learning = 84;
+  state.attributeBreakthroughs.learning = 3;
+  state.attributeExp.learning = 57.8;
+  const view = getGameViewModel(state);
+
+  const rows = getCharacterCardAttributeRows(view);
+  const learning = rows.find((row) => row.id === "learning");
+
+  assert.equal(learning.name, "学习");
+  assert.equal(learning.initialValue, 72);
+  assert.equal(learning.currentValue, 84);
+  assert.equal(learning.effectiveValue, 84.6);
+  assert.equal(learning.exp, 57);
+  assert.equal(learning.progressPercent, 84);
+  assert.match(learning.progressText, /初始 72/);
+  assert.match(learning.progressText, /当前 84/);
+  assert.match(learning.progressText, /有效 84.6/);
+  assert.match(learning.progressText, /经验 57/);
+});
+
+test("getCharacterCardAttributeRows clamps progress to current base attribute", () => {
+  const view = getGameViewModel(createNewState(1_700_000_000_000, { characterCardId: "laid-back-slacker" }));
+
+  const rows = getCharacterCardAttributeRows(view);
+
+  assert.equal(rows.find((row) => row.id === "focus").currentValue, 2);
+  assert.equal(rows.find((row) => row.id === "focus").progressPercent, 2);
+  assert.equal(rows.find((row) => row.id === "resilience").currentValue, 72);
+  assert.equal(rows.find((row) => row.id === "resilience").progressPercent, 72);
+});
+
+test("getCharacterCardAttributeRows keeps current attributes for legacy profiles", () => {
+  const state = createNewState();
+  state.attributes.logic = 43;
+  state.attributeExp.logic = 12;
+  const view = getGameViewModel(state);
+
+  const rows = getCharacterCardAttributeRows(view);
+  const logic = rows.find((row) => row.id === "logic");
+
+  assert.equal(view.characterCard.legacy, true);
+  assert.equal(logic.initialValue, "未记录");
+  assert.equal(logic.currentValue, 43);
+  assert.equal(logic.progressPercent, 43);
+  assert.match(logic.progressText, /初始 未记录/);
+  assert.match(logic.progressText, /当前 43/);
+  assert.match(logic.progressText, /经验 12/);
 });
 
 test("profile enter on new profile enters character card selection mode", () => {
