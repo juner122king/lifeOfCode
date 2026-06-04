@@ -15,6 +15,7 @@ const {
   calculateLayoutBudget,
   createLogEntries,
   formatOptionDetail,
+  getOptionProgress,
   getPageWindow,
   getProfilePageOptions,
   getLogRows,
@@ -145,6 +146,29 @@ test("formatOptionDetail summarizes common option fields", () => {
     { label: "缺口", value: "金钱 20" },
     { label: "命令", value: "learn react" }
   ]);
+});
+
+test("getOptionProgress freezes animated progress while paused", () => {
+  const option = {
+    progressLabel: "学习进度",
+    progressPercent: 42,
+    progressActive: true,
+    progressText: "4 分钟/10 分钟"
+  };
+
+  assert.deepEqual(getOptionProgress(option), {
+    label: "学习进度",
+    percent: 42,
+    active: true,
+    text: "4 分钟/10 分钟"
+  });
+  assert.deepEqual(getOptionProgress(option, { paused: true }), {
+    label: "学习进度",
+    percent: 42,
+    active: false,
+    text: "4 分钟/10 分钟"
+  });
+  assert.equal(getOptionProgress({ name: "无进度" }), null);
 });
 
 test("profile enter on new profile enters character card selection mode", () => {

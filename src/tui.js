@@ -253,6 +253,16 @@ function formatOptionDetail(option) {
   ].filter((entry) => entry && String(entry.value || "").trim());
 }
 
+function getOptionProgress(option, options = {}) {
+  if (!option || !Number.isFinite(option.progressPercent)) return null;
+  return {
+    label: option.progressLabel || "进度",
+    percent: option.progressPercent,
+    active: option.progressActive === true && !options.paused,
+    text: option.progressText || ""
+  };
+}
+
 async function startTui() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     if (!defaultProfileExists()) {
@@ -390,18 +400,8 @@ async function startTui() {
     return [];
   }
 
-  function optionProgress(option) {
-    if (!Number.isFinite(option.progressPercent)) return null;
-    return {
-      label: option.progressLabel || "进度",
-      percent: option.progressPercent,
-      active: option.progressActive === true,
-      text: option.progressText || ""
-    };
-  }
-
   function compactOptionMeta(option) {
-    const progress = optionProgress(option);
+    const progress = getOptionProgress(option);
     return [
       Number.isFinite(option.level) ? `Lv.${option.level}` : "",
       progress ? `${progress.label} ${progress.percent}%` : "",
@@ -409,10 +409,10 @@ async function startTui() {
     ].filter(Boolean).join("  ");
   }
 
-  function DetailPanel({ activePanel, option, height, width }) {
+  function DetailPanel({ activePanel, option, height, width, paused }) {
     const accent = THEME.panels[activePanel] || THEME.panel;
     const details = formatOptionDetail(option);
-    const progress = optionProgress(option);
+    const progress = getOptionProgress(option, { paused });
     const contentWidth = Math.max(24, width - 4);
     const maxRows = Math.max(1, height - 3 - (progress ? 1 : 0));
     return h(Box, { borderStyle: "round", borderColor: accent, paddingX: 1, flexDirection: "column", height },
@@ -433,7 +433,7 @@ async function startTui() {
     );
   }
 
-  function MainPanel({ activePanel, options, selectedIndex, budget }) {
+  function MainPanel({ activePanel, options, selectedIndex, budget, paused }) {
     const accent = THEME.panels[activePanel] || THEME.panel;
     const page = getPageWindow(options.length, selectedIndex, budget.pageSize);
     const visibleOptions = options.slice(page.start, page.end);
@@ -456,7 +456,7 @@ async function startTui() {
         );
       })
     );
-    const detail = h(DetailPanel, { activePanel, option: selectedOption, height: budget.detailHeight, width: detailWidth });
+    const detail = h(DetailPanel, { activePanel, option: selectedOption, height: budget.detailHeight, width: detailWidth, paused });
     return h(Box, { flexDirection: budget.narrow ? "column" : "row", gap: budget.narrow ? 0 : 1, height: budget.mainHeight },
       list,
       detail
@@ -712,7 +712,7 @@ async function startTui() {
       h(TabBar, { activePanel }),
       activePanel === "cards" && !needsInitialProfile
         ? h(CharacterCardPanel, { view, budget })
-        : h(MainPanel, { activePanel, options, selectedIndex, budget }),
+        : h(MainPanel, { activePanel, options, selectedIndex, budget, paused }),
       h(MemoLogPanel, { logs, budget }),
       h(Footer, { paused, creatingProfile })
     );
@@ -734,6 +734,7 @@ module.exports = {
   calculateLayoutBudget,
   createLogEntries,
   formatOptionDetail,
+  getOptionProgress,
   getProfilePageOptions,
   getPageWindow,
   getLogRows,
