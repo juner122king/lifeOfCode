@@ -27,7 +27,6 @@ const DEFAULT_ATTRIBUTES = {
 };
 const RESOURCE_NAMES = {
   codeLines: "代码",
-  exp: "经验",
   money: "金钱",
   energy: "精力",
   bugs: "Bug",
@@ -40,10 +39,9 @@ const RESOURCE_NAMES = {
   architecture: "架构",
   leads: "线索"
 };
-const RESOURCE_ORDER = ["codeLines", "exp", "money", "knowledge", "tests", "docs", "architecture", "leads", "energy", "pressure", "bugs", "techDebt", "reputation"];
+const RESOURCE_ORDER = ["codeLines", "money", "knowledge", "tests", "docs", "architecture", "leads", "energy", "pressure", "bugs", "techDebt", "reputation"];
 const MULTIPLIER_NAMES = {
   code: "代码产出",
-  exp: "经验获取",
   money: "金钱获取",
   bug: "Bug 风险",
   debt: "技术债风险",
@@ -189,7 +187,6 @@ function createNewState(now = Date.now(), options = {}) {
     updatedAt: timestamp,
     resources: {
       codeLines: 0,
-      exp: 0,
       money: 30,
       energy: role.maxEnergy,
       bugs: 0,
@@ -251,7 +248,7 @@ function normalizeState(raw, now = Date.now()) {
     characterCardId: characterCardById(raw && raw.characterCardId) ? raw.characterCardId : null,
     createdAt: normalizeTimestamp(raw && raw.createdAt, fresh.createdAt),
     updatedAt: normalizeTimestamp(raw && raw.updatedAt, raw && raw.lastTick ? new Date(raw.lastTick).toISOString() : fresh.updatedAt),
-    resources: { ...fresh.resources, ...(raw && raw.resources) },
+    resources: normalizeResources(raw && raw.resources, fresh.resources),
     activeActivityId: activityById(raw && raw.activeActivityId) ? raw.activeActivityId : null,
     activeProjectId: projectById(raw && raw.activeProjectId) ? raw.activeProjectId : null,
     projectProgress: normalizeProjectProgress(raw && raw.projectProgress),
@@ -334,6 +331,15 @@ function normalizeActivityStats(raw) {
     totalActiveSeconds: Math.max(0, Number(raw && raw.totalActiveSeconds) || 0),
     byActivity: normalizeActivityMap(raw && raw.byActivity, 0)
   };
+}
+
+function normalizeResources(raw, defaults) {
+  const result = {};
+  for (const key of RESOURCE_ORDER) {
+    const value = Number(raw && raw[key]);
+    result[key] = Number.isFinite(value) ? value : defaults[key];
+  }
+  return result;
 }
 
 function normalizeAttributes(raw, defaults, min, max) {
@@ -536,7 +542,7 @@ function formatNearestDeadline(state) {
 }
 
 function clampState(state) {
-  for (const key of ["bugs", "techDebt", "pressure", "reputation", "knowledge", "tests", "docs", "architecture", "leads", "codeLines", "exp", "money"]) {
+  for (const key of RESOURCE_ORDER) {
     state.resources[key] = Math.max(0, Number(state.resources[key]) || 0);
   }
   state.resources.pressure = clamp(state.resources.pressure, 0, 100);
@@ -679,7 +685,7 @@ function formatDifficultyLabel(difficulty) {
 }
 
 function getMultipliers(state) {
-  const multipliers = { code: 1, exp: 1, money: 1, bug: 1, debt: 1, pressure: 1 };
+  const multipliers = { code: 1, money: 1, bug: 1, debt: 1, pressure: 1 };
   const apply = (item, level = 1) => {
     for (const [key, value] of Object.entries(item.multipliers || {})) {
       multipliers[key] *= Math.pow(value, level);
@@ -692,7 +698,6 @@ function getMultipliers(state) {
   });
   state.ownedTools.map((id) => itemById(content.tools, id)).filter(Boolean).forEach(apply);
   multipliers.code = Math.min(1.8, multipliers.code);
-  multipliers.exp = Math.min(1.6, multipliers.exp);
   multipliers.money = Math.min(1.6, multipliers.money);
   multipliers.bug = Math.max(0.55, multipliers.bug);
   multipliers.debt = Math.max(0.55, multipliers.debt);
@@ -1017,7 +1022,6 @@ function settleActivity(state, activity, seconds, options = {}) {
     if (delta > 0) delta *= positiveFactor;
     if (key === "energy" && delta > 0) delta *= 1 + attributeBonus(state, "resilience", 0.0025, 0.2);
     if (key === "codeLines" && delta > 0) delta *= multipliers.code * risk.codeEfficiency;
-    if (key === "exp" && delta > 0) delta *= multipliers.exp;
     if (key === "money" && delta > 0) delta *= multipliers.money;
     if (key === "money" && delta > 0 && focus.id === "freelance") delta *= focus.money;
     if (key === "codeLines" && delta > 0 && focus.id === "quality") delta *= focus.code;
@@ -1440,7 +1444,6 @@ function stopActivity(state) {
 
 function formatGoalRewards(rewards = {}) {
   const entries = [];
-  if (rewards.exp) entries.push(`经验 +${formatNumber(rewards.exp)}`);
   if (rewards.money) entries.push(`金钱 +${formatNumber(rewards.money)}`);
   if (rewards.reputation) entries.push(`声望 +${formatNumber(rewards.reputation)}`);
   const attributeRewards = formatAttributeExpRewards(rewards.attributeExp);
@@ -1449,7 +1452,6 @@ function formatGoalRewards(rewards = {}) {
 }
 
 function mergeRewards(target, rewards = {}) {
-  target.exp = (target.exp || 0) + (rewards.exp || 0);
   target.money = (target.money || 0) + (rewards.money || 0);
   target.reputation = (target.reputation || 0) + (rewards.reputation || 0);
   target.attributeExp = target.attributeExp || {};
@@ -1459,7 +1461,6 @@ function mergeRewards(target, rewards = {}) {
 }
 
 function applyGoalRewards(state, rewards = {}) {
-  state.resources.exp += rewards.exp || 0;
   state.resources.money += rewards.money || 0;
   state.resources.reputation += rewards.reputation || 0;
   applyAttributeExpRewards(state, rewards.attributeExp);
@@ -1662,7 +1663,7 @@ function formatState(state) {
     `当前活动：${active ? `${active.name} Lv.${getActivityLevel(state, active.id)}` : "无"}`,
     `当前项目：${activeProject ? `${activeProject.name} 工时 ${projectProgress.progressPercent}%（成功率 ${formatPercent(getProjectSuccessRate(state, activeProject))}）` : "无"}`,
     `当前学习：${activeSkill ? `${activeSkill.name} 学习 ${skillLearningProgress.progressPercent}%` : "无"}`,
-    `代码：${formatNumber(state.resources.codeLines)}  经验：${formatNumber(state.resources.exp)}  金钱：${formatNumber(state.resources.money)}  知识：${formatNumber(state.resources.knowledge)}`,
+    `代码：${formatNumber(state.resources.codeLines)}  金钱：${formatNumber(state.resources.money)}  知识：${formatNumber(state.resources.knowledge)}`,
     `测试：${formatNumber(state.resources.tests)}  文档：${formatNumber(state.resources.docs)}  架构：${formatNumber(state.resources.architecture)}  线索：${formatNumber(state.resources.leads)}`,
     `精力：${formatNumber(state.resources.energy)}  压力：${formatNumber(state.resources.pressure)}  Bug：${formatNumber(state.resources.bugs)}  技术债：${formatNumber(state.resources.techDebt)}  声望：${formatNumber(state.resources.reputation)}`,
     `属性：${formatAttributes(state)}`,
@@ -2279,7 +2280,6 @@ function promote(state) {
   if (!role || !role.promoteTo) return "你已经是当前版本的最高职位了。";
   const req = role.promoteRequirements;
   const missing = [];
-  if ((state.resources.exp || 0) < req.exp) missing.push(`${req.exp} 经验`);
   if ((state.resources.reputation || 0) < req.reputation) missing.push(`${req.reputation} 声望`);
   if (state.completedProjects.length < req.completedProjects) missing.push(`${req.completedProjects} 个完成项目`);
   for (const skill of req.skills || []) if (getSkillLevel(state, skill) < 1) missing.push(`技能 ${skill}`);
