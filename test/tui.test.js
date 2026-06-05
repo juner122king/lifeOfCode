@@ -16,10 +16,12 @@ const {
 const {
   MAX_LOGS,
   TUI_CLOCK_TICK_MS,
+  TUI_LOG_FLUSH_MS,
   appendLogEntries,
   calculateLayoutBudget,
   createLogEntries,
   formatOptionDetail,
+  formatTuiHeartbeat,
   getCharacterCardAttributeRows,
   getOptionProgress,
   getPageWindow,
@@ -33,6 +35,7 @@ const {
   processTuiCommand,
   resumeGameClock,
   resolveProfileDeleteKeypress,
+  shouldFlushTuiLogs,
   shouldExitProfileCreationMode,
   syncPausedClock
 } = require("../src/tui");
@@ -97,11 +100,11 @@ test("calculateLayoutBudget returns a compact 24 row budget with a usable list",
 
   assert.equal(budget.terminalRows, 24);
   assert.equal(budget.narrow, true);
-  assert.ok(budget.mainHeight >= 5);
+  assert.equal(budget.logHeight, 8);
+  assert.equal(budget.mainHeight, 5);
   assert.ok(budget.pageSize >= 3);
-  assert.equal(
-    budget.headerHeight + budget.resourceHeight + budget.tabHeight + budget.footerHeight + budget.logHeight + budget.mainHeight,
-    24
+  assert.ok(
+    budget.headerHeight + budget.resourceHeight + budget.tabHeight + budget.footerHeight + budget.logHeight + budget.mainHeight > 24
   );
 });
 
@@ -111,13 +114,33 @@ test("calculateLayoutBudget falls back to 24 rows and expands taller terminals",
 
   assert.equal(fallback.terminalRows, 24);
   assert.equal(fallback.terminalColumns, 80);
+  assert.equal(fallback.logHeight, 8);
+  assert.equal(tall.logHeight, 10);
   assert.ok(tall.mainHeight > fallback.mainHeight);
   assert.equal(tall.narrow, false);
   assert.ok(tall.pageSize >= fallback.pageSize);
 });
 
-test("TUI world clock refreshes once per second", () => {
-  assert.equal(TUI_CLOCK_TICK_MS, 1000);
+test("TUI refreshes logs quickly", () => {
+  assert.equal(TUI_CLOCK_TICK_MS, 250);
+  assert.equal(TUI_LOG_FLUSH_MS, 5000);
+});
+
+test("TUI log flush cadence is every five seconds", () => {
+  assert.equal(shouldFlushTuiLogs(4_999, 0), false);
+  assert.equal(shouldFlushTuiLogs(5_000, 0), true);
+  assert.equal(shouldFlushTuiLogs(7_500, 2_500), true);
+});
+
+test("formatTuiHeartbeat returns a lightweight status log", () => {
+  const state = createNewState(1_700_000_000_000);
+  state.worldTimeMinutes = 10 * 60;
+
+  const message = formatTuiHeartbeat(state);
+
+  assert.match(message, /状态刷新/);
+  assert.match(message, /精力/);
+  assert.match(message, /压力/);
 });
 
 test("getPageWindow follows the selected absolute index", () => {
@@ -248,6 +271,18 @@ test("paused TUI commands sync lastTick before processCommand can settle time", 
   const resumed = settleTime(state, commandAt + 1000, { randomEvents: false });
   assert.equal(resumed.seconds, 1);
   assert.equal(state.worldTimeMinutes, pausedWorldTime + 1);
+});
+
+test("TUI command processing can set tomorrow lifestyle", () => {
+  const state = createNewState(1_700_000_000_000);
+
+  const result = processTuiCommand(state, "lifestyle side_hustle", { randomEvents: false });
+
+  assert.match(result.messages.join("\n"), /明日作息已设为：Indie Side-Hustle/);
+  assert.match(result.messages.join("\n"), /作息效果/);
+  assert.match(result.messages.join("\n"), /金钱和声望/);
+  assert.equal(state.lifestyleStanceId, "health");
+  assert.equal(state.pendingLifestyleStanceId, "side_hustle");
 });
 
 test("syncPausedClock lets paused saves discard paused real time", () => {

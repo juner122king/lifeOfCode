@@ -38,7 +38,8 @@ const MAX_LOGS = 6;
 const MIN_LIST_PAGE_SIZE = 3;
 const DEFAULT_TERMINAL_ROWS = 24;
 const DEFAULT_TERMINAL_COLUMNS = 80;
-const TUI_CLOCK_TICK_MS = 1000;
+const TUI_CLOCK_TICK_MS = 250;
+const TUI_LOG_FLUSH_MS = 5000;
 
 function trimText(value, length) {
   const text = String(value || "");
@@ -76,6 +77,29 @@ function getLogRows(logs, maxLogs = MAX_LOGS) {
     ...Array.from({ length: safeMax - visible.length }, (_, index) => ({ id: `empty-${index}`, text: "", empty: true })),
     ...visible
   ];
+}
+
+function shouldFlushTuiLogs(now, lastFlush, interval = TUI_LOG_FLUSH_MS) {
+  return Math.max(0, Number(now) || 0) - Math.max(0, Number(lastFlush) || 0) >= Math.max(1, Number(interval) || TUI_LOG_FLUSH_MS);
+}
+
+function formatTuiHeartbeat(state) {
+  const view = getGameViewModel(state);
+  const resourceValue = (id) => {
+    const resource = view.resources.find((item) => item.id === id);
+    return resource ? resource.value : 0;
+  };
+  const phase = view.schedule.currentPhase ? view.schedule.currentPhase.name : "休整";
+  const work = view.activeActivity
+    ? `活动 ${view.activeActivity.name}`
+    : view.activeProject
+      ? `项目 ${view.activeProject.name}`
+      : view.activeSkillLearning
+        ? `学习 ${view.activeSkillLearning.name}`
+        : view.schedule.waiting
+          ? "等待排程"
+          : "休整";
+  return `状态刷新：${view.calendar.short} ${phase} ${work}，精力 ${resourceValue("energy")}，压力 ${resourceValue("pressure")}。`;
 }
 
 function commandForPanel(panelId, option, schedulePhase = "morning") {
@@ -216,7 +240,7 @@ function calculateLayoutBudget(rows, columns) {
   const resourceHeight = 5;
   const tabHeight = 1;
   const footerHeight = 3;
-  const logHeight = compact ? 4 : terminalRows < 30 ? 5 : 6;
+  const logHeight = compact ? 8 : terminalRows < 30 ? 9 : 10;
   const reserved = headerHeight + resourceHeight + tabHeight + footerHeight + logHeight;
   const mainHeight = Math.max(5, terminalRows - reserved);
   const listHeight = narrow ? Math.max(5, Math.floor(mainHeight / 2)) : mainHeight;
@@ -448,9 +472,12 @@ async function startTui() {
     const width = Math.max(48, budget.terminalColumns - 6);
     const phaseLabel = view.schedule.currentPhase ? `${view.schedule.currentPhase.name} ${view.schedule.currentPhase.timeRange}` : "休整";
     const scheduleLabel = view.schedule.confirmed ? "日程已确认" : "等待排程";
+    const lifestyleLabel = view.lifestyle && view.lifestyle.pending
+      ? `作息 ${view.lifestyle.current.name}->${view.lifestyle.pending.name}`
+      : `作息 ${view.lifestyle ? view.lifestyle.current.name : "Health First"}`;
     const calendarLine = budget.narrow
       ? `${view.calendar.short} | ${phaseLabel} | ${scheduleLabel}`
-      : `${view.calendar.short}  ${phaseLabel}  ${scheduleLabel}  本周 ${view.weeklyFocus.name}  ${view.nearestDeadline ? `Deadline ${view.nearestDeadline.name} D${String(view.nearestDeadline.dueDay).padStart(3, "0")}` : "Deadline 暂无"}`;
+      : `${view.calendar.short}  ${phaseLabel}  ${scheduleLabel}  本周 ${view.weeklyFocus.name}  ${lifestyleLabel}  ${view.nearestDeadline ? `Deadline ${view.nearestDeadline.name} D${String(view.nearestDeadline.dueDay).padStart(3, "0")}` : "Deadline 暂无"}`;
     const eventLine = view.activeWorldEvents.length
       ? `事件 ${view.activeWorldEvents.map((event) => event.name).join("，")}  ${view.nearestDeadline ? `最近 ${view.nearestDeadline.name} D${String(view.nearestDeadline.dueDay).padStart(3, "0")}` : "最近 Deadline 暂无"}`
       : `${view.nearestDeadline ? `最近 Deadline ${view.nearestDeadline.name} D${String(view.nearestDeadline.dueDay).padStart(3, "0")}` : "最近 Deadline 暂无"}`;
@@ -705,6 +732,8 @@ async function startTui() {
     const [logs, setLogs] = useState([]);
     const [revision, refresh] = useReducer((value) => value + 1, 0);
     const nextLogIdRef = useRef(0);
+    const pendingLogMessagesRef = useRef([]);
+    const lastLogFlushRef = useRef(Date.now());
     const { exit } = useApp();
     const { stdout } = useStdout();
 
@@ -726,6 +755,7 @@ async function startTui() {
       if (offline.seconds > 0 || offline.messages.length) {
         addLogs([`离线结算 ${offline.seconds} 秒。`, ...offline.messages]);
       }
+      lastLogFlushRef.current = Date.now();
       refresh();
     }, []);
 
@@ -733,9 +763,18 @@ async function startTui() {
       const timer = setInterval(() => {
         if (needsInitialProfile) return;
         if (paused) return;
-        const result = settleTime(stateRef.current, Date.now(), { randomEvents: true });
-        if (result.messages.length) addLogs(result.messages);
-        saveProfile(stateRef.current);
+        const now = Date.now();
+        const result = settleTime(stateRef.current, now, { randomEvents: true });
+        if (result.messages.length) pendingLogMessagesRef.current.push(...result.messages);
+        if (shouldFlushTuiLogs(now, lastLogFlushRef.current)) {
+          const messages = pendingLogMessagesRef.current.length
+            ? pendingLogMessagesRef.current
+            : [formatTuiHeartbeat(stateRef.current)];
+          addLogs(messages);
+          pendingLogMessagesRef.current = [];
+          lastLogFlushRef.current = now;
+        }
+        if (result.seconds > 0 || result.messages.length) saveProfile(stateRef.current);
         refresh();
       }, TUI_CLOCK_TICK_MS);
       return () => clearInterval(timer);
@@ -902,10 +941,12 @@ if (require.main === module) {
 module.exports = {
   MAX_LOGS,
   TUI_CLOCK_TICK_MS,
+  TUI_LOG_FLUSH_MS,
   appendLogEntries,
   calculateLayoutBudget,
   createLogEntries,
   formatOptionDetail,
+  formatTuiHeartbeat,
   getCharacterCardAttributeRows,
   getOptionProgress,
   getProfilePageOptions,
@@ -919,6 +960,7 @@ module.exports = {
   processTuiCommand,
   resumeGameClock,
   resolveProfileDeleteKeypress,
+  shouldFlushTuiLogs,
   shouldExitProfileCreationMode,
   syncPausedClock,
   startTui

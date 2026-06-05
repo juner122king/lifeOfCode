@@ -77,6 +77,28 @@ const WEEKLY_FOCUS_CONFIG = {
   quality: { name: "质量周", quality: 1.3, code: 0.85, money: 0.85, project: 1, activity: 1 },
   balanced: { name: "均衡周", activity: 1, project: 1, skill: 1, learning: 1 }
 };
+const LIFESTYLE_STANCES = {
+  health: {
+    id: "health",
+    name: "Health First",
+    description: "把恢复、睡眠和抗压当作长期生产力。"
+  },
+  tech_surfing: {
+    id: "tech_surfing",
+    name: "Tech Surfing",
+    description: "休整时刷技术内容，换来知识，但不恢复精力。"
+  },
+  cyber_gaming: {
+    id: "cyber_gaming",
+    name: "Cyber Gaming",
+    description: "用赛博娱乐快速降压，深夜会压低次日精力上限。"
+  },
+  side_hustle: {
+    id: "side_hustle",
+    name: "Indie Side-Hustle",
+    description: "白天写公司的代码，晚上写改命的代码。"
+  }
+};
 const WORLD_EVENTS = [
   {
     id: "ai-boom",
@@ -231,6 +253,12 @@ function createNewState(now = Date.now(), options = {}) {
     dailyActionMinutesUsed: 0,
     currentDailyActionMinutesLimit: DAILY_ACTION_BASE_MINUTES,
     weeklyFocus: "balanced",
+    lifestyleStanceId: "health",
+    pendingLifestyleStanceId: null,
+    pendingMorningEnergyPenalty: 0,
+    pendingMorningEnergyCapMultiplier: 1,
+    dailyEnergyCapMultiplier: 1,
+    lastMorningTransitionDay: 1,
     triggeredWorldEvents: [],
     activeProjectDeadlines: {},
     activityLevels: createActivityMap(() => 1),
@@ -328,6 +356,12 @@ function normalizeState(raw, now = Date.now()) {
     dailyActionMinutesUsed: Math.max(0, Number(raw && raw.dailyActionMinutesUsed) || 0),
     currentDailyActionMinutesLimit: normalizeDailyLimit(raw && raw.currentDailyActionMinutesLimit, fresh.currentDailyActionMinutesLimit),
     weeklyFocus: normalizeWeeklyFocus(raw && raw.weeklyFocus),
+    lifestyleStanceId: normalizeLifestyleStanceId(raw && raw.lifestyleStanceId),
+    pendingLifestyleStanceId: normalizePendingLifestyleStanceId(raw && raw.pendingLifestyleStanceId),
+    pendingMorningEnergyPenalty: Math.max(0, Number(raw && raw.pendingMorningEnergyPenalty) || 0),
+    pendingMorningEnergyCapMultiplier: normalizeEnergyCapMultiplier(raw && raw.pendingMorningEnergyCapMultiplier),
+    dailyEnergyCapMultiplier: normalizeEnergyCapMultiplier(raw && raw.dailyEnergyCapMultiplier),
+    lastMorningTransitionDay: normalizeLastMorningTransitionDay(raw && raw.lastMorningTransitionDay, raw && raw.worldTimeMinutes),
     triggeredWorldEvents: Array.isArray(raw && raw.triggeredWorldEvents) ? raw.triggeredWorldEvents.filter((id) => WORLD_EVENTS.some((event) => event.id === id)) : [],
     activeProjectDeadlines: normalizeProjectDeadlines(raw && raw.activeProjectDeadlines),
     activityLevels: normalizeActivityMap(raw && raw.activityLevels, 1),
@@ -373,6 +407,26 @@ function normalizeDailyLimit(value, fallback) {
 
 function normalizeWeeklyFocus(value) {
   return WEEKLY_FOCUS_CONFIG[value] ? value : "balanced";
+}
+
+function normalizeLifestyleStanceId(value) {
+  return LIFESTYLE_STANCES[value] ? value : "health";
+}
+
+function normalizePendingLifestyleStanceId(value) {
+  return value && LIFESTYLE_STANCES[value] ? value : null;
+}
+
+function normalizeEnergyCapMultiplier(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? clamp(number, 0.5, 1) : 1;
+}
+
+function normalizeLastMorningTransitionDay(value, worldTimeMinutes) {
+  const explicit = Number(value);
+  if (Number.isFinite(explicit) && explicit >= 1) return Math.floor(explicit);
+  const calendar = getWorldCalendar(worldTimeMinutes);
+  return Math.max(1, calendar.hour >= 9 ? calendar.day : calendar.day - 1);
 }
 
 function normalizeProjectDeadlines(raw) {
@@ -554,6 +608,12 @@ function setWeeklyFocus(state, id) {
   return `本周重点已设为：${WEEKLY_FOCUS_CONFIG[id].name}。`;
 }
 
+function getEffectiveMaxEnergy(state) {
+  const role = roleById(state.currentRole) || content.roles[0];
+  const capMultiplier = normalizeEnergyCapMultiplier(state.dailyEnergyCapMultiplier);
+  return Math.max(1, role.maxEnergy * capMultiplier);
+}
+
 function getDailyTimeStatus(state) {
   const limit = Math.max(1, Number(state.currentDailyActionMinutesLimit) || calculateDailyActionMinutesLimit(state));
   const used = Math.max(0, Number(state.dailyActionMinutesUsed) || 0);
@@ -588,6 +648,167 @@ function getProjectRewardMultiplier(state) {
   return getActiveWorldEvents(state).reduce((multiplier, event) => multiplier * (event.projectRewardMultiplier || 1), 1);
 }
 
+function getLifestyleStance(id) {
+  return LIFESTYLE_STANCES[normalizeLifestyleStanceId(id)];
+}
+
+function getLifestyleStatus(state) {
+  const current = getLifestyleStance(state.lifestyleStanceId);
+  const pending = state.pendingLifestyleStanceId ? getLifestyleStance(state.pendingLifestyleStanceId) : null;
+  return {
+    current,
+    pending,
+    text: pending
+      ? `当前作息：${current.name}；明日：${pending.name}（待生效）`
+      : `当前作息：${current.name}；明日：沿用当前`
+  };
+}
+
+function getLifestyleOptions(state) {
+  return Object.values(LIFESTYLE_STANCES).map((stance) => ({
+    id: stance.id,
+    name: stance.name,
+    description: stance.description,
+    current: normalizeLifestyleStanceId(state.lifestyleStanceId) === stance.id,
+    pending: state.pendingLifestyleStanceId === stance.id,
+    command: `lifestyle ${stance.id}`
+  }));
+}
+
+function formatLifestyleEffectSummary(id) {
+  const stanceId = normalizeLifestyleStanceId(id);
+  if (stanceId === "health") return "休整恢复精力并降低压力，抗压越高恢复与减压越强。";
+  if (stanceId === "tech_surfing") return "休整获得知识，专注可带来少量减压，但不恢复精力。";
+  if (stanceId === "cyber_gaming") return "休整快速降低压力，深夜会降低次日精力上限，抗压可缓解代价。";
+  if (stanceId === "side_hustle") return "深夜休整产出金钱和声望并增加压力，次日扣精力；创造、沟通、抗压和专注影响收益与代价。";
+  return "";
+}
+
+function formatLifestyle(state) {
+  const status = getLifestyleStatus(state);
+  return formatLines([
+    status.text,
+    "可选作息：",
+    ...getLifestyleOptions(state).map((stance) => {
+      const marker = stance.current ? "当前" : stance.pending ? "明日" : "可选";
+      return `${stance.id} - ${stance.name} [${marker}]：${stance.description}`;
+    }),
+    "命令：lifestyle <id>（切换将于次日 09:00 生效）"
+  ]);
+}
+
+function setLifestyleStance(state, id) {
+  if (!LIFESTYLE_STANCES[id]) return `没有这个作息基调：${id}。可选：${Object.keys(LIFESTYLE_STANCES).join("、")}。`;
+  const effect = `作息效果：${formatLifestyleEffectSummary(id)}`;
+  if (normalizeLifestyleStanceId(state.lifestyleStanceId) === id) {
+    state.pendingLifestyleStanceId = null;
+    return formatLines([
+      `明日沿用当前作息：${LIFESTYLE_STANCES[id].name}。`,
+      effect
+    ]);
+  }
+  state.pendingLifestyleStanceId = id;
+  return formatLines([
+    `明日作息已设为：${LIFESTYLE_STANCES[id].name}。将在次日 09:00 生效。`,
+    effect
+  ]);
+}
+
+function getRestWindow(state, worldTimeMinutes) {
+  const minuteOfDay = normalizeWorldTimeMinutes(worldTimeMinutes) % MINUTES_PER_DAY;
+  if (minuteOfDay >= 12 * 60 && minuteOfDay < 14 * 60) return "rest_noon";
+  if (minuteOfDay >= 18 * 60 && minuteOfDay < 21 * 60) {
+    const eveningSlot = state.lockedSchedule && state.lockedSchedule.slots && state.lockedSchedule.slots.evening;
+    return eveningSlot && eveningSlot.type === "none" ? "rest_evening" : null;
+  }
+  if (minuteOfDay >= 21 * 60 || minuteOfDay < 9 * 60) return "rest_night";
+  return null;
+}
+
+function mergeDeltas(target, source = {}) {
+  for (const [key, value] of Object.entries(source)) {
+    target[key] = (target[key] || 0) + value;
+  }
+}
+
+function settleLifestyleRest(state, windowId, seconds) {
+  const stance = getLifestyleStance(state.lifestyleStanceId);
+  const deltas = {};
+  const minutes = Math.max(0, seconds);
+  if (!stance || !windowId || minutes <= 0) return deltas;
+
+  if (stance.id === "health") {
+    const resilienceRecovery = 1 + attributeBonus(state, "resilience", 0.003, 0.24);
+    const resilienceRelief = 1 + attributeBonus(state, "resilience", 0.004, 0.32);
+    deltas.energy = applyResourceDelta(state, "energy", minutes * 0.2 * resilienceRecovery);
+    deltas.pressure = applyResourceDelta(state, "pressure", -minutes * 0.05 * resilienceRelief);
+    return deltas;
+  }
+
+  if (stance.id === "tech_surfing") {
+    const learningBoost = 1 + attributeBonus(state, "learning", 0.003, 0.24);
+    const focusRelief = attributeBonus(state, "focus", 0.003, 0.18);
+    deltas.knowledge = applyResourceDelta(state, "knowledge", minutes * 0.06 * learningBoost);
+    if (focusRelief > 0) deltas.pressure = applyResourceDelta(state, "pressure", -minutes * 0.01 * focusRelief);
+    return deltas;
+  }
+
+  if (stance.id === "cyber_gaming") {
+    const resilienceRelief = 1 + attributeBonus(state, "resilience", 0.004, 0.32);
+    deltas.pressure = applyResourceDelta(state, "pressure", -minutes * 0.12 * resilienceRelief);
+    if (windowId === "rest_night") {
+      const penaltyRelief = attributeBonus(state, "resilience", 0.005, 0.4);
+      const capMultiplier = 1 - 0.2 * (1 - penaltyRelief);
+      state.pendingMorningEnergyCapMultiplier = Math.min(normalizeEnergyCapMultiplier(state.pendingMorningEnergyCapMultiplier), capMultiplier);
+    }
+    return deltas;
+  }
+
+  if (stance.id === "side_hustle" && windowId === "rest_night") {
+    const creativityBoost = 1 + attributeBonus(state, "creativity", 0.004, 0.32);
+    const communicationBoost = 1 + attributeBonus(state, "communication", 0.003, 0.24);
+    const resilienceRelief = attributeBonus(state, "resilience", 0.004, 0.3);
+    const focusRelief = attributeBonus(state, "focus", 0.004, 0.333);
+    deltas.money = applyResourceDelta(state, "money", minutes * 0.035 * creativityBoost);
+    deltas.reputation = applyResourceDelta(state, "reputation", minutes * 0.0008 * communicationBoost);
+    deltas.pressure = applyResourceDelta(state, "pressure", minutes * 0.018 * (1 - resilienceRelief));
+    state.pendingMorningEnergyPenalty = Math.max(Number(state.pendingMorningEnergyPenalty) || 0, 30 * (1 - focusRelief));
+    return deltas;
+  }
+
+  return deltas;
+}
+
+function applyMorningTransitionIfDue(state, messages = []) {
+  const calendar = getWorldCalendar(state.worldTimeMinutes);
+  if (calendar.hour !== 9 || calendar.minute !== 0) return false;
+  if (state.lastMorningTransitionDay === calendar.day) return false;
+
+  state.lastMorningTransitionDay = calendar.day;
+  state.dailyActionMinutesUsed = 0;
+  state.dailyEnergyCapMultiplier = normalizeEnergyCapMultiplier(state.pendingMorningEnergyCapMultiplier);
+  state.pendingMorningEnergyCapMultiplier = 1;
+  clampState(state);
+
+  const energyPenalty = Math.max(0, Number(state.pendingMorningEnergyPenalty) || 0);
+  if (energyPenalty > 0) {
+    applyResourceDelta(state, "energy", -energyPenalty);
+    state.pendingMorningEnergyPenalty = 0;
+  }
+
+  if (state.pendingLifestyleStanceId) {
+    state.lifestyleStanceId = normalizeLifestyleStanceId(state.pendingLifestyleStanceId);
+    state.pendingLifestyleStanceId = null;
+  }
+
+  applyResourceDelta(state, "energy", 20);
+  applyResourceDelta(state, "pressure", -5);
+
+  state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
+  messages.push(`09:00：${formatLifestyle(state).split("\n")[0]}，今日可用时间 ${state.currentDailyActionMinutesLimit}m。`);
+  return true;
+}
+
 function getNearestDeadline(state) {
   const entries = Object.entries(state.activeProjectDeadlines || {})
     .map(([id, deadline]) => {
@@ -620,8 +841,9 @@ function clampState(state) {
     state.resources[key] = Math.max(0, Number(state.resources[key]) || 0);
   }
   state.resources.pressure = clamp(state.resources.pressure, 0, 100);
-  const role = roleById(state.currentRole) || content.roles[0];
-  state.resources.energy = clamp(Number(state.resources.energy) || 0, 0, role.maxEnergy);
+  state.dailyEnergyCapMultiplier = normalizeEnergyCapMultiplier(state.dailyEnergyCapMultiplier);
+  state.pendingMorningEnergyCapMultiplier = normalizeEnergyCapMultiplier(state.pendingMorningEnergyCapMultiplier);
+  state.resources.energy = clamp(Number(state.resources.energy) || 0, 0, getEffectiveMaxEnergy(state));
 }
 
 function getBaseAttribute(state, attr) {
@@ -1058,8 +1280,7 @@ function applyResourceDelta(state, key, rawDelta) {
   if (!rawDelta) return 0;
   const before = state.resources[key] || 0;
   if (key === "energy") {
-    const role = roleById(state.currentRole) || content.roles[0];
-    state.resources.energy = clamp(before + rawDelta, 0, role.maxEnergy);
+    state.resources.energy = clamp(before + rawDelta, 0, getEffectiveMaxEnergy(state));
   } else if (key === "pressure") {
     state.resources.pressure = clamp(before + rawDelta, 0, 100);
   } else {
@@ -1074,11 +1295,12 @@ function settleActivity(state, activity, seconds, options = {}) {
   const attributeMultiplier = 1 + attributeBonus(state, activity.primaryAttribute, 0.0025, 0.22);
   const multipliers = getMultipliers(state);
   const risk = getProductionRisk(state);
-  const maxEnergy = (roleById(state.currentRole) || content.roles[0]).maxEnergy;
+  const maxEnergy = getEffectiveMaxEnergy(state);
   const lowEnergy = activity.id !== "rest" && state.resources.energy <= 0;
   const energyFactor = activity.id === "rest" ? 1 : clamp(0.35 + 0.65 * (state.resources.energy || 0) / maxEnergy, 0.35, 1);
   const lowEnergyPenalty = activity.id !== "rest" && state.resources.energy < 30 ? 0.8 : 1;
-  const overtimeFactor = options.overtime ? 0.45 : 1;
+  const overtimeRelief = options.overtime ? attributeBonus(state, "focus", 0.003, 0.24) : 0;
+  const overtimeFactor = options.overtime ? 0.45 + overtimeRelief * 0.5 : 1;
   const focus = getWeeklyFocus(state);
   const learningFocusFactor = focus.id === "learning" && activity.id === "study" ? focus.learning : 1;
   const qualityActivityIds = new Set(["bug-hunting", "refactoring", "testing", "code-review"]);
@@ -1115,8 +1337,8 @@ function settleActivity(state, activity, seconds, options = {}) {
     if (key === "pressure" && focus.id === "freelance") delta *= focus.pressure;
     if (key === "bugs" && state.resources.energy < 10) delta *= 3;
     if (lowEnergy && key === "pressure") delta *= 1.8;
-    if (options.overtime && (key === "bugs" || key === "techDebt")) delta *= 1.8;
-    if (options.overtime && key === "pressure") delta *= 1.5;
+    if (options.overtime && (key === "bugs" || key === "techDebt")) delta *= 1.8 * (1 - attributeBonus(state, "logic", 0.004, 0.3));
+    if (options.overtime && key === "pressure") delta *= 1.5 * (1 - attributeBonus(state, "resilience", 0.004, 0.3));
     const applied = applyResourceDelta(state, key, delta);
     deltas[key] = (deltas[key] || 0) + applied;
   }
@@ -1125,7 +1347,8 @@ function settleActivity(state, activity, seconds, options = {}) {
     deltas.pressure = (deltas.pressure || 0) + applyResourceDelta(state, "pressure", seconds * 0.006);
   }
   if (options.overtime) {
-    deltas.pressure = (deltas.pressure || 0) + applyResourceDelta(state, "pressure", seconds * 0.003);
+    const resilienceRelief = attributeBonus(state, "resilience", 0.004, 0.3);
+    deltas.pressure = (deltas.pressure || 0) + applyResourceDelta(state, "pressure", seconds * 0.003 * (1 - resilienceRelief));
   }
 
   state.stats.totalCodeLines += Math.max(0, deltas.codeLines || 0);
@@ -1289,11 +1512,7 @@ function getActiveMode(state) {
 }
 
 function startNewWorldDay(state, messages = []) {
-  state.dailyActionMinutesUsed = 0;
-  state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
-  applyResourceDelta(state, "energy", 20);
-  applyResourceDelta(state, "pressure", -5);
-  messages.push(`新的一天：${formatWorldCalendar(state, "short")}，今日可用时间 ${state.currentDailyActionMinutesLimit}m。`);
+  messages.push(`世界日历进入新的一天：${formatWorldCalendar(state, "short")}。日常重置将在 09:00 结算。`);
 }
 
 function getCurrentSchedulePhase(worldTimeMinutes) {
@@ -1518,6 +1737,7 @@ function clearScheduleDraft(state) {
 function processPlanCommand(state, args) {
   const [subcommand, type, id] = args;
   if (!subcommand) return formatSchedule(state);
+  if (subcommand === "lifestyle") return type ? setLifestyleStance(state, type) : formatLifestyle(state);
   if (subcommand === "confirm") return confirmSchedule(state);
   if (subcommand === "clear") return clearScheduleDraft(state);
   if (!SCHEDULE_PHASE_BY_ID[subcommand]) return "用法：plan [morning|afternoon|evening] <activity|skill|project> <id>，或 plan evening none、plan confirm、plan clear。";
@@ -1628,7 +1848,8 @@ function checkProjectDeadlines(state, messages = []) {
 
 function getWorkModifiers(state, type, item, overtime) {
   const focus = getWeeklyFocus(state);
-  let workMultiplier = overtime ? 0.5 : 1;
+  const overtimeRelief = overtime ? attributeBonus(state, "focus", 0.003, 0.24) : 0;
+  let workMultiplier = overtime ? 0.5 + overtimeRelief * 0.5 : 1;
   let rewardMultiplier = getProjectRewardMultiplier(state);
   let skillExpMultiplier = 1;
   if (type === "project") {
@@ -1656,20 +1877,22 @@ function settleTime(state, now = Date.now(), options = {}) {
   ensureScheduleForCurrentDay(state);
   clearCompletedSkillLearning(state);
   const maxSeconds = options.maxSeconds ?? OFFLINE_CAP_SECONDS;
+  const lastTick = state.lastTick;
   const elapsedSeconds = Math.max(0, Math.floor((now - state.lastTick) / 1000));
   const seconds = Math.min(elapsedSeconds, maxSeconds);
   const messages = [];
   const applyWorldEffects = options.randomEvents !== false;
 
+  applyMorningTransitionIfDue(state, messages);
   if (isSchedulePauseMinute(state) && !hasManualActiveWork(state)) {
     state.waitingForSchedule = true;
     clearActiveWork(state);
     state.lastTick = now;
-    return { seconds: 0, messages: ["09:00 到了，请先用 plan 安排并确认今日日程。"] };
+    messages.push("09:00 到了，请先用 plan 安排并确认今日日程。");
+    return { seconds: 0, messages };
   }
 
   if (seconds <= 0) {
-    state.lastTick = now;
     return { seconds: 0, messages };
   }
 
@@ -1720,6 +1943,11 @@ function settleTime(state, now = Date.now(), options = {}) {
         messages.push(...settleProject(state, mode.item, segmentMinutes, { ...options, ...modifiers }));
         if (scheduleContext && !state.activeProjectId && !state.projectProgress[mode.item.id]) markSchedulePhaseDone(state, scheduleContext.phase.id);
       }
+    } else {
+      const restWindow = getRestWindow(state, state.worldTimeMinutes);
+      if (restWindow) {
+        mergeDeltas(result.deltas, settleLifestyleRest(state, restWindow, segmentMinutes));
+      }
     }
 
     state.worldTimeMinutes += segmentMinutes;
@@ -1739,9 +1967,10 @@ function settleTime(state, now = Date.now(), options = {}) {
         state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
       }
     }
+    applyMorningTransitionIfDue(state, messages);
     if (applyWorldEffects) checkProjectDeadlines(state, messages);
     const calendar = getWorldCalendar(state.worldTimeMinutes);
-    if (calendar.hour === 9 && calendar.minute === 0 && state.lockedSchedule && state.lockedSchedule.day !== calendar.day) {
+    if (calendar.hour === 9 && calendar.minute === 0 && !hasManualActiveWork(state)) {
       resetScheduleForCurrentDay(state);
       messages.push("新的一天 09:00 到了，请先用 plan 安排并确认今日日程。");
       break;
@@ -1775,7 +2004,7 @@ function settleTime(state, now = Date.now(), options = {}) {
     }
   }
 
-  state.lastTick = now;
+  state.lastTick = seconds < elapsedSeconds ? now : lastTick + processedSeconds * 1000;
   clampState(state);
   clearCompletedSkillLearning(state);
   syncScheduledActiveMode(state);
@@ -2039,6 +2268,7 @@ function formatState(state) {
     `日程状态：${state.lockedSchedule ? "已确认" : "等待确认"}`,
     formatSchedule(state),
     `本周重点：${formatWeeklyFocus(state)}`,
+    getLifestyleStatus(state).text,
     `当前事件：${activeEvents.length ? activeEvents.map((event) => event.name).join("，") : "暂无"}`,
     formatNearestDeadline(state),
     `当前活动：${active ? `${active.name} Lv.${getActivityLevel(state, active.id)}` : "无"}`,
@@ -2077,6 +2307,7 @@ function helpText() {
     "  start <id>             旧入口：提示改用 plan",
     "  stop                   暂停当前底层任务（调试用）",
     "  week <focus>           设置本周重点：learning|project|freelance|quality|balanced",
+    "  lifestyle [id]         查看或设置明日作息：health|tech_surfing|cyber_gaming|side_hustle",
     "  learn <id>             旧入口：提示改用 plan",
     "  upgrade <id>           消耗技能经验和资源升级技能",
     "  buy <id>               买工具",
@@ -2205,6 +2436,14 @@ function getScheduleOptions(state) {
       command: null
     };
   });
+  const lifestyleOptions = getLifestyleOptions(state).map((stance) => ({
+    id: `lifestyle-${stance.id}`,
+    name: `作息：${stance.name}`,
+    description: stance.description,
+    status: stance.current ? "当前" : stance.pending ? "明日生效" : "可设为明日",
+    effects: formatLifestyleEffectSummary(stance.id),
+    command: stance.command
+  }));
 
   return [
     ...phaseOptions,
@@ -2228,7 +2467,8 @@ function getScheduleOptions(state) {
       description: "只影响未确认的今日日程草稿。",
       status: state.lockedSchedule ? "已锁定" : "可清空",
       command: state.lockedSchedule ? null : "plan clear"
-    }
+    },
+    ...lifestyleOptions
   ];
 }
 
@@ -2486,6 +2726,7 @@ function getGameViewModel(state) {
       }
     },
     weeklyFocus,
+    lifestyle: getLifestyleStatus(state),
     activeWorldEvents,
     nearestDeadline,
     profile: {
@@ -3030,7 +3271,7 @@ function processCommand(state, input, options = {}) {
   const command = parts[0];
   const args = parts.slice(1);
   const arg = args[0];
-  if (!trimmed.startsWith("wait ") && !trimmed.startsWith("plan")) {
+  if (!trimmed.startsWith("wait ") && !trimmed.startsWith("plan") && !trimmed.startsWith("lifestyle")) {
     messages.push(...settleTime(state, now, { randomEvents: options.randomEvents, rng: options.rng }).messages);
   }
 
@@ -3049,6 +3290,9 @@ function processCommand(state, input, options = {}) {
       break;
     case "week":
       messages.push(arg ? setWeeklyFocus(state, arg) : `本周重点：${formatWeeklyFocus(state)}。用法：week <learning|project|freelance|quality|balanced>`);
+      break;
+    case "lifestyle":
+      messages.push(arg ? setLifestyleStance(state, arg) : formatLifestyle(state));
       break;
     case "start":
       messages.push(arg ? `start 不再立即执行。请使用 plan morning activity ${arg} 或 plan afternoon activity ${arg} 安排到今日日程。` : "用法：plan <morning|afternoon|evening> activity <activityId>");
@@ -3266,6 +3510,7 @@ module.exports = {
   formatGoals,
   formatGoalSummary,
   formatLiveStatus,
+  formatLifestyle,
   formatNearestDeadline,
   formatState,
   formatSchedule,
@@ -3281,6 +3526,7 @@ module.exports = {
   getEffectiveAttribute,
   getGameViewModel,
   getGoalOptions,
+  getLifestyleOptions,
   getManagementOptions,
   getMultipliers,
   getNearestDeadline,

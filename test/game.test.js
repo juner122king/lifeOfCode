@@ -31,6 +31,7 @@ const {
   getProfileOptions,
   getProjectProgress,
   getProjectSuccessRate,
+  getScheduleOptions,
   getSkillProgress,
   getWorldCalendar,
   learnSkill,
@@ -108,6 +109,8 @@ test("旧存档加载为 v2 新状态，只保留档案元信息", () => {
   assert.equal(getEffectiveAttribute(state, "logic"), DEFAULT_ATTRIBUTES.logic);
   assert.equal(state.characterCardId, null);
   assert.equal(state.waitingForSchedule, true);
+  assert.equal(state.lifestyleStanceId, "health");
+  assert.equal(state.pendingLifestyleStanceId, null);
 });
 
 test("新存档初始化世界日历、每日预算和周重点", () => {
@@ -117,6 +120,8 @@ test("新存档初始化世界日历、每日预算和周重点", () => {
   assert.equal(state.dailyActionMinutesUsed, 0);
   assert.equal(state.currentDailyActionMinutesLimit, 540);
   assert.equal(state.weeklyFocus, "balanced");
+  assert.equal(state.lifestyleStanceId, "health");
+  assert.equal(state.pendingLifestyleStanceId, null);
   assert.deepEqual(state.triggeredWorldEvents, []);
   assert.deepEqual(state.activeProjectDeadlines, {});
 });
@@ -146,6 +151,23 @@ test("世界时间按现实秒推进为游戏分钟并跨周月年", () => {
   calendar = getWorldCalendar(state.worldTimeMinutes);
   assert.equal(calendar.year, 2);
   assert.equal(calendar.day, 337);
+});
+
+test("settleTime 保留未满一秒的计时余量", () => {
+  const start = 1_700_000_000_000;
+  const state = createNewState(start);
+  state.worldTimeMinutes = 10 * 60;
+
+  const early = settleTime(state, start + 400, { randomEvents: false });
+
+  assert.equal(early.seconds, 0);
+  assert.equal(state.lastTick, start);
+
+  const settled = settleTime(state, start + 1000, { randomEvents: false });
+
+  assert.equal(settled.seconds, 1);
+  assert.equal(state.lastTick, start + 1000);
+  assert.equal(state.worldTimeMinutes, 10 * 60 + 1);
 });
 
 test("动态每日预算随职位、精力和压力变化", () => {
@@ -181,6 +203,36 @@ test("预算耗尽后加班降低主动产出并增加压力", () => {
   assert.match(result.messages.join("\n"), /低效加班/);
 });
 
+test("加班产出、压力和质量风险受属性缓解", () => {
+  const start = 1_700_000_000_000;
+  const lowFocus = createNewState(start);
+  const highFocus = createNewState(start);
+  const lowResilience = createNewState(start);
+  const highResilience = createNewState(start);
+  const lowLogic = createNewState(start);
+  const highLogic = createNewState(start);
+
+  for (const state of [lowFocus, highFocus, lowResilience, highResilience, lowLogic, highLogic]) {
+    state.dailyActionMinutesUsed = state.currentDailyActionMinutesLimit;
+    startActivity(state, "feature-coding");
+  }
+  highFocus.attributes.focus = 100;
+  highResilience.attributes.resilience = 100;
+  highLogic.attributes.logic = 100;
+
+  settleTime(lowFocus, start + 60_000, { randomEvents: true, rng: () => 1 });
+  settleTime(highFocus, start + 60_000, { randomEvents: true, rng: () => 1 });
+  settleTime(lowResilience, start + 60_000, { randomEvents: true, rng: () => 1 });
+  settleTime(highResilience, start + 60_000, { randomEvents: true, rng: () => 1 });
+  settleTime(lowLogic, start + 60_000, { randomEvents: true, rng: () => 1 });
+  settleTime(highLogic, start + 60_000, { randomEvents: true, rng: () => 1 });
+
+  assert.ok(highFocus.resources.codeLines > lowFocus.resources.codeLines);
+  assert.ok(highResilience.resources.pressure < lowResilience.resources.pressure);
+  assert.ok(highLogic.resources.bugs < lowLogic.resources.bugs);
+  assert.ok(highLogic.resources.techDebt < lowLogic.resources.techDebt);
+});
+
 test("世界事件按游戏日历触发并展示在事件命令和 ViewModel", () => {
   const start = 1_700_000_000_000;
   const state = createNewState(start);
@@ -201,6 +253,92 @@ test("week 命令设置本周重点并进入 ViewModel", () => {
   assert.match(message, /项目周/);
   assert.equal(state.weeklyFocus, "project");
   assert.equal(getGameViewModel(state).weeklyFocus.name, "项目周");
+});
+
+test("lifestyle 命令只设置明日作息并在次日 09:00 生效", () => {
+  const start = 1_700_000_000_000;
+  const state = createNewState(start);
+
+  const message = processCommand(state, "lifestyle side_hustle", { randomEvents: false }).messages.join("\n");
+  assert.match(message, /明日作息已设为/);
+  assert.match(message, /作息效果/);
+  assert.match(message, /金钱和声望/);
+  assert.match(message, /次日扣精力/);
+  assert.equal(state.lifestyleStanceId, "health");
+  assert.equal(state.pendingLifestyleStanceId, "side_hustle");
+  assert.match(processCommand(state, "lifestyle", { randomEvents: false }).messages.join("\n"), /明日：Indie Side-Hustle/);
+  assert.match(processCommand(state, "plan lifestyle cyber_gaming", { randomEvents: false }).messages.join("\n"), /Cyber Gaming/);
+  assert.equal(state.lifestyleStanceId, "health");
+  assert.equal(state.pendingLifestyleStanceId, "cyber_gaming");
+
+  state.worldTimeMinutes = 21 * 60;
+  state.lastTick = start;
+  settleTime(state, start + 12 * 60 * 1000, { randomEvents: false });
+
+  assert.equal(getWorldCalendar(state.worldTimeMinutes).hhmm, "09:00");
+  assert.equal(state.lifestyleStanceId, "cyber_gaming");
+  assert.equal(state.pendingLifestyleStanceId, null);
+  assert.equal(getGameViewModel(state).lifestyle.current.id, "cyber_gaming");
+});
+
+test("lifestyle 命令选择当前作息时沿用当前并清空待生效", () => {
+  const state = createNewState();
+  state.pendingLifestyleStanceId = "side_hustle";
+
+  const message = processCommand(state, "lifestyle health", { randomEvents: false }).messages.join("\n");
+
+  assert.match(message, /明日沿用当前作息/);
+  assert.match(message, /作息效果/);
+  assert.equal(state.lifestyleStanceId, "health");
+  assert.equal(state.pendingLifestyleStanceId, null);
+  assert.match(getGameViewModel(state).lifestyle.text, /明日：沿用当前/);
+});
+
+test("日程选项包含可执行的作息基调入口", () => {
+  const state = createNewState();
+
+  const options = getScheduleOptions(state);
+  const lifestyleOptions = options.filter((option) => option.id.startsWith("lifestyle-"));
+
+  assert.deepEqual(lifestyleOptions.map((option) => option.id), [
+    "lifestyle-health",
+    "lifestyle-tech_surfing",
+    "lifestyle-cyber_gaming",
+    "lifestyle-side_hustle"
+  ]);
+  assert.equal(lifestyleOptions.find((option) => option.id === "lifestyle-health").name, "作息：Health First");
+  assert.equal(lifestyleOptions.find((option) => option.id === "lifestyle-health").status, "当前");
+  assert.equal(lifestyleOptions.find((option) => option.id === "lifestyle-side_hustle").status, "可设为明日");
+  assert.equal(lifestyleOptions.find((option) => option.id === "lifestyle-side_hustle").command, "lifestyle side_hustle");
+
+  const result = processCommand(state, lifestyleOptions.find((option) => option.id === "lifestyle-side_hustle").command, { randomEvents: false });
+  assert.match(result.messages.join("\n"), /明日作息已设为/);
+  assert.equal(state.lifestyleStanceId, "health");
+  assert.equal(state.pendingLifestyleStanceId, "side_hustle");
+
+  const updated = getScheduleOptions(state).find((option) => option.id === "lifestyle-side_hustle");
+  assert.equal(updated.status, "明日生效");
+  assert.match(updated.effects, /金钱和声望/);
+  assert.match(updated.effects, /次日扣精力/);
+});
+
+test("日程确认后仍可从日程选项设置明日作息", () => {
+  const state = createNewState();
+  processCommand(state, "plan morning activity feature-coding", { randomEvents: false });
+  processCommand(state, "plan afternoon activity study", { randomEvents: false });
+  processCommand(state, "plan evening none", { randomEvents: false });
+  processCommand(state, "plan confirm", { randomEvents: false });
+
+  const option = getScheduleOptions(state).find((item) => item.id === "lifestyle-tech_surfing");
+
+  assert.equal(state.lockedSchedule !== null, true);
+  assert.equal(option.command, "lifestyle tech_surfing");
+  assert.equal(option.status, "可设为明日");
+
+  const result = processCommand(state, option.command, { randomEvents: false });
+  assert.match(result.messages.join("\n"), /明日作息已设为：Tech Surfing/);
+  assert.equal(state.lifestyleStanceId, "health");
+  assert.equal(state.pendingLifestyleStanceId, "tech_surfing");
 });
 
 test("人物卡数据完整且活动等级奖励受限", () => {
@@ -417,9 +555,13 @@ test("晚上 none 不产生加班压力，同一技能多阶段只扣一次资�
   processCommand(rest, "plan confirm");
   rest.worldTimeMinutes = 18 * 60;
   rest.lastTick = now;
+  rest.resources.energy = 50;
+  rest.resources.pressure = 50;
   const pressureBefore = rest.resources.pressure;
+  const energyBefore = rest.resources.energy;
   settleTime(rest, now + 60_000, { randomEvents: false });
-  assert.equal(rest.resources.pressure, pressureBefore);
+  assert.ok(rest.resources.pressure < pressureBefore);
+  assert.ok(rest.resources.energy > energyBefore);
   assert.equal(rest.activeActivityId, null);
 
   const skill = createNewState(now);
@@ -432,6 +574,83 @@ test("晚上 none 不产生加班压力，同一技能多阶段只扣一次资�
   assert.match(confirmed, /今日日程已确认/);
   assert.equal(skill.resources.knowledge, 0);
   assert.equal(skill.resources.money, 0);
+});
+
+test("作息基调按休整窗口和属性结算", () => {
+  const now = 1_700_000_000_000;
+
+  const lowHealth = createNewState(now);
+  const highHealth = createNewState(now);
+  for (const state of [lowHealth, highHealth]) {
+    state.worldTimeMinutes = 12 * 60;
+    state.lastTick = now;
+    state.resources.energy = 20;
+    state.resources.pressure = 60;
+  }
+  highHealth.attributes.resilience = 100;
+  settleTime(lowHealth, now + 60_000, { randomEvents: false });
+  settleTime(highHealth, now + 60_000, { randomEvents: false });
+  assert.ok(highHealth.resources.energy > lowHealth.resources.energy);
+  assert.ok(highHealth.resources.pressure < lowHealth.resources.pressure);
+
+  const lowTech = createNewState(now);
+  const highTech = createNewState(now);
+  for (const state of [lowTech, highTech]) {
+    state.lifestyleStanceId = "tech_surfing";
+    state.worldTimeMinutes = 12 * 60;
+    state.lastTick = now;
+    state.resources.energy = 20;
+  }
+  highTech.attributes.learning = 100;
+  settleTime(lowTech, now + 60_000, { randomEvents: false });
+  settleTime(highTech, now + 60_000, { randomEvents: false });
+  assert.equal(lowTech.resources.energy, 20);
+  assert.ok(highTech.resources.knowledge > lowTech.resources.knowledge);
+
+  const gaming = createNewState(now);
+  gaming.lifestyleStanceId = "cyber_gaming";
+  gaming.worldTimeMinutes = 21 * 60;
+  gaming.lastTick = now;
+  gaming.resources.pressure = 60;
+  settleTime(gaming, now + 60_000, { randomEvents: false });
+  assert.ok(gaming.resources.pressure < 60);
+  assert.ok(gaming.pendingMorningEnergyCapMultiplier < 1);
+});
+
+test("side_hustle 只在深夜产生收益并在次日扣精力", () => {
+  const now = 1_700_000_000_000;
+  const noon = createNewState(now);
+  noon.lifestyleStanceId = "side_hustle";
+  noon.worldTimeMinutes = 12 * 60;
+  noon.lastTick = now;
+  settleTime(noon, now + 60_000, { randomEvents: false });
+  assert.equal(noon.resources.money, 30);
+  assert.equal(noon.resources.reputation, 0);
+
+  const night = createNewState(now);
+  night.lifestyleStanceId = "side_hustle";
+  night.worldTimeMinutes = 21 * 60;
+  night.lastTick = now;
+  night.resources.energy = 100;
+  settleTime(night, now + 12 * 60 * 1000, { randomEvents: false });
+  assert.ok(night.resources.money > 30);
+  assert.ok(night.resources.reputation > 0);
+  assert.ok(night.resources.pressure > 0);
+  assert.equal(night.pendingMorningEnergyPenalty, 0);
+  assert.ok(night.resources.energy < 100);
+
+  const lowFocus = createNewState(now);
+  const highFocus = createNewState(now);
+  for (const state of [lowFocus, highFocus]) {
+    state.lifestyleStanceId = "side_hustle";
+    state.worldTimeMinutes = 21 * 60;
+    state.lastTick = now;
+    state.resources.energy = 100;
+  }
+  highFocus.attributes.focus = 100;
+  settleTime(lowFocus, now + 12 * 60 * 1000, { randomEvents: false });
+  settleTime(highFocus, now + 12 * 60 * 1000, { randomEvents: false });
+  assert.ok(highFocus.resources.energy > lowFocus.resources.energy);
 });
 
 test("start feature-coding 后只结算写功能活动", () => {
