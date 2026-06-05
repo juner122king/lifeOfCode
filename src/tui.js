@@ -1,7 +1,9 @@
 const {
   createNewState,
+  createTuiTicker,
   createProfile,
   defaultProfileExists,
+  formatGameEvent,
   getActivityOptions,
   getCharacterCardOptions,
   getGameViewModel,
@@ -34,28 +36,55 @@ const PANELS = [
   { id: "projects", label: "项目", key: "P" }
 ];
 
-const MAX_LOGS = 6;
+const MAX_LOGS = 80;
+const MIN_EVENT_HISTORY_ROWS = 8;
+const MIN_LOG_PANEL_HEIGHT = MIN_EVENT_HISTORY_ROWS + 3;
+const EVENT_LOG_CATEGORIES = new Set(["project", "skill", "career", "warning", "focus", "world", "random", "system"]);
+const CURRENT_RESOURCE_IDS = ["energy", "pressure", "bugs", "techDebt"];
 const MIN_LIST_PAGE_SIZE = 3;
 const DEFAULT_TERMINAL_ROWS = 24;
 const DEFAULT_TERMINAL_COLUMNS = 80;
-const TUI_CLOCK_TICK_MS = 250;
-const TUI_LOG_FLUSH_MS = 5000;
+const TUI_SETTLE_TICK_MS = 3000;
 
 function trimText(value, length) {
   const text = String(value || "");
   return text.length > length ? `${text.slice(0, Math.max(0, length - 1))}…` : text;
 }
 
-function normalizeLogMessages(messages) {
-  return messages.filter(Boolean).flatMap((message) => String(message).split("\n").filter(Boolean));
+function normalizeLogMessages(messages, defaultCategory = null) {
+  return messages.filter(Boolean).flatMap((message) => {
+    if (typeof message === "object" && message !== null && "text" in message) {
+      return String(message.text || "")
+        .split("\n")
+        .filter(Boolean)
+        .map((text) => ({
+          category: message.category || defaultCategory || null,
+          severity: message.severity || "info",
+          text
+        }));
+    }
+    return String(message)
+      .split("\n")
+      .filter(Boolean)
+      .map((text) => ({
+        category: defaultCategory,
+        severity: defaultCategory ? "info" : null,
+        text
+      }));
+  });
 }
 
-function createLogEntries(messages, startId = 0) {
+function createLogEntries(messages, startId = 0, defaultCategory = null) {
   let nextId = Math.max(0, Math.floor(Number(startId) || 0));
-  const entries = normalizeLogMessages(messages).map((text) => ({
-    id: nextId++,
-    text
-  }));
+  const entries = normalizeLogMessages(messages, defaultCategory).map((entry) => {
+    const log = {
+      id: nextId++,
+      text: entry.category ? formatGameEvent(entry) : entry.text
+    };
+    if (entry.category) log.category = entry.category;
+    if (entry.severity) log.severity = entry.severity;
+    return log;
+  });
   return { entries, nextId };
 }
 
@@ -64,42 +93,91 @@ function appendLogEntries(current, entries, maxLogs = MAX_LOGS) {
   return [...current, ...entries].slice(-safeMax);
 }
 
-function getLogRows(logs, maxLogs = MAX_LOGS) {
-  const safeMax = Math.max(1, Math.floor(Number(maxLogs) || MAX_LOGS));
-  const visible = logs.slice(-safeMax);
-  if (!visible.length) {
-    return [
+function normalizeTickerRows(ticker) {
+  const rows = Array.isArray(ticker) ? ticker : String(ticker || "").split("\n");
+  return [0, 1].map((index) => {
+    const text = String(rows[index] || "").trim();
+    return {
+      id: `ticker-${index}`,
+      text: text || (index === 0 ? "[当前状态] 休整。" : "[当前时间] --"),
+      ticker: true
+    };
+  });
+}
+
+function isEventLog(log) {
+  if (!log || log.empty) return true;
+  if (log.category) return EVENT_LOG_CATEGORIES.has(log.category);
+  const text = String(log.text || "");
+  return !text.startsWith("[命令]") && !text.startsWith(">");
+}
+
+function getLogRows(logs, maxHistoryRows = MAX_LOGS, ticker = null) {
+  const safeMax = Math.max(1, Math.floor(Number(maxHistoryRows) || MAX_LOGS));
+  const visible = logs.filter(isEventLog).slice(-safeMax);
+  const historyRows = !visible.length
+    ? [
       ...Array.from({ length: safeMax - 1 }, (_, index) => ({ id: `empty-${index}`, text: "", empty: true })),
       { id: "empty-message", text: "暂无日志。", empty: true }
+    ]
+    : [
+      ...Array.from({ length: safeMax - visible.length }, (_, index) => ({ id: `empty-${index}`, text: "", empty: true })),
+      ...visible
     ];
-  }
+  if (ticker === null || ticker === undefined) return historyRows;
+  return {
+    tickerRows: normalizeTickerRows(ticker),
+    historyRows
+  };
+}
+
+function getCurrentLogRows(view, ticker = null) {
+  const tickerRows = normalizeTickerRows(ticker);
+  const resources = view && Array.isArray(view.resources) ? view.resources : [];
+  const byId = new Map(resources.map((item) => [item.id, item]));
+  const dailyTime = view && view.dailyTime ? view.dailyTime : null;
+  const budgetLabel = dailyTime && dailyTime.label
+    ? `今日预算 ${dailyTime.label}${dailyTime.overtime ? " 超时" : ` 剩余 ${Math.floor(Number(dailyTime.remaining) || 0)}m`}`
+    : "今日预算 --";
   return [
-    ...Array.from({ length: safeMax - visible.length }, (_, index) => ({ id: `empty-${index}`, text: "", empty: true })),
-    ...visible
+    { id: "current-status", kind: "status", text: tickerRows[0].text },
+    { id: "current-time", kind: "time", text: tickerRows[1].text },
+    { id: "current-budget", kind: "resource", resourceId: "dailyTime", text: budgetLabel },
+    ...CURRENT_RESOURCE_IDS.map((id) => {
+      const resource = byId.get(id);
+      return {
+        id: `current-${id}`,
+        kind: "resource",
+        resourceId: id,
+        resource,
+        text: resource ? `${resource.name} ${resource.value}` : `${id} --`
+      };
+    })
   ];
 }
 
-function shouldFlushTuiLogs(now, lastFlush, interval = TUI_LOG_FLUSH_MS) {
-  return Math.max(0, Number(now) || 0) - Math.max(0, Number(lastFlush) || 0) >= Math.max(1, Number(interval) || TUI_LOG_FLUSH_MS);
+function getCommandLogCategory(command, message = "") {
+  const text = `${command || ""}\n${message || ""}`;
+  if (/promote|晋升成功/.test(text)) return "career";
+  if (/upgrade|learn|技能|学习完成|提升到/.test(text)) return "skill";
+  if (/week|本周重点/.test(text)) return "focus";
+  if (/project|项目|交付|Deadline/.test(text)) return "project";
+  if (/events|世界事件|当前事件/.test(text)) return "world";
+  if (/不足|失败|耗尽|逾期|不能|未知|错误|删除/.test(text)) return "warning";
+  return "command";
 }
 
-function formatTuiHeartbeat(state) {
-  const view = getGameViewModel(state);
-  const resourceValue = (id) => {
-    const resource = view.resources.find((item) => item.id === id);
-    return resource ? resource.value : 0;
-  };
-  const phase = view.schedule.currentPhase ? view.schedule.currentPhase.name : "休整";
-  const work = view.activeActivity
-    ? `活动 ${view.activeActivity.name}`
-    : view.activeProject
-      ? `项目 ${view.activeProject.name}`
-      : view.activeSkillLearning
-        ? `学习 ${view.activeSkillLearning.name}`
-        : view.schedule.waiting
-          ? "等待排程"
-          : "休整";
-  return `状态刷新：${view.calendar.short} ${phase} ${work}，精力 ${resourceValue("energy")}，压力 ${resourceValue("pressure")}。`;
+function createCommandLogMessages(command, messages = []) {
+  const normalized = normalizeLogMessages([`> ${command}`, ...messages]);
+  return normalized.map((entry, index) => ({
+    category: index === 0 ? "command" : getCommandLogCategory(command, entry.text),
+    severity: /不足|失败|耗尽|逾期|不能|未知|错误|删除/.test(entry.text) ? "warn" : "info",
+    text: entry.text
+  }));
+}
+
+function shouldSaveSettleResult(result) {
+  return Boolean(result && (result.seconds > 0 || (result.messages && result.messages.length) || (result.events && result.events.length)));
 }
 
 function commandForPanel(panelId, option, schedulePhase = "morning") {
@@ -240,7 +318,7 @@ function calculateLayoutBudget(rows, columns) {
   const resourceHeight = 5;
   const tabHeight = 1;
   const footerHeight = 3;
-  const logHeight = compact ? 8 : terminalRows < 30 ? 9 : 10;
+  const logHeight = Math.max(MIN_LOG_PANEL_HEIGHT, compact ? 8 : terminalRows < 30 ? 9 : 10);
   const reserved = headerHeight + resourceHeight + tabHeight + footerHeight + logHeight;
   const mainHeight = Math.max(5, terminalRows - reserved);
   const listHeight = narrow ? Math.max(5, Math.floor(mainHeight / 2)) : mainHeight;
@@ -674,23 +752,38 @@ async function startTui() {
     );
   }
 
-  function LogPanel({ logs, budget }) {
-    const visibleLogCount = Math.max(1, budget.logHeight - 2);
-    const rows = getLogRows(logs, visibleLogCount);
-    const latestId = logs.length ? logs[logs.length - 1].id : null;
-    return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: budget.logHeight },
-      h(SectionTitle, { color: THEME.title }, "日志"),
-      ...rows.map((log) => {
-        const tone = log.empty
-          ? { color: THEME.muted, bold: false, dim: true }
-          : toneForLog(log.text, log.id === latestId ? 0 : 1);
-        return h(Text, {
-          key: log.id,
-          color: tone.color,
-          bold: tone.bold,
-          dimColor: tone.dim
-        }, trimText(log.text || " ", Math.max(32, budget.terminalColumns - 6)));
-      })
+  function LogPanel({ ticker, logs, view, budget }) {
+    const visibleEventCount = Math.max(MIN_EVENT_HISTORY_ROWS, budget.logHeight - 3);
+    const currentRows = getCurrentLogRows(view, ticker);
+    const historyRows = getLogRows(logs, visibleEventCount);
+    const latestId = historyRows.filter((log) => !log.empty).at(-1)?.id ?? null;
+    const columnWidth = Math.max(24, Math.floor((budget.terminalColumns - 8) / 2));
+    return h(Box, { flexDirection: "row", gap: 1, height: budget.logHeight },
+      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: budget.logHeight, width: columnWidth },
+        h(SectionTitle, { color: THEME.title }, "当前"),
+        ...currentRows.map((row) => {
+          const resourceTone = row.resource ? toneForResource(row.resource) : row.resourceId === "dailyTime" ? { color: THEME.status.info } : null;
+          return h(Text, {
+            key: row.id,
+            color: resourceTone ? resourceTone.color : row.kind === "status" ? THEME.status.info : THEME.muted,
+            bold: row.kind === "status" || (resourceTone && resourceTone.label === "critical")
+          }, trimText(row.text || " ", Math.max(16, columnWidth - 4)));
+        })
+      ),
+      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: budget.logHeight, width: columnWidth },
+        h(SectionTitle, { color: THEME.title }, "事件"),
+        ...historyRows.map((log) => {
+          const tone = log.empty
+            ? { color: THEME.muted, bold: false, dim: true }
+            : toneForLog(log, log.id === latestId ? 0 : 1);
+          return h(Text, {
+            key: log.id,
+            color: tone.color,
+            bold: tone.bold,
+            dimColor: tone.dim
+          }, trimText(log.text || " ", Math.max(16, columnWidth - 4)));
+        })
+      )
     );
   }
 
@@ -730,15 +823,14 @@ async function startTui() {
     const [profileCreationStartedAt, setProfileCreationStartedAt] = useState(null);
     const pendingDeleteProfileIdRef = useRef(null);
     const [logs, setLogs] = useState([]);
+    const [ticker, setTicker] = useState(() => createTuiTicker(stateRef.current));
     const [revision, refresh] = useReducer((value) => value + 1, 0);
     const nextLogIdRef = useRef(0);
-    const pendingLogMessagesRef = useRef([]);
-    const lastLogFlushRef = useRef(Date.now());
     const { exit } = useApp();
     const { stdout } = useStdout();
 
-    function addLogs(messages) {
-      const created = createLogEntries(messages, nextLogIdRef.current);
+    function addLogs(messages, defaultCategory = null) {
+      const created = createLogEntries(messages, nextLogIdRef.current, defaultCategory);
       if (!created.entries.length) return;
       nextLogIdRef.current = created.nextId;
       setLogs((current) => appendLogEntries(current, created.entries));
@@ -746,16 +838,16 @@ async function startTui() {
 
     useEffect(() => {
       if (needsInitialProfile) {
-        addLogs(["请选择人物卡创建 default 档案。"]);
+        addLogs(["请选择人物卡创建 default 档案。"], "system");
         refresh();
         return;
       }
       const offline = settleTime(stateRef.current, Date.now(), { randomEvents: true });
       saveProfile(stateRef.current);
-      if (offline.seconds > 0 || offline.messages.length) {
-        addLogs([`离线结算 ${offline.seconds} 秒。`, ...offline.messages]);
+      setTicker(offline.ticker || createTuiTicker(stateRef.current));
+      if (offline.seconds > 0 || (offline.events && offline.events.length)) {
+        addLogs([{ category: "system", severity: "info", text: `离线结算 ${offline.seconds} 秒。` }, ...(offline.events || [])]);
       }
-      lastLogFlushRef.current = Date.now();
       refresh();
     }, []);
 
@@ -765,18 +857,11 @@ async function startTui() {
         if (paused) return;
         const now = Date.now();
         const result = settleTime(stateRef.current, now, { randomEvents: true });
-        if (result.messages.length) pendingLogMessagesRef.current.push(...result.messages);
-        if (shouldFlushTuiLogs(now, lastLogFlushRef.current)) {
-          const messages = pendingLogMessagesRef.current.length
-            ? pendingLogMessagesRef.current
-            : [formatTuiHeartbeat(stateRef.current)];
-          addLogs(messages);
-          pendingLogMessagesRef.current = [];
-          lastLogFlushRef.current = now;
-        }
-        if (result.seconds > 0 || result.messages.length) saveProfile(stateRef.current);
+        setTicker(result.ticker || createTuiTicker(stateRef.current));
+        if (result.events && result.events.length) addLogs(result.events);
+        if (shouldSaveSettleResult(result)) saveProfile(stateRef.current);
         refresh();
-      }, TUI_CLOCK_TICK_MS);
+      }, TUI_SETTLE_TICK_MS);
       return () => clearInterval(timer);
     }, [paused, needsInitialProfile]);
 
@@ -811,7 +896,8 @@ async function startTui() {
             resumeGameClock(stateRef.current, now);
           } else {
             const result = pauseGameClock(stateRef.current, now, { randomEvents: true });
-            if (result.messages.length) addLogs(result.messages);
+            setTicker(result.ticker || createTuiTicker(stateRef.current));
+            if (result.events && result.events.length) addLogs(result.events);
             saveProfile(stateRef.current);
           }
           refresh();
@@ -822,7 +908,7 @@ async function startTui() {
       if (["1", "2", "3"].includes(input)) {
         const phases = ["morning", "afternoon", "evening"];
         setSchedulePhase(phases[Number(input) - 1]);
-        addLogs([`当前排程阶段：${phases[Number(input) - 1]}`]);
+        addLogs([`当前排程阶段：${phases[Number(input) - 1]}`], "command");
         return;
       }
       if (key.tab) {
@@ -842,7 +928,7 @@ async function startTui() {
       if (creatingProfile && shouldExitProfileCreationMode(input, key)) {
         setProfileCreationStartedAt(null);
         pendingDeleteProfileIdRef.current = null;
-        addLogs(["已取消新建档案。"]);
+        addLogs(["已取消新建档案。"], "command");
         return;
       }
       if (key.upArrow) {
@@ -869,7 +955,7 @@ async function startTui() {
         const selectedOption = options[selectedIndex];
         if (activePanel === "schedule" && selectedOption && selectedOption.phaseId) {
           setSchedulePhase(selectedOption.phaseId);
-          addLogs([`当前排程阶段：${selectedOption.name}`]);
+          addLogs([`当前排程阶段：${selectedOption.name}`], "command");
           refresh();
           return;
         }
@@ -878,10 +964,11 @@ async function startTui() {
             const next = createProfile("default", "默认档案", Date.now(), { characterCardId: selectedOption.id });
             replaceStateContents(stateRef.current, next);
             setActivePanel("activities");
-            addLogs([`已创建 default - 默认档案（${selectedOption.name}）。`]);
+            setTicker(createTuiTicker(stateRef.current));
+            addLogs([`已创建 default - 默认档案（${selectedOption.name}）。`], "system");
             refresh();
           } catch (error) {
-            addLogs([error && error.message ? error.message : String(error)]);
+            addLogs([error && error.message ? error.message : String(error)], "warning");
           }
           return;
         }
@@ -894,7 +981,7 @@ async function startTui() {
             randomEvents: true
           });
           setProfileCreationStartedAt(result.creatingProfile ? result.profileCreationStartedAt : null);
-          addLogs(result.messages);
+          addLogs(result.messages, result.changed ? "command" : "system");
           if (result.exit) exit();
           if (result.changed || result.creatingProfile !== creatingProfile) refresh();
           return;
@@ -902,7 +989,8 @@ async function startTui() {
         const command = commandForPanel(activePanel, selectedOption, schedulePhase);
         if (!command) return;
         const result = processTuiCommand(stateRef.current, command, { paused, randomEvents: true });
-        addLogs([`> ${command}`, ...result.messages]);
+        addLogs(createCommandLogMessages(command, result.messages));
+        setTicker(createTuiTicker(stateRef.current));
         if (result.exit) exit();
         refresh();
       }
@@ -910,7 +998,7 @@ async function startTui() {
         const option = options[selectedIndex];
         const result = handleProfileDeleteKeypress(stateRef.current, option, pendingDeleteProfileIdRef.current, { creatingProfile, paused, randomEvents: true });
         pendingDeleteProfileIdRef.current = result.pendingProfileId;
-        addLogs(result.messages);
+        addLogs(result.messages, result.changed ? "command" : "system");
         if (result.exit) exit();
         if (result.changed) refresh();
       }
@@ -923,7 +1011,7 @@ async function startTui() {
       activePanel === "cards" && !needsInitialProfile
         ? h(CharacterCardPanel, { view, budget })
         : h(MainPanel, { activePanel, options, selectedIndex, budget, paused }),
-      h(MemoLogPanel, { logs, budget }),
+      h(MemoLogPanel, { ticker, logs, view, budget }),
       h(Footer, { paused, creatingProfile, schedulePhase })
     );
   }
@@ -940,14 +1028,14 @@ if (require.main === module) {
 
 module.exports = {
   MAX_LOGS,
-  TUI_CLOCK_TICK_MS,
-  TUI_LOG_FLUSH_MS,
+  TUI_SETTLE_TICK_MS,
   appendLogEntries,
   calculateLayoutBudget,
+  createCommandLogMessages,
   createLogEntries,
   formatOptionDetail,
-  formatTuiHeartbeat,
   getCharacterCardAttributeRows,
+  getCurrentLogRows,
   getOptionProgress,
   getProfilePageOptions,
   getPageWindow,
@@ -960,7 +1048,6 @@ module.exports = {
   processTuiCommand,
   resumeGameClock,
   resolveProfileDeleteKeypress,
-  shouldFlushTuiLogs,
   shouldExitProfileCreationMode,
   syncPausedClock,
   startTui

@@ -16,6 +16,7 @@ const {
   createNewState,
   deleteProfile,
   formatActivities,
+  formatGameEvents,
   formatGoals,
   formatLiveStatus,
   formatWorldCalendar,
@@ -240,6 +241,7 @@ test("世界事件按游戏日历触发并展示在事件命令和 ViewModel", (
 
   const result = settleTime(state, start + 2_000, { randomEvents: true, rng: () => 1 });
   assert.match(result.messages.join("\n"), /世界事件：AI 热潮/);
+  assert.match(formatGameEvents(result.events).join("\n"), /\[世界大势\] 世界事件：AI 热潮/);
   assert.ok(state.triggeredWorldEvents.includes("ai-boom"));
   assert.match(processCommand(state, "events", { now: start + 2_000, randomEvents: false }).messages.join("\n"), /AI 热潮/);
   assert.equal(getGameViewModel(state).activeWorldEvents[0].id, "ai-boom");
@@ -757,6 +759,18 @@ test("活动结算只显示可见整数变化并附带当前总数", () => {
   assert.doesNotMatch(message, /测试/);
 });
 
+test("settleTime 普通活动 tick 只更新 TUI ticker，不追加结构化事件", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  startActivity(state, "study");
+
+  const result = settleTime(state, now + 60_000, { randomEvents: false });
+
+  assert.equal(result.events.length, 0);
+  assert.match(result.ticker.join("\n"), /\[当前行动\] 系统学习 60 秒：/);
+  assert.match(result.ticker.join("\n"), /知识 \+/);
+});
+
 test("活动升级但资源没有可见变化时仍显示升级消息", () => {
   const now = 1_700_000_000_000;
   const state = createNewState(now);
@@ -814,6 +828,7 @@ test("learn 消耗资源并启动耗时学习，完成后才解锁技能", () =>
   const result = settleTime(state, now + 901_000, { randomEvents: false });
 
   assert.match(result.messages.join("\n"), /技能 HTML\/CSS 学习完成/);
+  assert.deepEqual(formatGameEvents(result.events).filter((line) => line.includes("HTML/CSS")), ["[技能] 技能 HTML/CSS 学习完成，达到 入门。"]);
   assert.ok(state.unlockedSkills.includes("html-css"));
   assert.equal(getSkillProgress(state, "html-css").level, 1);
   assert.equal(state.activeSkillLearningId, null);
@@ -856,6 +871,19 @@ test("新增程序员技术包内容通过现有选项接口展示", () => {
   assert.ok(goals.some((item) => item.id === "ship-rag-assistant"));
   assert.ok(content.randomEvents.some((item) => item.id === "dependency-hell"));
   assert.ok(content.randomEvents.some((item) => item.id === "friday-scope-change"));
+});
+
+test("随机事件返回随机分类事件并附带资源变化摘要", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  state.worldTimeMinutes = 10 * 60;
+
+  const result = settleTime(state, now + 3600_000, { randomEvents: true, rng: () => 0 });
+  const eventLog = formatGameEvents(result.events).join("\n");
+
+  assert.match(eventLog, /\[随机事件\] 随机事件：需求变更/);
+  assert.match(eventLog, /本次变化：/);
+  assert.match(eventLog, /技术债 \+/);
 });
 
 test("新增技能 TypeScript 满足属性和资源后进入学习队列", () => {
@@ -1015,6 +1043,7 @@ test("项目达标后会自动成功并发放奖励", () => {
   const result = settleActiveProjectToCompletion(state, () => 0);
 
   assert.match(result.messages.join("\n"), /交付成功/);
+  assert.match(formatGameEvents(result.events).join("\n"), /\[项目\] 项目 个人主页 交付成功/);
   assert.equal(state.completedProjects.includes("homepage"), true);
   assert.equal(state.activeProjectId, null);
   assert.equal(state.projectProgress.homepage, undefined);
@@ -1093,11 +1122,44 @@ test("项目失败会清空进度且不返还已投入资源", () => {
   const result = settleActiveProjectToCompletion(state, () => 1);
 
   assert.match(result.messages.join("\n"), /交付失败/);
+  assert.match(formatGameEvents(result.events).join("\n"), /\[项目\] 项目 个人主页 交付失败/);
   assert.equal(state.completedProjects.includes("homepage"), false);
   assert.equal(state.activeProjectId, null);
   assert.equal(state.projectProgress.homepage, undefined);
   assert.equal(state.resources.codeLines, afterInvestment.codeLines);
   assert.equal(state.resources.docs, afterInvestment.docs);
+});
+
+test("Deadline 首次逾期只返回一次警告事件", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  state.worldTimeMinutes = 10 * 60;
+  state.activeProjectDeadlines.homepage = { dueWorldMinute: state.worldTimeMinutes - 1, failed: false };
+
+  const first = settleTime(state, now + 1000, { randomEvents: true, rng: () => 1 });
+  const second = settleTime(state, state.lastTick + 1000, { randomEvents: true, rng: () => 1 });
+
+  assert.match(formatGameEvents(first.events).join("\n"), /\[警告\] Deadline 逾期：个人主页/);
+  assert.doesNotMatch(formatGameEvents(second.events).join("\n"), /Deadline 逾期/);
+});
+
+test("Bug 风险跨过 25/50/75 阈值分别只触发一次 warning 事件", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  startActivity(state, "feature-coding");
+
+  state.resources.bugs = 24;
+  const first = settleTime(state, now + 60_000, { randomEvents: false });
+  state.resources.bugs = 49;
+  const second = settleTime(state, state.lastTick + 60_000, { randomEvents: false });
+  state.resources.bugs = 74;
+  const third = settleTime(state, state.lastTick + 60_000, { randomEvents: false });
+  const repeat = settleTime(state, state.lastTick + 60_000, { randomEvents: false });
+
+  assert.match(formatGameEvents(first.events).join("\n"), /Bug 风险升至 25\+/);
+  assert.match(formatGameEvents(second.events).join("\n"), /Bug 风险升至 50\+/);
+  assert.match(formatGameEvents(third.events).join("\n"), /Bug 风险升至 75\+/);
+  assert.doesNotMatch(formatGameEvents(repeat.events).join("\n"), /Bug 风险升至/);
 });
 
 test("项目会占用当前活动位，普通活动会暂停项目", () => {

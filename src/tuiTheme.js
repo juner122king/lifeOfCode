@@ -87,7 +87,13 @@ function renderProgressBar(percent, width = 14, tick = 0, animated = true) {
 }
 
 function toneForLog(message, index = 0) {
-  const text = String(message || "");
+  const entry = typeof message === "object" && message ? message : null;
+  const severity = entry && entry.severity;
+  if (severity === "danger") return { color: THEME.status.danger, bold: index === 0 };
+  if (severity === "warn" || severity === "warning") return { color: THEME.status.warn, bold: index === 0 };
+  if (severity === "good" || severity === "success") return { color: THEME.status.good, bold: index === 0 };
+  if (entry && entry.category === "command") return { color: THEME.status.info, bold: index === 0 };
+  const text = String(entry ? entry.text : message || "");
   if (text.startsWith(">")) return { color: THEME.status.info, bold: index === 0 };
   if (/不足|失败|耗尽|偏高|偏低|不能|没有|未知|错误|删除/.test(text)) return { color: THEME.status.danger, bold: index === 0 };
   if (/成功|完成|领取|保存|创建|切换|提升|开始/.test(text)) return { color: THEME.status.good, bold: index === 0 };

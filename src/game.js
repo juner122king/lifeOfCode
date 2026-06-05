@@ -40,6 +40,18 @@ const RESOURCE_NAMES = {
   leads: "线索"
 };
 const RESOURCE_ORDER = ["codeLines", "money", "knowledge", "tests", "docs", "architecture", "leads", "energy", "pressure", "bugs", "techDebt", "reputation"];
+const EVENT_LABELS = {
+  command: "命令",
+  project: "项目",
+  skill: "技能",
+  career: "职业",
+  warning: "警告",
+  focus: "周重点",
+  world: "世界大势",
+  random: "随机事件",
+  system: "系统"
+};
+const BUG_RISK_THRESHOLDS = [25, 50, 75];
 const MULTIPLIER_NAMES = {
   code: "代码产出",
   money: "金钱获取",
@@ -261,6 +273,7 @@ function createNewState(now = Date.now(), options = {}) {
     lastMorningTransitionDay: 1,
     triggeredWorldEvents: [],
     activeProjectDeadlines: {},
+    warnedBugRiskThresholds: [],
     activityLevels: createActivityMap(() => 1),
     activityExp: createActivityMap(() => 0),
     activityStats: {
@@ -364,6 +377,7 @@ function normalizeState(raw, now = Date.now()) {
     lastMorningTransitionDay: normalizeLastMorningTransitionDay(raw && raw.lastMorningTransitionDay, raw && raw.worldTimeMinutes),
     triggeredWorldEvents: Array.isArray(raw && raw.triggeredWorldEvents) ? raw.triggeredWorldEvents.filter((id) => WORLD_EVENTS.some((event) => event.id === id)) : [],
     activeProjectDeadlines: normalizeProjectDeadlines(raw && raw.activeProjectDeadlines),
+    warnedBugRiskThresholds: normalizeBugRiskThresholds(raw && raw.warnedBugRiskThresholds),
     activityLevels: normalizeActivityMap(raw && raw.activityLevels, 1),
     activityExp: normalizeActivityMap(raw && raw.activityExp, 0),
     activityStats: normalizeActivityStats(raw && raw.activityStats),
@@ -438,11 +452,17 @@ function normalizeProjectDeadlines(raw) {
     if (Number.isFinite(dueWorldMinute) || failed) {
       result[project.id] = {
         dueWorldMinute: Number.isFinite(dueWorldMinute) ? Math.max(0, Math.floor(dueWorldMinute)) : null,
-        failed
+        failed,
+        warned: Boolean(deadline && deadline.warned)
       };
     }
   }
   return result;
+}
+
+function normalizeBugRiskThresholds(raw) {
+  const source = Array.isArray(raw) ? raw : [];
+  return BUG_RISK_THRESHOLDS.filter((threshold) => source.includes(threshold));
 }
 
 function normalizeActivityMap(raw, fallback) {
@@ -779,7 +799,7 @@ function settleLifestyleRest(state, windowId, seconds) {
   return deltas;
 }
 
-function applyMorningTransitionIfDue(state, messages = []) {
+function applyMorningTransitionIfDue(state, messages = [], events = []) {
   const calendar = getWorldCalendar(state.worldTimeMinutes);
   if (calendar.hour !== 9 || calendar.minute !== 0) return false;
   if (state.lastMorningTransitionDay === calendar.day) return false;
@@ -805,7 +825,7 @@ function applyMorningTransitionIfDue(state, messages = []) {
   applyResourceDelta(state, "pressure", -5);
 
   state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
-  messages.push(`09:00：${formatLifestyle(state).split("\n")[0]}，今日可用时间 ${state.currentDailyActionMinutesLimit}m。`);
+  pushMessageEvent(messages, events, "system", `09:00：${formatLifestyle(state).split("\n")[0]}，今日可用时间 ${state.currentDailyActionMinutesLimit}m。`);
   return true;
 }
 
@@ -1193,6 +1213,78 @@ function formatChangedResources(beforeResources, afterResources) {
   return entries.join("，");
 }
 
+function createGameEvent(category, text, severity = "info") {
+  return {
+    category: EVENT_LABELS[category] ? category : "system",
+    severity,
+    text: String(text || "").trim()
+  };
+}
+
+function pushGameEvent(events, category, text, severity = "info") {
+  if (!Array.isArray(events) || !String(text || "").trim()) return;
+  events.push(createGameEvent(category, text, severity));
+}
+
+function formatGameEvent(event) {
+  if (!event || typeof event !== "object") return String(event || "");
+  const category = EVENT_LABELS[event.category] ? event.category : "system";
+  const text = String(event.text || "").trim();
+  return `[${EVENT_LABELS[category]}] ${text}`;
+}
+
+function formatGameEvents(events = []) {
+  return events.map(formatGameEvent);
+}
+
+function pushMessageEvent(messages, events, category, text, severity = "info") {
+  if (Array.isArray(messages)) messages.push(text);
+  pushGameEvent(events, category, text, severity);
+}
+
+function createTuiTicker(state, result = null, changedResources = "") {
+  const activeSeconds = result && Number(result.activeSeconds) > 0 ? Math.floor(Number(result.activeSeconds)) : 0;
+  const activeName = result && result.activeName;
+  if (activeSeconds > 0 && activeName) {
+    const summary = changedResources || "进度推进";
+    return [
+      `[当前行动] ${activeName} ${activeSeconds} 秒：${summary}。`,
+      `[当前时间] ${formatWorldCalendar(state, "short")}。`
+    ];
+  }
+
+  const phase = getCurrentSchedulePhase(state.worldTimeMinutes);
+  const mode = getActiveMode(state);
+  const status = mode.type !== "idle"
+    ? mode.type === "project"
+      ? `项目 ${mode.item.name}`
+      : mode.type === "skill"
+        ? `学习 ${mode.item.name}`
+        : `活动 ${mode.item.name}`
+    : state.waitingForSchedule
+      ? "等待排程"
+      : phase
+        ? `${phase.name}休整`
+        : "休整";
+  return [
+    `[当前状态] ${status}。`,
+    `[当前时间] ${formatWorldCalendar(state, "short")}。`
+  ];
+}
+
+function collectBugRiskEvents(state, beforeResources, afterResources, events) {
+  state.warnedBugRiskThresholds = normalizeBugRiskThresholds(state.warnedBugRiskThresholds);
+  const before = Math.floor(Number(beforeResources && beforeResources.bugs) || 0);
+  const after = Math.floor(Number(afterResources && afterResources.bugs) || 0);
+  for (const threshold of BUG_RISK_THRESHOLDS) {
+    if (state.warnedBugRiskThresholds.includes(threshold)) continue;
+    if (before < threshold && after >= threshold) {
+      state.warnedBugRiskThresholds.push(threshold);
+      pushGameEvent(events, "warning", `Bug 风险升至 ${threshold}+，建议安排排查 Bug 或写测试。`, threshold >= 75 ? "danger" : "warn");
+    }
+  }
+}
+
 function formatAttribute(state, attr) {
   const base = formatNumber(getBaseAttribute(state, attr));
   const breakthrough = getBreakthrough(state, attr);
@@ -1428,10 +1520,12 @@ function settleSkillLearning(state, skill, seconds, options = {}) {
   skillProgress.level = Math.max(skillProgress.level, 1);
   clearSkillLearningProgress(state, skill.id);
   syncUnlockedSkills(state);
-  return [formatLines([
+  const message = formatLines([
     `技能 ${skill.name} 学习完成，达到 ${SKILL_LEVEL_NAMES[1]}。`,
     formatNextAdvice(state)
-  ])];
+  ]);
+  pushGameEvent(options.events, "skill", `技能 ${skill.name} 学习完成，达到 ${SKILL_LEVEL_NAMES[1]}。`, "good");
+  return [message];
 }
 
 function applyProjectRewards(state, project, options = {}) {
@@ -1482,6 +1576,7 @@ function settleProject(state, project, seconds, options = {}) {
       formatSkillExpRewards(rewardResult.skillExp),
       formatNextAdvice(state)
     ]));
+    pushGameEvent(options.events, "project", `项目 ${project.name} 交付成功。获得：${formatResourceList(rewardResult.rewards)}。`, "good");
     return messages;
   }
 
@@ -1493,6 +1588,7 @@ function settleProject(state, project, seconds, options = {}) {
     formatSkillExpRewards(failedSkillExp),
     formatNextAdvice(state)
   ]));
+  pushGameEvent(options.events, "project", `项目 ${project.name} 交付失败，投入资源全部损失。`, "danger");
   return messages;
 }
 
@@ -1511,8 +1607,8 @@ function getActiveMode(state) {
   return { type: "idle", item: null };
 }
 
-function startNewWorldDay(state, messages = []) {
-  messages.push(`世界日历进入新的一天：${formatWorldCalendar(state, "short")}。日常重置将在 09:00 结算。`);
+function startNewWorldDay(state, messages = [], events = []) {
+  pushMessageEvent(messages, events, "system", `世界日历进入新的一天：${formatWorldCalendar(state, "short")}。日常重置将在 09:00 结算。`);
 }
 
 function getCurrentSchedulePhase(worldTimeMinutes) {
@@ -1785,7 +1881,7 @@ function markSchedulePhaseDone(state, phaseId) {
   state.scheduleCompletedPhases.push(phaseId);
 }
 
-function applyWorldEventTriggers(state, fromDay, toDay, messages = []) {
+function applyWorldEventTriggers(state, fromDay, toDay, messages = [], events = []) {
   if (toDay < fromDay) return;
   state.triggeredWorldEvents = Array.isArray(state.triggeredWorldEvents) ? state.triggeredWorldEvents : [];
   for (const event of WORLD_EVENTS) {
@@ -1794,7 +1890,7 @@ function applyWorldEventTriggers(state, fromDay, toDay, messages = []) {
       state.triggeredWorldEvents.push(event.id);
       if (event.pressure) applyResourceDelta(state, "pressure", event.pressure);
       if (event.reputation) applyResourceDelta(state, "reputation", event.reputation);
-      messages.push(`世界事件：${event.name}。${event.message}`);
+      pushMessageEvent(messages, events, "world", `世界事件：${event.name}。${event.message}`);
     }
   }
 }
@@ -1818,7 +1914,7 @@ function ensureProjectDeadline(state, project) {
   return state.activeProjectDeadlines[project.id];
 }
 
-function checkProjectDeadlines(state, messages = []) {
+function checkProjectDeadlines(state, messages = [], events = []) {
   state.activeProjectDeadlines = state.activeProjectDeadlines || {};
   for (const [id, deadline] of Object.entries(state.activeProjectDeadlines)) {
     if (deadline.failed || !Number.isFinite(Number(deadline.dueWorldMinute))) continue;
@@ -1834,14 +1930,14 @@ function checkProjectDeadlines(state, messages = []) {
     if (!deadline.warned) {
       deadline.warned = true;
       applyResourceDelta(state, "pressure", 10);
-      messages.push(`Deadline 逾期：${project.name} 已超过 D${getWorldCalendar(deadline.dueWorldMinute).day}，成功率和奖励将受惩罚。`);
+      pushMessageEvent(messages, events, "warning", `Deadline 逾期：${project.name} 已超过 D${getWorldCalendar(deadline.dueWorldMinute).day}，成功率和奖励将受惩罚。`, "warn");
     }
     if (overdueMinutes >= graceMinutes) {
       deadline.failed = true;
       clearProjectProgress(state, id);
       state.resources.reputation = Math.max(0, state.resources.reputation - 2);
       applyResourceDelta(state, "pressure", 18);
-      messages.push(`项目失败：${project.name} 超过宽限期，投入损失，声望下降。`);
+      pushMessageEvent(messages, events, "project", `项目失败：${project.name} 超过宽限期，投入损失，声望下降。`, "danger");
     }
   }
 }
@@ -1881,34 +1977,35 @@ function settleTime(state, now = Date.now(), options = {}) {
   const elapsedSeconds = Math.max(0, Math.floor((now - state.lastTick) / 1000));
   const seconds = Math.min(elapsedSeconds, maxSeconds);
   const messages = [];
+  const events = [];
   const applyWorldEffects = options.randomEvents !== false;
 
-  applyMorningTransitionIfDue(state, messages);
+  applyMorningTransitionIfDue(state, messages, events);
   if (isSchedulePauseMinute(state) && !hasManualActiveWork(state)) {
     state.waitingForSchedule = true;
     clearActiveWork(state);
     state.lastTick = now;
-    messages.push("09:00 到了，请先用 plan 安排并确认今日日程。");
-    return { seconds: 0, messages };
+    pushMessageEvent(messages, events, "system", "09:00 到了，请先用 plan 安排并确认今日日程。");
+    return { seconds: 0, messages, events, ticker: createTuiTicker(state) };
   }
 
   if (seconds <= 0) {
-    return { seconds: 0, messages };
+    return { seconds: 0, messages, events, ticker: createTuiTicker(state) };
   }
 
   const beforeResources = snapshotResources(state.resources);
-  const result = { deltas: {}, levelUps: 0, lowEnergy: false, overtime: false, activityName: null, activeSeconds: 0 };
+  const result = { deltas: {}, levelUps: 0, lowEnergy: false, overtime: false, activityName: null, activeName: null, activeSeconds: 0 };
   let remainingMinutes = seconds;
   let processedSeconds = 0;
   state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
-  if (applyWorldEffects) applyWorldEventTriggers(state, getWorldCalendar(state.worldTimeMinutes).day, getWorldCalendar(state.worldTimeMinutes).day, messages);
+  if (applyWorldEffects) applyWorldEventTriggers(state, getWorldCalendar(state.worldTimeMinutes).day, getWorldCalendar(state.worldTimeMinutes).day, messages, events);
 
   while (remainingMinutes > 0) {
     ensureScheduleForCurrentDay(state);
     if (isSchedulePauseMinute(state) && !hasManualActiveWork(state)) {
       state.waitingForSchedule = true;
       clearActiveWork(state);
-      messages.push("09:00 到了，请先用 plan 安排并确认今日日程。");
+      pushMessageEvent(messages, events, "system", "09:00 到了，请先用 plan 安排并确认今日日程。");
       break;
     }
     const currentCalendar = getWorldCalendar(state.worldTimeMinutes);
@@ -1928,6 +2025,7 @@ function settleTime(state, now = Date.now(), options = {}) {
       result.activeSeconds += segmentMinutes;
       if (mode.type === "activity") {
         result.activityName = mode.item.name;
+        result.activeName = mode.item.name;
         const segment = settleActivity(state, mode.item, segmentMinutes, { overtime });
         for (const [key, value] of Object.entries(segment.deltas || {})) {
           result.deltas[key] = (result.deltas[key] || 0) + value;
@@ -1935,12 +2033,14 @@ function settleTime(state, now = Date.now(), options = {}) {
         result.levelUps += segment.levelUps || 0;
         result.lowEnergy = result.lowEnergy || segment.lowEnergy;
       } else if (mode.type === "skill") {
+        result.activeName = `学习 ${mode.item.name}`;
         const modifiers = getWorkModifiers(state, "skill", mode.item, overtime);
-        messages.push(...settleSkillLearning(state, mode.item, segmentMinutes, modifiers));
+        messages.push(...settleSkillLearning(state, mode.item, segmentMinutes, { ...modifiers, events }));
         if (scheduleContext && getSkillLevel(state, mode.item.id) > 0) markSchedulePhaseDone(state, scheduleContext.phase.id);
       } else if (mode.type === "project") {
+        result.activeName = `项目 ${mode.item.name}`;
         const modifiers = getWorkModifiers(state, "project", mode.item, overtime);
-        messages.push(...settleProject(state, mode.item, segmentMinutes, { ...options, ...modifiers }));
+        messages.push(...settleProject(state, mode.item, segmentMinutes, { ...options, ...modifiers, events }));
         if (scheduleContext && !state.activeProjectId && !state.projectProgress[mode.item.id]) markSchedulePhaseDone(state, scheduleContext.phase.id);
       }
     } else {
@@ -1960,19 +2060,19 @@ function settleTime(state, now = Date.now(), options = {}) {
     const afterDay = getWorldCalendar(state.worldTimeMinutes).day;
     if (afterDay !== beforeDay) {
       if (applyWorldEffects) {
-        startNewWorldDay(state, messages);
-        applyWorldEventTriggers(state, beforeDay + 1, afterDay, messages);
+        startNewWorldDay(state, messages, events);
+        applyWorldEventTriggers(state, beforeDay + 1, afterDay, messages, events);
       } else {
         state.dailyActionMinutesUsed = 0;
         state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
       }
     }
-    applyMorningTransitionIfDue(state, messages);
-    if (applyWorldEffects) checkProjectDeadlines(state, messages);
+    applyMorningTransitionIfDue(state, messages, events);
+    if (applyWorldEffects) checkProjectDeadlines(state, messages, events);
     const calendar = getWorldCalendar(state.worldTimeMinutes);
     if (calendar.hour === 9 && calendar.minute === 0 && !hasManualActiveWork(state)) {
       resetScheduleForCurrentDay(state);
-      messages.push("新的一天 09:00 到了，请先用 plan 安排并确认今日日程。");
+      pushMessageEvent(messages, events, "system", "新的一天 09:00 到了，请先用 plan 安排并确认今日日程。");
       break;
     }
   }
@@ -1983,24 +2083,32 @@ function settleTime(state, now = Date.now(), options = {}) {
   }
   if (result.levelUps > 0) {
     const activity = activityById(state.activeActivityId);
-    messages.push(`${result.activityName}提升到 Lv.${activity ? getActivityLevel(state, activity.id) : ""}。`);
+    const levelUpMessage = `${result.activityName}提升到 Lv.${activity ? getActivityLevel(state, activity.id) : ""}。`;
+    messages.push(levelUpMessage);
+    pushGameEvent(events, "skill", levelUpMessage, "good");
   }
   if (result.lowEnergy) {
-    messages.push("精力耗尽，当前活动收益下降，压力额外上升。");
+    pushMessageEvent(messages, events, "warning", "精力耗尽，当前活动收益下降，压力额外上升。", "danger");
   }
   if (result.overtime) {
-    messages.push("今日预算已耗尽，进入低效加班：产出下降，压力和质量风险上升。");
+    pushMessageEvent(messages, events, "warning", "今日预算已耗尽，进入低效加班：产出下降，压力和质量风险上升。", "warn");
   }
+
+  collectBugRiskEvents(state, beforeResources, snapshotResources(state.resources), events);
 
   if (options.randomEvents && processedSeconds > 0) {
     const eventChance = Math.min(0.35, processedSeconds / 3600 * 0.12);
     const rng = options.rng || Math.random;
     if (rng() < eventChance) {
       const event = content.randomEvents[Math.floor(rng() * content.randomEvents.length)];
+      const beforeRandom = snapshotResources(state.resources);
       event.apply(state);
       applyAttributeExpRewards(state, event.attributeExp);
       clampState(state);
       messages.push(`随机事件：${event.name}。${event.message}`);
+      const randomSummary = formatChangedResources(beforeRandom, state.resources);
+      pushGameEvent(events, "random", `随机事件：${event.name}。${event.message}${randomSummary ? ` 本次变化：${randomSummary}。` : ""}`);
+      collectBugRiskEvents(state, beforeRandom, snapshotResources(state.resources), events);
     }
   }
 
@@ -2008,7 +2116,7 @@ function settleTime(state, now = Date.now(), options = {}) {
   clampState(state);
   clearCompletedSkillLearning(state);
   syncScheduledActiveMode(state);
-  return { seconds: processedSeconds, messages };
+  return { seconds: processedSeconds, messages, events, ticker: createTuiTicker(state, result, changedResources) };
 }
 
 function startActivity(state, id) {
@@ -3507,6 +3615,8 @@ module.exports = {
   formatActivities,
   formatCharacterCards,
   formatChangedResources,
+  formatGameEvent,
+  formatGameEvents,
   formatGoals,
   formatGoalSummary,
   formatLiveStatus,
@@ -3516,6 +3626,7 @@ module.exports = {
   formatSchedule,
   formatWorldCalendar,
   formatWorldEvents,
+  createTuiTicker,
   calculateDailyActionMinutesLimit,
   getActivityLevel,
   getActivityOptions,

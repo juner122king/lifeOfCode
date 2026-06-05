@@ -15,14 +15,14 @@ const {
 } = require("../src/game");
 const {
   MAX_LOGS,
-  TUI_CLOCK_TICK_MS,
-  TUI_LOG_FLUSH_MS,
+  TUI_SETTLE_TICK_MS,
   appendLogEntries,
   calculateLayoutBudget,
+  createCommandLogMessages,
   createLogEntries,
   formatOptionDetail,
-  formatTuiHeartbeat,
   getCharacterCardAttributeRows,
+  getCurrentLogRows,
   getOptionProgress,
   getPageWindow,
   getProfilePageOptions,
@@ -35,7 +35,6 @@ const {
   processTuiCommand,
   resumeGameClock,
   resolveProfileDeleteKeypress,
-  shouldFlushTuiLogs,
   shouldExitProfileCreationMode,
   syncPausedClock
 } = require("../src/tui");
@@ -45,7 +44,7 @@ function createTempSaveRoot() {
 }
 
 test("normalizeLogMessages keeps non-empty log lines in order", () => {
-  assert.deepEqual(normalizeLogMessages(["first\nsecond", "", null, "third"]), ["first", "second", "third"]);
+  assert.deepEqual(normalizeLogMessages(["first\nsecond", "", null, "third"]).map((entry) => entry.text), ["first", "second", "third"]);
 });
 
 test("createLogEntries assigns stable incrementing ids", () => {
@@ -76,6 +75,10 @@ test("appendLogEntries appends to the bottom and trims oldest logs", () => {
   ]);
 });
 
+test("MAX_LOGS keeps enough history for the split event panel", () => {
+  assert.equal(MAX_LOGS, 80);
+});
+
 test("getLogRows returns fixed-height rows with logs pinned to the bottom", () => {
   const rows = getLogRows([
     { id: 1, text: "older" },
@@ -95,12 +98,29 @@ test("getLogRows renders an empty fixed-height log panel", () => {
   assert.equal(rows.slice(0, -1).every((row) => row.empty && row.text === ""), true);
 });
 
+test("getLogRows hides command echoes from event history", () => {
+  const messages = createCommandLogMessages("week project", ["本周重点已设为：项目周。"]);
+  const rows = getLogRows(createLogEntries(messages, 0).entries, 8);
+
+  assert.equal(rows.length, 8);
+  assert.deepEqual(rows.filter((row) => !row.empty).map((row) => row.text), ["[周重点] 本周重点已设为：项目周。"]);
+  assert.equal(rows.some((row) => row.category === "command" || row.text.includes("> week project")), false);
+});
+
+test("getLogRows keeps non-command command results in event history", () => {
+  const messages = createCommandLogMessages("project homepage", ["项目 个人主页 交付成功。"]);
+  const rows = getLogRows(createLogEntries(messages, 0).entries, 8);
+
+  assert.deepEqual(rows.filter((row) => !row.empty).map((row) => row.text), ["[项目] 项目 个人主页 交付成功。"]);
+});
+
 test("calculateLayoutBudget returns a compact 24 row budget with a usable list", () => {
   const budget = calculateLayoutBudget(24, 80);
 
   assert.equal(budget.terminalRows, 24);
   assert.equal(budget.narrow, true);
-  assert.equal(budget.logHeight, 8);
+  assert.equal(budget.logHeight, 11);
+  assert.ok(budget.logHeight - 3 >= 8);
   assert.equal(budget.mainHeight, 5);
   assert.ok(budget.pageSize >= 3);
   assert.ok(
@@ -110,37 +130,53 @@ test("calculateLayoutBudget returns a compact 24 row budget with a usable list",
 
 test("calculateLayoutBudget falls back to 24 rows and expands taller terminals", () => {
   const fallback = calculateLayoutBudget(undefined, undefined);
-  const tall = calculateLayoutBudget(30, 120);
+  const tall = calculateLayoutBudget(36, 120);
 
   assert.equal(fallback.terminalRows, 24);
   assert.equal(fallback.terminalColumns, 80);
-  assert.equal(fallback.logHeight, 8);
-  assert.equal(tall.logHeight, 10);
+  assert.equal(fallback.logHeight, 11);
+  assert.equal(tall.logHeight, 11);
   assert.ok(tall.mainHeight > fallback.mainHeight);
   assert.equal(tall.narrow, false);
   assert.ok(tall.pageSize >= fallback.pageSize);
 });
 
-test("TUI refreshes logs quickly", () => {
-  assert.equal(TUI_CLOCK_TICK_MS, 250);
-  assert.equal(TUI_LOG_FLUSH_MS, 5000);
+test("TUI settle tick runs every three seconds", () => {
+  assert.equal(TUI_SETTLE_TICK_MS, 3000);
 });
 
-test("TUI log flush cadence is every five seconds", () => {
-  assert.equal(shouldFlushTuiLogs(4_999, 0), false);
-  assert.equal(shouldFlushTuiLogs(5_000, 0), true);
-  assert.equal(shouldFlushTuiLogs(7_500, 2_500), true);
-});
-
-test("formatTuiHeartbeat returns a lightweight status log", () => {
+test("getLogRows can render ticker rows without reducing history capacity", () => {
   const state = createNewState(1_700_000_000_000);
   state.worldTimeMinutes = 10 * 60;
+  const result = settleTime(state, state.lastTick + 3000, { randomEvents: false });
+  const rows = getLogRows([{ id: 1, category: "system", text: "[系统] 已保存。" }], 3, result.ticker);
 
-  const message = formatTuiHeartbeat(state);
+  assert.equal(rows.tickerRows.length, 2);
+  assert.equal(rows.historyRows.length, 3);
+  assert.match(rows.tickerRows[0].text, /\[当前状态\]/);
+  assert.equal(rows.historyRows.at(-1).text, "[系统] 已保存。");
+});
 
-  assert.match(message, /状态刷新/);
-  assert.match(message, /精力/);
-  assert.match(message, /压力/);
+test("getCurrentLogRows includes status, time, daily budget, and key resources", () => {
+  const state = createNewState(1_700_000_000_000);
+  const view = getGameViewModel(state);
+  const rows = getCurrentLogRows(view, ["[当前状态] 活动 写代码。", "[当前时间] 第 001 天 09:00。"]);
+
+  assert.match(rows.find((row) => row.id === "current-status").text, /\[当前状态\]/);
+  assert.match(rows.find((row) => row.id === "current-time").text, /\[当前时间\]/);
+  assert.match(rows.find((row) => row.id === "current-budget").text, /今日预算/);
+  assert.match(rows.find((row) => row.id === "current-energy").text, /精力/);
+  assert.match(rows.find((row) => row.id === "current-pressure").text, /压力/);
+  assert.match(rows.find((row) => row.id === "current-bugs").text, /Bug/);
+  assert.match(rows.find((row) => row.id === "current-techDebt").text, /技术债/);
+});
+
+test("command log messages get command and result category prefixes", () => {
+  const messages = createCommandLogMessages("week project", ["本周重点已设为：项目周。"]);
+  const entries = createLogEntries(messages, 0).entries;
+
+  assert.equal(entries[0].text, "[命令] > week project");
+  assert.equal(entries[1].text, "[周重点] 本周重点已设为：项目周。");
 });
 
 test("getPageWindow follows the selected absolute index", () => {
