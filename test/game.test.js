@@ -7,7 +7,6 @@ const content = require("../src/content");
 const {
   DEFAULT_ATTRIBUTES,
   OFFLINE_CAP_SECONDS,
-  calculateDailyActionMinutesLimit,
   addAttributeExp,
   characterCardById,
   buyTool,
@@ -64,6 +63,14 @@ function createTempSaveRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "life-of-code-save-"));
 }
 
+function confirmEveningActivity(state, activityId) {
+  processCommand(state, "plan morning activity rest", { randomEvents: false });
+  processCommand(state, "plan afternoon activity rest", { randomEvents: false });
+  processCommand(state, `plan evening activity ${activityId}`, { randomEvents: false });
+  const confirmed = processCommand(state, "plan confirm", { randomEvents: false }).messages.join("\n");
+  assert.match(confirmed, /今日日程已确认/);
+}
+
 test("新存档默认没有活动，并初始化职业资源和活动等级", () => {
   const state = createNewState();
 
@@ -114,12 +121,23 @@ test("旧存档加载为 v2 新状态，只保留档案元信息", () => {
   assert.equal(state.pendingLifestyleStanceId, null);
 });
 
-test("新存档初始化世界日历、每日预算和周重点", () => {
+test("v2 存档迁移会清理废弃的每日预算字段", () => {
+  const raw = createNewState(1_700_000_000_000);
+  raw.dailyActionMinutesUsed = 123;
+  raw.currentDailyActionMinutesLimit = 456;
+
+  const state = normalizeState(raw, 1_700_000_010_000);
+
+  assert.equal(Object.hasOwn(state, "dailyActionMinutesUsed"), false);
+  assert.equal(Object.hasOwn(state, "currentDailyActionMinutesLimit"), false);
+});
+
+test("新存档初始化世界日历和周重点", () => {
   const state = createNewState();
 
   assert.equal(formatWorldCalendar(state, "short"), "Y1 M01 W1 周一 D001 09:00");
-  assert.equal(state.dailyActionMinutesUsed, 0);
-  assert.equal(state.currentDailyActionMinutesLimit, 540);
+  assert.equal(Object.hasOwn(state, "dailyActionMinutesUsed"), false);
+  assert.equal(Object.hasOwn(state, "currentDailyActionMinutesLimit"), false);
   assert.equal(state.weeklyFocus, "balanced");
   assert.equal(state.lifestyleStanceId, "health");
   assert.equal(state.pendingLifestyleStanceId, null);
@@ -171,37 +189,38 @@ test("settleTime 保留未满一秒的计时余量", () => {
   assert.equal(state.worldTimeMinutes, 10 * 60 + 1);
 });
 
-test("动态每日预算随职位、精力和压力变化", () => {
-  const intern = createNewState();
-  assert.equal(calculateDailyActionMinutesLimit(intern), 540);
-
-  intern.resources.energy = 40;
-  assert.equal(calculateDailyActionMinutesLimit(intern), 420);
-
-  intern.resources.energy = 20;
-  intern.resources.pressure = 70;
-  assert.equal(calculateDailyActionMinutesLimit(intern), 360);
-
-  intern.currentRole = "middle";
-  intern.resources.energy = 100;
-  intern.resources.pressure = 0;
-  assert.equal(calculateDailyActionMinutesLimit(intern), 600);
-});
-
-test("预算耗尽后加班降低主动产出并增加压力", () => {
+test("晚上日程加班降低主动产出并增加压力", () => {
   const start = 1_700_000_000_000;
   const normal = createNewState(start);
   const overtime = createNewState(start);
-  overtime.dailyActionMinutesUsed = overtime.currentDailyActionMinutesLimit;
+  normal.worldTimeMinutes = 18 * 60;
+  overtime.worldTimeMinutes = 18 * 60;
   startActivity(normal, "feature-coding");
-  startActivity(overtime, "feature-coding");
+  confirmEveningActivity(overtime, "feature-coding");
 
   settleTime(normal, start + 60_000, { randomEvents: true, rng: () => 1 });
   const result = settleTime(overtime, start + 60_000, { randomEvents: true, rng: () => 1 });
 
   assert.ok(overtime.resources.codeLines < normal.resources.codeLines);
   assert.ok(overtime.resources.pressure > normal.resources.pressure);
-  assert.match(result.messages.join("\n"), /低效加班/);
+  assert.doesNotMatch(result.messages.join("\n"), /今日预算|低效加班/);
+});
+
+test("未锁定日程的手动活动不会因旧预算字段触发加班", () => {
+  const start = 1_700_000_000_000;
+  const normal = createNewState(start);
+  const staleBudget = createNewState(start);
+  staleBudget.dailyActionMinutesUsed = 9999;
+  staleBudget.currentDailyActionMinutesLimit = 1;
+  startActivity(normal, "feature-coding");
+  startActivity(staleBudget, "feature-coding");
+
+  settleTime(normal, start + 60_000, { randomEvents: true, rng: () => 1 });
+  const result = settleTime(staleBudget, start + 60_000, { randomEvents: true, rng: () => 1 });
+
+  assert.equal(staleBudget.resources.codeLines, normal.resources.codeLines);
+  assert.equal(staleBudget.resources.pressure, normal.resources.pressure);
+  assert.doesNotMatch(result.messages.join("\n"), /今日预算|低效加班/);
 });
 
 test("加班产出、压力和质量风险受属性缓解", () => {
@@ -214,8 +233,8 @@ test("加班产出、压力和质量风险受属性缓解", () => {
   const highLogic = createNewState(start);
 
   for (const state of [lowFocus, highFocus, lowResilience, highResilience, lowLogic, highLogic]) {
-    state.dailyActionMinutesUsed = state.currentDailyActionMinutesLimit;
-    startActivity(state, "feature-coding");
+    state.worldTimeMinutes = 18 * 60;
+    confirmEveningActivity(state, "feature-coding");
   }
   highFocus.attributes.focus = 100;
   highResilience.attributes.resilience = 100;
@@ -653,6 +672,47 @@ test("side_hustle 只在深夜产生收益并在次日扣精力", () => {
   settleTime(lowFocus, now + 12 * 60 * 1000, { randomEvents: false });
   settleTime(highFocus, now + 12 * 60 * 1000, { randomEvents: false });
   assert.ok(highFocus.resources.energy > lowFocus.resources.energy);
+});
+
+test("休整 tick 显示具体行动和实际产出摘要", () => {
+  const now = 1_700_000_000_000;
+
+  const health = createNewState(now);
+  health.worldTimeMinutes = 12 * 60;
+  health.lastTick = now;
+  health.resources.energy = 20;
+  health.resources.pressure = 60;
+  const healthTicker = settleTime(health, now + 60_000, { randomEvents: false }).ticker.join("\n");
+  assert.match(healthTicker, /\[当前行动\] 健康休整 60 秒：/);
+  assert.match(healthTicker, /精力 \+/);
+  assert.match(healthTicker, /压力 -/);
+
+  const tech = createNewState(now);
+  tech.lifestyleStanceId = "tech_surfing";
+  tech.worldTimeMinutes = 12 * 60;
+  tech.lastTick = now;
+  const techTicker = settleTime(tech, now + 60_000, { randomEvents: false }).ticker.join("\n");
+  assert.match(techTicker, /\[当前行动\] 技术浏览 60 秒：/);
+  assert.match(techTicker, /知识 \+/);
+
+  const sideNoon = createNewState(now);
+  sideNoon.lifestyleStanceId = "side_hustle";
+  sideNoon.worldTimeMinutes = 12 * 60;
+  sideNoon.lastTick = now;
+  const sideNoonTicker = settleTime(sideNoon, now + 60_000, { randomEvents: false }).ticker.join("\n");
+  assert.match(sideNoonTicker, /休整（副业只在深夜生效） 60 秒/);
+  assert.match(sideNoonTicker, /暂无可见产出/);
+
+  const sideNight = createNewState(now);
+  sideNight.lifestyleStanceId = "side_hustle";
+  sideNight.worldTimeMinutes = 21 * 60;
+  sideNight.lastTick = now;
+  const sideNightTicker = settleTime(sideNight, now + 60_000, { randomEvents: false }).ticker.join("\n");
+  assert.match(sideNightTicker, /\[当前行动\] 独立副业 60 秒：/);
+  assert.match(sideNightTicker, /金钱 \+/);
+  assert.match(sideNightTicker, /声望 \+/);
+  assert.match(sideNightTicker, /压力 \+/);
+  assert.match(sideNightTicker, /设置次日精力扣除/);
 });
 
 test("start feature-coding 后只结算写功能活动", () => {

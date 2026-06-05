@@ -80,8 +80,6 @@ const MONTHS_PER_YEAR = 12;
 const DAYS_PER_MONTH = DAYS_PER_WEEK * WEEKS_PER_MONTH;
 const DAYS_PER_YEAR = DAYS_PER_MONTH * MONTHS_PER_YEAR;
 const WEEKDAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
-const DAILY_ACTION_BASE_MINUTES = 480;
-const DAILY_ACTION_LIMIT_BUCKETS = [360, 420, 480, 540, 600];
 const WEEKLY_FOCUS_CONFIG = {
   learning: { name: "学习周", learning: 1.3, project: 0.8, skill: 1.3, activity: 1 },
   project: { name: "项目周", learning: 0.8, project: 1.3, skill: 0.8, activity: 1 },
@@ -262,8 +260,6 @@ function createNewState(now = Date.now(), options = {}) {
     lockedSchedule: null,
     scheduleCompletedPhases: [],
     waitingForSchedule: true,
-    dailyActionMinutesUsed: 0,
-    currentDailyActionMinutesLimit: DAILY_ACTION_BASE_MINUTES,
     weeklyFocus: "balanced",
     lifestyleStanceId: "health",
     pendingLifestyleStanceId: null,
@@ -298,9 +294,7 @@ function createNewState(now = Date.now(), options = {}) {
       totalProjects: 0
     }
   };
-  state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
   if (options.characterCardId) applyCharacterCard(state, options.characterCardId);
-  state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
   return state;
 }
 
@@ -366,8 +360,6 @@ function normalizeState(raw, now = Date.now()) {
     lockedSchedule: raw && raw.lockedSchedule ? normalizeSchedule(raw.lockedSchedule, calendarDay, { locked: true }) : null,
     scheduleCompletedPhases: normalizeCompletedSchedulePhases(raw && raw.scheduleCompletedPhases),
     waitingForSchedule: Boolean(raw && raw.waitingForSchedule),
-    dailyActionMinutesUsed: Math.max(0, Number(raw && raw.dailyActionMinutesUsed) || 0),
-    currentDailyActionMinutesLimit: normalizeDailyLimit(raw && raw.currentDailyActionMinutesLimit, fresh.currentDailyActionMinutesLimit),
     weeklyFocus: normalizeWeeklyFocus(raw && raw.weeklyFocus),
     lifestyleStanceId: normalizeLifestyleStanceId(raw && raw.lifestyleStanceId),
     pendingLifestyleStanceId: normalizePendingLifestyleStanceId(raw && raw.pendingLifestyleStanceId),
@@ -404,7 +396,8 @@ function normalizeState(raw, now = Date.now()) {
   if (normalized.activeProjectId) normalized.activeActivityId = null;
   if (!normalized.lockedSchedule) normalized.waitingForSchedule = true;
   if (normalized.lockedSchedule) normalized.scheduleDraft = normalizeSchedule(normalized.scheduleDraft, normalized.lockedSchedule.day);
-  normalized.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(normalized);
+  delete normalized.dailyActionMinutesUsed;
+  delete normalized.currentDailyActionMinutesLimit;
   clampState(normalized);
   return normalized;
 }
@@ -412,11 +405,6 @@ function normalizeState(raw, now = Date.now()) {
 function normalizeWorldTimeMinutes(value) {
   const minutes = Number(value);
   return Number.isFinite(minutes) && minutes >= 0 ? Math.floor(minutes) : WORLD_START_MINUTES;
-}
-
-function normalizeDailyLimit(value, fallback) {
-  const minutes = Number(value);
-  return Number.isFinite(minutes) && minutes > 0 ? Math.floor(minutes) : fallback;
 }
 
 function normalizeWeeklyFocus(value) {
@@ -593,26 +581,6 @@ function formatWorldCalendar(state, style = "full") {
   return style === "short" ? calendar.short : calendar.full;
 }
 
-function closestDailyBucket(value) {
-  const clamped = clamp(value, DAILY_ACTION_LIMIT_BUCKETS[0], DAILY_ACTION_LIMIT_BUCKETS.at(-1));
-  return DAILY_ACTION_LIMIT_BUCKETS.reduce((best, current) => (
-    Math.abs(current - clamped) < Math.abs(best - clamped) ? current : best
-  ), DAILY_ACTION_LIMIT_BUCKETS[0]);
-}
-
-function calculateDailyActionMinutesLimit(state) {
-  const roleAdjustments = { intern: 0, junior: 60, middle: 120, senior: 60 };
-  let minutes = DAILY_ACTION_BASE_MINUTES + (roleAdjustments[state.currentRole] || 0);
-  const energy = Number(state.resources && state.resources.energy) || 0;
-  const pressure = Number(state.resources && state.resources.pressure) || 0;
-  if (energy >= 80) minutes += 60;
-  if (energy < 50) minutes -= 60;
-  if (energy < 30) minutes -= 60;
-  if (pressure >= 50) minutes -= 60;
-  if (pressure >= 70) minutes -= 60;
-  return closestDailyBucket(minutes);
-}
-
 function getWeeklyFocus(state) {
   const id = normalizeWeeklyFocus(state.weeklyFocus);
   return { id, ...WEEKLY_FOCUS_CONFIG[id] };
@@ -632,18 +600,6 @@ function getEffectiveMaxEnergy(state) {
   const role = roleById(state.currentRole) || content.roles[0];
   const capMultiplier = normalizeEnergyCapMultiplier(state.dailyEnergyCapMultiplier);
   return Math.max(1, role.maxEnergy * capMultiplier);
-}
-
-function getDailyTimeStatus(state) {
-  const limit = Math.max(1, Number(state.currentDailyActionMinutesLimit) || calculateDailyActionMinutesLimit(state));
-  const used = Math.max(0, Number(state.dailyActionMinutesUsed) || 0);
-  return {
-    used,
-    limit,
-    remaining: Math.max(0, limit - used),
-    overtime: used > limit,
-    label: `${formatNumber(used)}/${formatNumber(limit)}m`
-  };
 }
 
 function getActiveWorldEvents(state) {
@@ -799,13 +755,54 @@ function settleLifestyleRest(state, windowId, seconds) {
   return deltas;
 }
 
+function getLifestyleRestTickerMeta(state, windowId) {
+  const stance = getLifestyleStance(state.lifestyleStanceId);
+  if (!stance) {
+    return { name: "休整", defaultSummary: "暂无可见产出", sideEffectSummary: "" };
+  }
+  if (stance.id === "health") {
+    return { name: "健康休整", defaultSummary: "恢复精力，降低压力", sideEffectSummary: "" };
+  }
+  if (stance.id === "tech_surfing") {
+    return { name: "技术浏览", defaultSummary: "获得知识，专注较高时少量降压", sideEffectSummary: "" };
+  }
+  if (stance.id === "cyber_gaming") {
+    const night = windowId === "rest_night";
+    return {
+      name: "赛博娱乐",
+      defaultSummary: night ? "降低压力，并设置次日精力上限惩罚" : "降低压力",
+      sideEffectSummary: night ? "设置次日精力上限惩罚" : ""
+    };
+  }
+  if (stance.id === "side_hustle") {
+    if (windowId === "rest_night") {
+      return {
+        name: "独立副业",
+        defaultSummary: "获得金钱和声望，增加压力，并设置次日精力扣除",
+        sideEffectSummary: "设置次日精力扣除"
+      };
+    }
+    return { name: "休整（副业只在深夜生效）", defaultSummary: "暂无可见产出", sideEffectSummary: "" };
+  }
+  return { name: "休整", defaultSummary: "暂无可见产出", sideEffectSummary: "" };
+}
+
+function mergeRestTicker(result, state, windowId, seconds, deltas = {}) {
+  if (!result || !windowId || seconds <= 0) return;
+  const meta = getLifestyleRestTickerMeta(state, windowId);
+  if (!result.restTick || result.restTick.name !== meta.name || result.restTick.defaultSummary !== meta.defaultSummary) {
+    result.restTick = { ...meta, seconds: 0, deltas: {} };
+  }
+  result.restTick.seconds += seconds;
+  mergeDeltas(result.restTick.deltas, deltas);
+}
+
 function applyMorningTransitionIfDue(state, messages = [], events = []) {
   const calendar = getWorldCalendar(state.worldTimeMinutes);
   if (calendar.hour !== 9 || calendar.minute !== 0) return false;
   if (state.lastMorningTransitionDay === calendar.day) return false;
 
   state.lastMorningTransitionDay = calendar.day;
-  state.dailyActionMinutesUsed = 0;
   state.dailyEnergyCapMultiplier = normalizeEnergyCapMultiplier(state.pendingMorningEnergyCapMultiplier);
   state.pendingMorningEnergyCapMultiplier = 1;
   clampState(state);
@@ -824,8 +821,7 @@ function applyMorningTransitionIfDue(state, messages = [], events = []) {
   applyResourceDelta(state, "energy", 20);
   applyResourceDelta(state, "pressure", -5);
 
-  state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
-  pushMessageEvent(messages, events, "system", `09:00：${formatLifestyle(state).split("\n")[0]}，今日可用时间 ${state.currentDailyActionMinutesLimit}m。`);
+  pushMessageEvent(messages, events, "system", `09:00：${formatLifestyle(state).split("\n")[0]}。`);
   return true;
 }
 
@@ -1213,6 +1209,24 @@ function formatChangedResources(beforeResources, afterResources) {
   return entries.join("，");
 }
 
+function formatRestDeltaNumber(value) {
+  const numeric = Number(value) || 0;
+  const rounded = Math.round(numeric * 100) / 100;
+  if (Object.is(rounded, -0)) return "0";
+  return Number.isInteger(rounded) ? rounded.toString() : rounded.toString();
+}
+
+function formatRestChangedResources(deltas = {}) {
+  const entries = RESOURCE_ORDER
+    .map((key) => {
+      const change = Number(deltas[key]) || 0;
+      if (Math.abs(change) < 0.005) return "";
+      return `${RESOURCE_NAMES[key] || key} ${change > 0 ? "+" : ""}${formatRestDeltaNumber(change)}`;
+    })
+    .filter(Boolean);
+  return entries.join("，");
+}
+
 function createGameEvent(category, text, severity = "info") {
   return {
     category: EVENT_LABELS[category] ? category : "system",
@@ -1253,8 +1267,22 @@ function createTuiTicker(state, result = null, changedResources = "") {
     ];
   }
 
+  const restTick = result && result.restTick;
+  const restSeconds = restTick && Number(restTick.seconds) > 0 ? Math.floor(Number(restTick.seconds)) : 0;
+  if (restSeconds > 0 && restTick.name) {
+    const resourceSummary = formatRestChangedResources(restTick.deltas);
+    const sideEffect = resourceSummary && restTick.sideEffectSummary ? `，${restTick.sideEffectSummary}` : "";
+    const summary = `${resourceSummary || restTick.defaultSummary}${sideEffect}`;
+    return [
+      `[当前行动] ${restTick.name} ${restSeconds} 秒：${summary}。`,
+      `[当前时间] ${formatWorldCalendar(state, "short")}。`
+    ];
+  }
+
   const phase = getCurrentSchedulePhase(state.worldTimeMinutes);
   const mode = getActiveMode(state);
+  const restWindow = getRestWindow(state, state.worldTimeMinutes);
+  const restStatus = restWindow ? getLifestyleRestTickerMeta(state, restWindow) : null;
   const status = mode.type !== "idle"
     ? mode.type === "project"
       ? `项目 ${mode.item.name}`
@@ -1263,6 +1291,8 @@ function createTuiTicker(state, result = null, changedResources = "") {
         : `活动 ${mode.item.name}`
     : state.waitingForSchedule
       ? "等待排程"
+      : restStatus
+        ? `${restStatus.name}：${restStatus.defaultSummary}`
       : phase
         ? `${phase.name}休整`
         : "休整";
@@ -1994,10 +2024,9 @@ function settleTime(state, now = Date.now(), options = {}) {
   }
 
   const beforeResources = snapshotResources(state.resources);
-  const result = { deltas: {}, levelUps: 0, lowEnergy: false, overtime: false, activityName: null, activeName: null, activeSeconds: 0 };
+  const result = { deltas: {}, levelUps: 0, lowEnergy: false, overtime: false, activityName: null, activeName: null, activeSeconds: 0, restTick: null };
   let remainingMinutes = seconds;
   let processedSeconds = 0;
-  state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
   if (applyWorldEffects) applyWorldEventTriggers(state, getWorldCalendar(state.worldTimeMinutes).day, getWorldCalendar(state.worldTimeMinutes).day, messages, events);
 
   while (remainingMinutes > 0) {
@@ -2016,11 +2045,8 @@ function settleTime(state, now = Date.now(), options = {}) {
     const beforeDay = currentCalendar.day;
     const mode = getActiveMode(state);
     const hasActiveWork = state.lockedSchedule ? Boolean(scheduleContext && scheduleContext.slot) && mode.type !== "idle" : mode.type !== "idle";
-    const overtime = state.lockedSchedule
-      ? Boolean(scheduleContext && scheduleContext.phase && scheduleContext.phase.overtime && hasActiveWork)
-      : applyWorldEffects && hasActiveWork && state.dailyActionMinutesUsed >= state.currentDailyActionMinutesLimit;
+    const overtime = Boolean(scheduleContext && scheduleContext.phase && scheduleContext.phase.overtime && hasActiveWork);
     if (hasActiveWork) {
-      state.dailyActionMinutesUsed += segmentMinutes;
       result.overtime = result.overtime || overtime;
       result.activeSeconds += segmentMinutes;
       if (mode.type === "activity") {
@@ -2046,7 +2072,9 @@ function settleTime(state, now = Date.now(), options = {}) {
     } else {
       const restWindow = getRestWindow(state, state.worldTimeMinutes);
       if (restWindow) {
-        mergeDeltas(result.deltas, settleLifestyleRest(state, restWindow, segmentMinutes));
+        const restDeltas = settleLifestyleRest(state, restWindow, segmentMinutes);
+        mergeDeltas(result.deltas, restDeltas);
+        mergeRestTicker(result, state, restWindow, segmentMinutes, restDeltas);
       }
     }
 
@@ -2062,9 +2090,6 @@ function settleTime(state, now = Date.now(), options = {}) {
       if (applyWorldEffects) {
         startNewWorldDay(state, messages, events);
         applyWorldEventTriggers(state, beforeDay + 1, afterDay, messages, events);
-      } else {
-        state.dailyActionMinutesUsed = 0;
-        state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
       }
     }
     applyMorningTransitionIfDue(state, messages, events);
@@ -2090,10 +2115,6 @@ function settleTime(state, now = Date.now(), options = {}) {
   if (result.lowEnergy) {
     pushMessageEvent(messages, events, "warning", "精力耗尽，当前活动收益下降，压力额外上升。", "danger");
   }
-  if (result.overtime) {
-    pushMessageEvent(messages, events, "warning", "今日预算已耗尽，进入低效加班：产出下降，压力和质量风险上升。", "warn");
-  }
-
   collectBugRiskEvents(state, beforeResources, snapshotResources(state.resources), events);
 
   if (options.randomEvents && processedSeconds > 0) {
@@ -2787,7 +2808,6 @@ function getGameViewModel(state) {
   const claimableGoals = getClaimableGoals(state);
   const currentMainGoal = getCurrentMainGoal(state);
   const calendar = getWorldCalendar(state.worldTimeMinutes);
-  const dailyTime = getDailyTimeStatus(state);
   const weeklyFocus = getWeeklyFocus(state);
   const currentPhase = getCurrentSchedulePhase(state.worldTimeMinutes);
   const schedule = state.lockedSchedule || state.scheduleDraft || createScheduleDraft(calendar.day);
@@ -2803,7 +2823,6 @@ function getGameViewModel(state) {
   return {
     title: "代码人生",
     calendar,
-    dailyTime,
     schedule: {
       day: schedule.day,
       confirmed: Boolean(state.lockedSchedule),
@@ -3627,7 +3646,6 @@ module.exports = {
   formatWorldCalendar,
   formatWorldEvents,
   createTuiTicker,
-  calculateDailyActionMinutesLimit,
   getActivityLevel,
   getActivityOptions,
   getActivityProgress,

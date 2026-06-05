@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const {
+  createTuiTicker,
   createNewState,
   createProfile,
   getCharacterCardOptions,
@@ -157,18 +158,53 @@ test("getLogRows can render ticker rows without reducing history capacity", () =
   assert.equal(rows.historyRows.at(-1).text, "[系统] 已保存。");
 });
 
-test("getCurrentLogRows includes status, time, daily budget, and key resources", () => {
+test("getCurrentLogRows includes status, time, weekly focus, and key resources", () => {
   const state = createNewState(1_700_000_000_000);
   const view = getGameViewModel(state);
   const rows = getCurrentLogRows(view, ["[当前状态] 活动 写代码。", "[当前时间] 第 001 天 09:00。"]);
 
   assert.match(rows.find((row) => row.id === "current-status").text, /\[当前状态\]/);
   assert.match(rows.find((row) => row.id === "current-time").text, /\[当前时间\]/);
-  assert.match(rows.find((row) => row.id === "current-budget").text, /今日预算/);
+  assert.equal(rows.find((row) => row.id === "current-budget"), undefined);
+  assert.match(rows.find((row) => row.id === "current-weekly-focus").text, /本周重点/);
   assert.match(rows.find((row) => row.id === "current-energy").text, /精力/);
   assert.match(rows.find((row) => row.id === "current-pressure").text, /压力/);
   assert.match(rows.find((row) => row.id === "current-bugs").text, /Bug/);
   assert.match(rows.find((row) => row.id === "current-techDebt").text, /技术债/);
+  assert.doesNotMatch(rows.map((row) => row.text).join("\n"), /今日预算/);
+});
+
+test("getCurrentLogRows displays specific rest action and output from ticker", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  state.worldTimeMinutes = 12 * 60;
+  state.lastTick = now;
+  state.resources.energy = 20;
+  state.resources.pressure = 60;
+
+  const result = settleTime(state, now + 60_000, { randomEvents: false });
+  const rows = getCurrentLogRows(getGameViewModel(state), result.ticker);
+  const currentStatus = rows.find((row) => row.id === "current-status").text;
+
+  assert.match(currentStatus, /\[当前行动\] 健康休整 60 秒：/);
+  assert.match(currentStatus, /精力 \+/);
+  assert.match(currentStatus, /压力 -/);
+  assert.notEqual(currentStatus, "[当前状态] 休整。");
+});
+
+test("createTuiTicker shows the concrete rest status between settlement ticks", () => {
+  const state = createNewState(1_700_000_000_000);
+  processCommand(state, "plan morning activity rest", { randomEvents: false });
+  processCommand(state, "plan afternoon activity rest", { randomEvents: false });
+  processCommand(state, "plan evening none", { randomEvents: false });
+  processCommand(state, "plan confirm", { randomEvents: false });
+  state.worldTimeMinutes = 12 * 60;
+
+  const rows = getCurrentLogRows(getGameViewModel(state), createTuiTicker(state));
+  const currentStatus = rows.find((row) => row.id === "current-status").text;
+
+  assert.match(currentStatus, /\[当前状态\] 健康休整：恢复精力，降低压力。/);
+  assert.notEqual(currentStatus, "[当前状态] 休整。");
 });
 
 test("command log messages get command and result category prefixes", () => {

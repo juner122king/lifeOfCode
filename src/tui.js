@@ -135,14 +135,11 @@ function getCurrentLogRows(view, ticker = null) {
   const tickerRows = normalizeTickerRows(ticker);
   const resources = view && Array.isArray(view.resources) ? view.resources : [];
   const byId = new Map(resources.map((item) => [item.id, item]));
-  const dailyTime = view && view.dailyTime ? view.dailyTime : null;
-  const budgetLabel = dailyTime && dailyTime.label
-    ? `今日预算 ${dailyTime.label}${dailyTime.overtime ? " 超时" : ` 剩余 ${Math.floor(Number(dailyTime.remaining) || 0)}m`}`
-    : "今日预算 --";
+  const weeklyFocus = view && view.weeklyFocus && view.weeklyFocus.name ? view.weeklyFocus.name : "--";
   return [
     { id: "current-status", kind: "status", text: tickerRows[0].text },
     { id: "current-time", kind: "time", text: tickerRows[1].text },
-    { id: "current-budget", kind: "resource", resourceId: "dailyTime", text: budgetLabel },
+    { id: "current-weekly-focus", kind: "resource", resourceId: "weeklyFocus", text: `本周重点 ${weeklyFocus}` },
     ...CURRENT_RESOURCE_IDS.map((id) => {
       const resource = byId.get(id);
       return {
@@ -762,7 +759,7 @@ async function startTui() {
       h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: budget.logHeight, width: columnWidth },
         h(SectionTitle, { color: THEME.title }, "当前"),
         ...currentRows.map((row) => {
-          const resourceTone = row.resource ? toneForResource(row.resource) : row.resourceId === "dailyTime" ? { color: THEME.status.info } : null;
+          const resourceTone = row.resource ? toneForResource(row.resource) : row.resourceId === "weeklyFocus" ? { color: THEME.status.info } : null;
           return h(Text, {
             key: row.id,
             color: resourceTone ? resourceTone.color : row.kind === "status" ? THEME.status.info : THEME.muted,
