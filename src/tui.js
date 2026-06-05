@@ -8,6 +8,7 @@ const {
   getGoalOptions,
   getManagementOptions,
   getProfileOptions,
+  getScheduleOptions,
   loadProfile,
   processCommand,
   replaceStateContents,
@@ -25,6 +26,7 @@ const {
 const PANELS = [
   { id: "profiles", label: "档案", key: "F" },
   { id: "cards", label: "人物卡", key: "C" },
+  { id: "schedule", label: "日程", key: "N" },
   { id: "activities", label: "活动", key: "A" },
   { id: "goals", label: "目标", key: "G" },
   { id: "skills", label: "技能", key: "S" },
@@ -36,6 +38,7 @@ const MAX_LOGS = 6;
 const MIN_LIST_PAGE_SIZE = 3;
 const DEFAULT_TERMINAL_ROWS = 24;
 const DEFAULT_TERMINAL_COLUMNS = 80;
+const TUI_CLOCK_TICK_MS = 1000;
 
 function trimText(value, length) {
   const text = String(value || "");
@@ -75,8 +78,11 @@ function getLogRows(logs, maxLogs = MAX_LOGS) {
   ];
 }
 
-function commandForPanel(panelId, option) {
+function commandForPanel(panelId, option, schedulePhase = "morning") {
   if (!option) return null;
+  if (panelId === "activities") return option.unlocked ? `plan ${schedulePhase} activity ${option.id}` : null;
+  if (panelId === "skills") return option.command && option.command.startsWith("learn ") ? `plan ${schedulePhase} skill ${option.id}` : option.command;
+  if (panelId === "projects") return option.id === "promote" ? option.command : `plan ${schedulePhase} project ${option.id}`;
   return option.command;
 }
 
@@ -122,7 +128,7 @@ function handleProfileEnterKeypress(state, option, options = {}) {
     };
   }
 
-  const result = processCommand(state, command, options);
+  const result = processTuiCommand(state, command, options);
   return {
     creatingProfile: false,
     profileCreationStartedAt: null,
@@ -180,7 +186,7 @@ function handleProfileDeleteKeypress(state, option, pendingProfileId, options = 
       exit: false
     };
   }
-  const result = processCommand(state, action.command, options);
+  const result = processTuiCommand(state, action.command, options);
   return {
     pendingProfileId: action.pendingProfileId,
     messages: [`> ${action.command}`, ...result.messages],
@@ -261,6 +267,25 @@ function getOptionProgress(option, options = {}) {
     active: option.progressActive === true && !options.paused,
     text: option.progressText || ""
   };
+}
+
+function pauseGameClock(state, now = Date.now(), options = {}) {
+  return settleTime(state, now, options);
+}
+
+function syncPausedClock(state, now = Date.now()) {
+  state.lastTick = now;
+  return state.lastTick;
+}
+
+function resumeGameClock(state, now = Date.now()) {
+  return syncPausedClock(state, now);
+}
+
+function processTuiCommand(state, command, options = {}) {
+  const now = options.now ?? Date.now();
+  if (options.paused) syncPausedClock(state, now);
+  return processCommand(state, command, { ...options, now });
 }
 
 function clampProgressPercent(value) {
@@ -421,9 +446,11 @@ async function startTui() {
     const learning = view.activeSkillLearning ? `${view.activeSkillLearning.name} 学习 ${view.activeSkillLearning.progressPercent}%` : "无";
     const detail = `活动 ${active}  项目 ${project}  学习 ${learning}`;
     const width = Math.max(48, budget.terminalColumns - 6);
+    const phaseLabel = view.schedule.currentPhase ? `${view.schedule.currentPhase.name} ${view.schedule.currentPhase.timeRange}` : "休整";
+    const scheduleLabel = view.schedule.confirmed ? "日程已确认" : "等待排程";
     const calendarLine = budget.narrow
-      ? `${view.calendar.short} | 今日 ${view.dailyTime.label}`
-      : `${view.calendar.short}  今日 ${view.dailyTime.label}  本周 ${view.weeklyFocus.name}  ${view.nearestDeadline ? `Deadline ${view.nearestDeadline.name} D${String(view.nearestDeadline.dueDay).padStart(3, "0")}` : "Deadline 暂无"}`;
+      ? `${view.calendar.short} | ${phaseLabel} | ${scheduleLabel}`
+      : `${view.calendar.short}  ${phaseLabel}  ${scheduleLabel}  本周 ${view.weeklyFocus.name}  ${view.nearestDeadline ? `Deadline ${view.nearestDeadline.name} D${String(view.nearestDeadline.dueDay).padStart(3, "0")}` : "Deadline 暂无"}`;
     const eventLine = view.activeWorldEvents.length
       ? `事件 ${view.activeWorldEvents.map((event) => event.name).join("，")}  ${view.nearestDeadline ? `最近 ${view.nearestDeadline.name} D${String(view.nearestDeadline.dueDay).padStart(3, "0")}` : "最近 Deadline 暂无"}`
       : `${view.nearestDeadline ? `最近 Deadline ${view.nearestDeadline.name} D${String(view.nearestDeadline.dueDay).padStart(3, "0")}` : "最近 Deadline 暂无"}`;
@@ -491,6 +518,7 @@ async function startTui() {
 
   function getPanelOptions(state, activePanel) {
     if (activePanel === "profiles") return getProfileOptions(state);
+    if (activePanel === "schedule") return getScheduleOptions(state);
     if (activePanel === "activities") return getActivityOptions(state);
     if (activePanel === "goals") return getGoalOptions(state);
     if (["skills", "tools", "projects"].includes(activePanel)) return getManagementOptions(state, activePanel);
@@ -641,7 +669,7 @@ async function startTui() {
 
   const MemoLogPanel = React.memo(LogPanel);
 
-  function Footer({ paused, creatingProfile }) {
+  function Footer({ paused, creatingProfile, schedulePhase }) {
     if (creatingProfile) {
       return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
         h(KeyHint, { label: "Tab", text: "切换" }),
@@ -658,6 +686,7 @@ async function startTui() {
       h(KeyHint, { label: "↑/↓", text: "选择" }),
       h(KeyHint, { label: "PgUp/PgDn", text: "翻页" }),
       h(KeyHint, { label: "Enter", text: "执行/加载" }),
+      h(KeyHint, { label: "1/2/3", text: `阶段 ${schedulePhase}` }),
       h(KeyHint, { label: "D D", text: "删除档案" }),
       h(KeyHint, { label: "Space", text: paused ? "恢复" : "暂停" }),
       h(KeyHint, { label: "Q", text: "保存退出" })
@@ -670,6 +699,7 @@ async function startTui() {
     const [activePanel, setActivePanel] = useState(needsInitialProfile ? "cards" : "activities");
     const [selected, setSelected] = useState({});
     const [paused, setPaused] = useState(false);
+    const [schedulePhase, setSchedulePhase] = useState("morning");
     const [profileCreationStartedAt, setProfileCreationStartedAt] = useState(null);
     const pendingDeleteProfileIdRef = useRef(null);
     const [logs, setLogs] = useState([]);
@@ -707,7 +737,7 @@ async function startTui() {
         if (result.messages.length) addLogs(result.messages);
         saveProfile(stateRef.current);
         refresh();
-      }, 3000);
+      }, TUI_CLOCK_TICK_MS);
       return () => clearInterval(timer);
     }, [paused, needsInitialProfile]);
 
@@ -728,12 +758,32 @@ async function startTui() {
 
     useInput((input, key) => {
       if (input.toLowerCase() === "q") {
-        if (!needsInitialProfile) saveProfile(stateRef.current);
+        if (!needsInitialProfile) {
+          if (paused) syncPausedClock(stateRef.current, Date.now());
+          saveProfile(stateRef.current);
+        }
         exit();
         return;
       }
       if (input === " ") {
+        const now = Date.now();
+        if (!needsInitialProfile) {
+          if (paused) {
+            resumeGameClock(stateRef.current, now);
+          } else {
+            const result = pauseGameClock(stateRef.current, now, { randomEvents: true });
+            if (result.messages.length) addLogs(result.messages);
+            saveProfile(stateRef.current);
+          }
+          refresh();
+        }
         setPaused((value) => !value);
+        return;
+      }
+      if (["1", "2", "3"].includes(input)) {
+        const phases = ["morning", "afternoon", "evening"];
+        setSchedulePhase(phases[Number(input) - 1]);
+        addLogs([`当前排程阶段：${phases[Number(input) - 1]}`]);
         return;
       }
       if (key.tab) {
@@ -778,6 +828,12 @@ async function startTui() {
       }
       if (key.return) {
         const selectedOption = options[selectedIndex];
+        if (activePanel === "schedule" && selectedOption && selectedOption.phaseId) {
+          setSchedulePhase(selectedOption.phaseId);
+          addLogs([`当前排程阶段：${selectedOption.name}`]);
+          refresh();
+          return;
+        }
         if (needsInitialProfile && activePanel === "cards" && selectedOption) {
           try {
             const next = createProfile("default", "默认档案", Date.now(), { characterCardId: selectedOption.id });
@@ -795,6 +851,7 @@ async function startTui() {
           const result = handleProfileEnterKeypress(stateRef.current, selectedOption, {
             creatingProfile,
             profileCreationStartedAt,
+            paused,
             randomEvents: true
           });
           setProfileCreationStartedAt(result.creatingProfile ? result.profileCreationStartedAt : null);
@@ -803,16 +860,16 @@ async function startTui() {
           if (result.changed || result.creatingProfile !== creatingProfile) refresh();
           return;
         }
-        const command = commandForPanel(activePanel, selectedOption);
+        const command = commandForPanel(activePanel, selectedOption, schedulePhase);
         if (!command) return;
-        const result = processCommand(stateRef.current, command, { randomEvents: true });
+        const result = processTuiCommand(stateRef.current, command, { paused, randomEvents: true });
         addLogs([`> ${command}`, ...result.messages]);
         if (result.exit) exit();
         refresh();
       }
       if (input.toLowerCase() === "d" && activePanel === "profiles") {
         const option = options[selectedIndex];
-        const result = handleProfileDeleteKeypress(stateRef.current, option, pendingDeleteProfileIdRef.current, { creatingProfile, randomEvents: true });
+        const result = handleProfileDeleteKeypress(stateRef.current, option, pendingDeleteProfileIdRef.current, { creatingProfile, paused, randomEvents: true });
         pendingDeleteProfileIdRef.current = result.pendingProfileId;
         addLogs(result.messages);
         if (result.exit) exit();
@@ -828,7 +885,7 @@ async function startTui() {
         ? h(CharacterCardPanel, { view, budget })
         : h(MainPanel, { activePanel, options, selectedIndex, budget, paused }),
       h(MemoLogPanel, { logs, budget }),
-      h(Footer, { paused, creatingProfile })
+      h(Footer, { paused, creatingProfile, schedulePhase })
     );
   }
 
@@ -844,6 +901,7 @@ if (require.main === module) {
 
 module.exports = {
   MAX_LOGS,
+  TUI_CLOCK_TICK_MS,
   appendLogEntries,
   calculateLayoutBudget,
   createLogEntries,
@@ -856,8 +914,12 @@ module.exports = {
   handleProfileEnterKeypress,
   handleProfileDeleteKeypress,
   normalizeLogMessages,
+  pauseGameClock,
   profileDeleteUnavailableMessage,
+  processTuiCommand,
+  resumeGameClock,
   resolveProfileDeleteKeypress,
   shouldExitProfileCreationMode,
+  syncPausedClock,
   startTui
 };

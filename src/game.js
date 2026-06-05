@@ -54,6 +54,14 @@ const SKILL_UPGRADE_KNOWLEDGE_MULTIPLIERS = { 2: 2, 3: 4, 4: 7, 5: 11 };
 const SKILL_UPGRADE_RESOURCE_MULTIPLIERS = { 2: 1, 3: 2, 4: 4, 5: 7 };
 const WORLD_START_MINUTES = 9 * 60;
 const MINUTES_PER_DAY = 24 * 60;
+const SAVE_VERSION = 2;
+const SCHEDULE_PHASES = [
+  { id: "morning", name: "上午", start: 9 * 60, end: 12 * 60, required: true },
+  { id: "afternoon", name: "下午", start: 14 * 60, end: 18 * 60, required: true },
+  { id: "evening", name: "晚上", start: 18 * 60, end: 21 * 60, required: false, overtime: true }
+];
+const SCHEDULE_PHASE_BY_ID = Object.fromEntries(SCHEDULE_PHASES.map((phase) => [phase.id, phase]));
+const SCHEDULE_SLOT_TYPES = ["activity", "skill", "project", "none"];
 const DAYS_PER_WEEK = 7;
 const WEEKS_PER_MONTH = 4;
 const MONTHS_PER_YEAR = 12;
@@ -148,6 +156,18 @@ function normalizeTimestamp(value, fallback) {
   return Number.isFinite(time) ? new Date(time).toISOString() : fallback;
 }
 
+function createEmptyScheduleSlots() {
+  return Object.fromEntries(SCHEDULE_PHASES.map((phase) => [phase.id, null]));
+}
+
+function createScheduleDraft(day = 1) {
+  return { day, slots: createEmptyScheduleSlots() };
+}
+
+function createLockedSchedule(day = 1) {
+  return { day, slots: createEmptyScheduleSlots(), confirmedAtWorldMinute: null };
+}
+
 function applyCharacterCard(state, characterCardId) {
   const card = characterCardById(characterCardId);
   if (!card) throw new Error(`没有这个人物卡：${characterCardId}`);
@@ -180,6 +200,7 @@ function createNewState(now = Date.now(), options = {}) {
   const role = content.roles[0];
   const timestamp = new Date(now).toISOString();
   const state = {
+    saveVersion: SAVE_VERSION,
     profileId: DEFAULT_PROFILE_ID,
     profileName: DEFAULT_PROFILE_NAME,
     characterCardId: null,
@@ -203,6 +224,10 @@ function createNewState(now = Date.now(), options = {}) {
     activeProjectId: null,
     projectProgress: {},
     worldTimeMinutes: WORLD_START_MINUTES,
+    scheduleDraft: createScheduleDraft(1),
+    lockedSchedule: null,
+    scheduleCompletedPhases: [],
+    waitingForSchedule: true,
     dailyActionMinutesUsed: 0,
     currentDailyActionMinutesLimit: DAILY_ACTION_BASE_MINUTES,
     weeklyFocus: "balanced",
@@ -238,11 +263,54 @@ function createNewState(now = Date.now(), options = {}) {
   return state;
 }
 
+function normalizeScheduleSlot(raw, phaseId) {
+  if (!raw || typeof raw !== "object") return null;
+  const type = raw.type;
+  const id = typeof raw.id === "string" ? raw.id : null;
+  if (!SCHEDULE_SLOT_TYPES.includes(type)) return null;
+  if (type === "none") return phaseId === "evening" ? { type: "none", id: null } : null;
+  if (type === "activity" && activityById(id)) return { type, id };
+  if (type === "skill" && itemById(content.skills, id)) return { type, id };
+  if (type === "project" && projectById(id)) return { type, id };
+  return null;
+}
+
+function normalizeSchedule(raw, fallbackDay, options = {}) {
+  const day = Math.max(1, Math.floor(Number(raw && raw.day) || fallbackDay || 1));
+  const schedule = options.locked ? createLockedSchedule(day) : createScheduleDraft(day);
+  const rawSlots = raw && raw.slots;
+  for (const phase of SCHEDULE_PHASES) {
+    schedule.slots[phase.id] = normalizeScheduleSlot(rawSlots && rawSlots[phase.id], phase.id);
+  }
+  if (options.locked) {
+    const confirmed = Number(raw && raw.confirmedAtWorldMinute);
+    schedule.confirmedAtWorldMinute = Number.isFinite(confirmed) ? Math.max(0, Math.floor(confirmed)) : null;
+  }
+  return schedule;
+}
+
+function normalizeCompletedSchedulePhases(raw) {
+  const valid = new Set(SCHEDULE_PHASES.map((phase) => phase.id));
+  return Array.isArray(raw) ? [...new Set(raw.filter((id) => valid.has(id)))] : [];
+}
+
 function normalizeState(raw, now = Date.now()) {
   const fresh = createNewState(now);
+  if (!raw || raw.saveVersion !== SAVE_VERSION) {
+    return {
+      ...fresh,
+      profileId: normalizeProfileId(raw && raw.profileId) || DEFAULT_PROFILE_ID,
+      profileName: normalizeProfileName(raw && raw.profileName, raw && raw.profileId),
+      createdAt: normalizeTimestamp(raw && raw.createdAt, fresh.createdAt),
+      updatedAt: normalizeTimestamp(raw && raw.updatedAt, raw && raw.lastTick ? new Date(raw.lastTick).toISOString() : fresh.updatedAt),
+      lastTick: Number.isFinite(raw && raw.lastTick) ? raw.lastTick : now
+    };
+  }
+  const calendarDay = getWorldCalendar(raw && raw.worldTimeMinutes).day;
   const normalized = {
     ...fresh,
     ...raw,
+    saveVersion: SAVE_VERSION,
     profileId: normalizeProfileId(raw && raw.profileId) || DEFAULT_PROFILE_ID,
     profileName: normalizeProfileName(raw && raw.profileName, raw && raw.profileId),
     characterCardId: characterCardById(raw && raw.characterCardId) ? raw.characterCardId : null,
@@ -253,6 +321,10 @@ function normalizeState(raw, now = Date.now()) {
     activeProjectId: projectById(raw && raw.activeProjectId) ? raw.activeProjectId : null,
     projectProgress: normalizeProjectProgress(raw && raw.projectProgress),
     worldTimeMinutes: normalizeWorldTimeMinutes(raw && raw.worldTimeMinutes),
+    scheduleDraft: normalizeSchedule(raw && raw.scheduleDraft, calendarDay),
+    lockedSchedule: raw && raw.lockedSchedule ? normalizeSchedule(raw.lockedSchedule, calendarDay, { locked: true }) : null,
+    scheduleCompletedPhases: normalizeCompletedSchedulePhases(raw && raw.scheduleCompletedPhases),
+    waitingForSchedule: Boolean(raw && raw.waitingForSchedule),
     dailyActionMinutesUsed: Math.max(0, Number(raw && raw.dailyActionMinutesUsed) || 0),
     currentDailyActionMinutesLimit: normalizeDailyLimit(raw && raw.currentDailyActionMinutesLimit, fresh.currentDailyActionMinutesLimit),
     weeklyFocus: normalizeWeeklyFocus(raw && raw.weeklyFocus),
@@ -282,6 +354,8 @@ function normalizeState(raw, now = Date.now()) {
     normalized.activeProjectId = null;
   }
   if (normalized.activeProjectId) normalized.activeActivityId = null;
+  if (!normalized.lockedSchedule) normalized.waitingForSchedule = true;
+  if (normalized.lockedSchedule) normalized.scheduleDraft = normalizeSchedule(normalized.scheduleDraft, normalized.lockedSchedule.day);
   normalized.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(normalized);
   clampState(normalized);
   return normalized;
@@ -1222,6 +1296,275 @@ function startNewWorldDay(state, messages = []) {
   messages.push(`新的一天：${formatWorldCalendar(state, "short")}，今日可用时间 ${state.currentDailyActionMinutesLimit}m。`);
 }
 
+function getCurrentSchedulePhase(worldTimeMinutes) {
+  const minuteOfDay = normalizeWorldTimeMinutes(worldTimeMinutes) % MINUTES_PER_DAY;
+  return SCHEDULE_PHASES.find((phase) => minuteOfDay >= phase.start && minuteOfDay < phase.end) || null;
+}
+
+function minutesToNextScheduleBoundary(worldTimeMinutes) {
+  const minuteOfDay = normalizeWorldTimeMinutes(worldTimeMinutes) % MINUTES_PER_DAY;
+  const boundaries = [
+    ...SCHEDULE_PHASES.flatMap((phase) => [phase.start, phase.end]),
+    MINUTES_PER_DAY + SCHEDULE_PHASES[0].start
+  ].filter((minute) => minute > minuteOfDay);
+  return Math.max(1, Math.min(...boundaries) - minuteOfDay);
+}
+
+function getScheduleDay(state) {
+  return getWorldCalendar(state.worldTimeMinutes).day;
+}
+
+function clearActiveWork(state) {
+  state.activeActivityId = null;
+  state.activeSkillLearningId = null;
+  state.activeProjectId = null;
+}
+
+function hasManualActiveWork(state) {
+  return !state.lockedSchedule && Boolean(state.activeActivityId || state.activeSkillLearningId || state.activeProjectId);
+}
+
+function resetScheduleForCurrentDay(state) {
+  const day = getScheduleDay(state);
+  state.scheduleDraft = createScheduleDraft(day);
+  state.lockedSchedule = null;
+  state.scheduleCompletedPhases = [];
+  state.waitingForSchedule = true;
+  clearActiveWork(state);
+}
+
+function ensureScheduleForCurrentDay(state) {
+  const day = getScheduleDay(state);
+  if (!state.scheduleDraft || state.scheduleDraft.day !== day) state.scheduleDraft = createScheduleDraft(day);
+  if (state.lockedSchedule && state.lockedSchedule.day !== day) {
+    resetScheduleForCurrentDay(state);
+    return;
+  }
+  if (!state.lockedSchedule) state.waitingForSchedule = true;
+}
+
+function isSchedulePauseMinute(state) {
+  const calendar = getWorldCalendar(state.worldTimeMinutes);
+  return calendar.hour === 9 && calendar.minute === 0 && !state.lockedSchedule;
+}
+
+function describeScheduleSlot(slot) {
+  if (!slot) return "未安排";
+  if (slot.type === "none") return "休整";
+  if (slot.type === "activity") {
+    const activity = activityById(slot.id);
+    return activity ? `活动：${activity.name}` : `活动：${slot.id}`;
+  }
+  if (slot.type === "skill") {
+    const skill = itemById(content.skills, slot.id);
+    return skill ? `学习：${skill.name}` : `学习：${slot.id}`;
+  }
+  if (slot.type === "project") {
+    const project = projectById(slot.id);
+    return project ? `项目：${project.name}` : `项目：${slot.id}`;
+  }
+  return "未安排";
+}
+
+function formatSchedule(state) {
+  ensureScheduleForCurrentDay(state);
+  const schedule = state.lockedSchedule || state.scheduleDraft;
+  const confirmed = Boolean(state.lockedSchedule);
+  const currentPhase = getCurrentSchedulePhase(state.worldTimeMinutes);
+  return formatLines([
+    `今日日程：D${String(schedule.day).padStart(3, "0")} [${confirmed ? "已确认" : "草稿"}]${state.waitingForSchedule ? "，等待确认" : ""}`,
+    ...SCHEDULE_PHASES.map((phase) => {
+      const marker = currentPhase && currentPhase.id === phase.id ? "*" : " ";
+      const done = state.scheduleCompletedPhases.includes(phase.id) ? "，已完成" : "";
+      return `${marker} ${phase.name} ${formatScheduleTimeRange(phase)}：${describeScheduleSlot(schedule.slots[phase.id])}${done}`;
+    }),
+    "命令：plan <morning|afternoon|evening> <activity|skill|project> <id>；plan evening none；plan confirm；plan clear"
+  ]);
+}
+
+function formatScheduleTimeRange(phase) {
+  const format = (minutes) => `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+  return `${format(phase.start)}-${format(phase.end)}`;
+}
+
+function setScheduleSlot(state, phaseId, type, id) {
+  ensureScheduleForCurrentDay(state);
+  const phase = SCHEDULE_PHASE_BY_ID[phaseId];
+  if (!phase) return "阶段只能是 morning、afternoon、evening。";
+  if (state.lockedSchedule) return "今日日程已确认，不能修改。";
+  if (type === "none") {
+    if (phase.id !== "evening") return "只有晚上可以安排 none。";
+    state.scheduleDraft.slots[phase.id] = { type: "none", id: null };
+    return `已安排 ${phase.name}：休整。`;
+  }
+  if (!["activity", "skill", "project"].includes(type)) return "类型只能是 activity、skill、project，晚上还可 none。";
+  const slot = normalizeScheduleSlot({ type, id }, phase.id);
+  if (!slot) return `没有这个${type === "activity" ? "活动" : type === "skill" ? "技能" : "项目"}：${id}`;
+  if (type === "activity") {
+    const activity = activityById(id);
+    if (!activityUnlocked(state, activity)) {
+      return formatLines([
+        `${activity.name} 还未解锁。`,
+        `需要：${formatActivityRequirements(activity.requirements)}`
+      ]);
+    }
+  }
+  state.scheduleDraft.slots[phase.id] = slot;
+  return `已安排 ${phase.name}：${describeScheduleSlot(slot)}。`;
+}
+
+function getScheduleResourcePlan(state, slots) {
+  const errors = [];
+  const nextResources = { ...state.resources };
+  const skillsToPay = new Set();
+  const projectsToPay = new Set();
+
+  for (const phase of SCHEDULE_PHASES) {
+    const slot = slots[phase.id];
+    if (phase.required && !slot) errors.push(`${phase.name} 必须安排任务。`);
+    if (!slot || slot.type === "none") continue;
+
+    if (slot.type === "activity") {
+      const activity = activityById(slot.id);
+      if (!activity || !activityUnlocked(state, activity)) errors.push(`${phase.name} 活动不可用：${slot.id}。`);
+      continue;
+    }
+
+    if (slot.type === "skill") {
+      const skill = itemById(content.skills, slot.id);
+      if (!skill) {
+        errors.push(`${phase.name} 技能不存在：${slot.id}。`);
+        continue;
+      }
+      if (getSkillLevel(state, skill.id) > 0) {
+        errors.push(`${phase.name} 技能已学会：${skill.name}。`);
+        continue;
+      }
+      const missingAttributes = missingAttributeRequirements(state, skill.attributeRequirements);
+      if (missingAttributes.length) errors.push(`${phase.name} 学习 ${skill.name} 属性不足：${missingAttributes.join("、")}。`);
+      const progress = ensureSkillLearningProgress(state, skill.id);
+      if (!progress.resourcesPaid && !skillsToPay.has(skill.id)) {
+        if (!canAfford(nextResources, skill.cost)) {
+          errors.push(`${phase.name} 学习 ${skill.name} 资源不足：${formatShortfall(nextResources, skill.cost)}。`);
+        } else {
+          pay(nextResources, skill.cost);
+          skillsToPay.add(skill.id);
+        }
+      }
+      continue;
+    }
+
+    if (slot.type === "project") {
+      const project = projectById(slot.id);
+      if (!project) {
+        errors.push(`${phase.name} 项目不存在：${slot.id}。`);
+        continue;
+      }
+      const progress = ensureProjectProgress(state, project.id);
+      const missing = missingProjectRequirements(state, project, { skipResources: true });
+      if (missing.length) errors.push(`${phase.name} 项目 ${project.name} 条件不足：${missing.join("、")}。`);
+      if (!progress.resourcesPaid && !projectsToPay.has(project.id)) {
+        const cost = project.requirements.resources || {};
+        if (!canAfford(nextResources, cost)) {
+          errors.push(`${phase.name} 项目 ${project.name} 资源不足：${formatShortfall(nextResources, cost)}。`);
+        } else {
+          pay(nextResources, cost);
+          projectsToPay.add(project.id);
+        }
+      }
+    }
+  }
+
+  return { errors, nextResources, skillsToPay, projectsToPay };
+}
+
+function confirmSchedule(state) {
+  ensureScheduleForCurrentDay(state);
+  if (state.lockedSchedule) return "今日日程已确认，不能修改。";
+  if (!state.waitingForSchedule) return "当前不在排程时间。每天 09:00 才能确认今日日程。";
+  const plan = getScheduleResourcePlan(state, state.scheduleDraft.slots);
+  if (plan.errors.length) {
+    return formatLines(["日程确认失败：", ...plan.errors]);
+  }
+
+  state.resources = plan.nextResources;
+  for (const id of plan.skillsToPay) ensureSkillLearningProgress(state, id).resourcesPaid = true;
+  for (const id of plan.projectsToPay) {
+    const progress = ensureProjectProgress(state, id);
+    progress.resourcesPaid = true;
+    ensureProjectDeadline(state, projectById(id));
+  }
+  state.lockedSchedule = normalizeSchedule({
+    day: getScheduleDay(state),
+    slots: state.scheduleDraft.slots,
+    confirmedAtWorldMinute: state.worldTimeMinutes
+  }, getScheduleDay(state), { locked: true });
+  state.scheduleCompletedPhases = [];
+  state.waitingForSchedule = false;
+  syncScheduledActiveMode(state);
+  return formatLines([
+    "今日日程已确认，今天不可再修改。",
+    formatSchedule(state)
+  ]);
+}
+
+function clearScheduleDraft(state) {
+  ensureScheduleForCurrentDay(state);
+  if (state.lockedSchedule) return "今日日程已确认，不能清空。";
+  state.scheduleDraft = createScheduleDraft(getScheduleDay(state));
+  return "已清空今日日程草稿。";
+}
+
+function processPlanCommand(state, args) {
+  const [subcommand, type, id] = args;
+  if (!subcommand) return formatSchedule(state);
+  if (subcommand === "confirm") return confirmSchedule(state);
+  if (subcommand === "clear") return clearScheduleDraft(state);
+  if (!SCHEDULE_PHASE_BY_ID[subcommand]) return "用法：plan [morning|afternoon|evening] <activity|skill|project> <id>，或 plan evening none、plan confirm、plan clear。";
+  if (type === "none") return setScheduleSlot(state, subcommand, "none", null);
+  if (!type || !id) return "用法：plan <morning|afternoon|evening> <activity|skill|project> <id>。";
+  return setScheduleSlot(state, subcommand, type, id);
+}
+
+function isScheduledSlotFinished(state, phaseId, slot) {
+  if (!slot) return true;
+  if (slot.type === "none") return true;
+  if (state.scheduleCompletedPhases.includes(phaseId)) return true;
+  if (slot.type === "skill") return getSkillLevel(state, slot.id) > 0;
+  if (slot.type === "project") return Boolean(projectById(slot.id) && state.completedProjects.includes(slot.id) && !state.projectProgress[slot.id]);
+  return false;
+}
+
+function syncScheduledActiveMode(state) {
+  ensureScheduleForCurrentDay(state);
+  clearCompletedSkillLearning(state);
+  if (state.waitingForSchedule || !state.lockedSchedule) {
+    if (hasManualActiveWork(state)) return null;
+    clearActiveWork(state);
+    return null;
+  }
+  const phase = getCurrentSchedulePhase(state.worldTimeMinutes);
+  if (!phase) {
+    clearActiveWork(state);
+    return null;
+  }
+  const slot = state.lockedSchedule.slots[phase.id];
+  if (isScheduledSlotFinished(state, phase.id, slot)) {
+    clearActiveWork(state);
+    return { phase, slot: null };
+  }
+  clearActiveWork(state);
+  if (slot.type === "activity") state.activeActivityId = slot.id;
+  if (slot.type === "skill") state.activeSkillLearningId = slot.id;
+  if (slot.type === "project") state.activeProjectId = slot.id;
+  return { phase, slot };
+}
+
+function markSchedulePhaseDone(state, phaseId) {
+  if (!phaseId || state.scheduleCompletedPhases.includes(phaseId)) return;
+  state.scheduleCompletedPhases.push(phaseId);
+}
+
 function applyWorldEventTriggers(state, fromDay, toDay, messages = []) {
   if (toDay < fromDay) return;
   state.triggeredWorldEvents = Array.isArray(state.triggeredWorldEvents) ? state.triggeredWorldEvents : [];
@@ -1310,12 +1653,20 @@ function getWorkModifiers(state, type, item, overtime) {
 }
 
 function settleTime(state, now = Date.now(), options = {}) {
+  ensureScheduleForCurrentDay(state);
   clearCompletedSkillLearning(state);
   const maxSeconds = options.maxSeconds ?? OFFLINE_CAP_SECONDS;
   const elapsedSeconds = Math.max(0, Math.floor((now - state.lastTick) / 1000));
   const seconds = Math.min(elapsedSeconds, maxSeconds);
   const messages = [];
   const applyWorldEffects = options.randomEvents !== false;
+
+  if (isSchedulePauseMinute(state) && !hasManualActiveWork(state)) {
+    state.waitingForSchedule = true;
+    clearActiveWork(state);
+    state.lastTick = now;
+    return { seconds: 0, messages: ["09:00 到了，请先用 plan 安排并确认今日日程。"] };
+  }
 
   if (seconds <= 0) {
     state.lastTick = now;
@@ -1325,17 +1676,29 @@ function settleTime(state, now = Date.now(), options = {}) {
   const beforeResources = snapshotResources(state.resources);
   const result = { deltas: {}, levelUps: 0, lowEnergy: false, overtime: false, activityName: null, activeSeconds: 0 };
   let remainingMinutes = seconds;
+  let processedSeconds = 0;
   state.currentDailyActionMinutesLimit = calculateDailyActionMinutesLimit(state);
   if (applyWorldEffects) applyWorldEventTriggers(state, getWorldCalendar(state.worldTimeMinutes).day, getWorldCalendar(state.worldTimeMinutes).day, messages);
 
   while (remainingMinutes > 0) {
+    ensureScheduleForCurrentDay(state);
+    if (isSchedulePauseMinute(state) && !hasManualActiveWork(state)) {
+      state.waitingForSchedule = true;
+      clearActiveWork(state);
+      messages.push("09:00 到了，请先用 plan 安排并确认今日日程。");
+      break;
+    }
     const currentCalendar = getWorldCalendar(state.worldTimeMinutes);
     const minutesToNextDay = MINUTES_PER_DAY - (state.worldTimeMinutes % MINUTES_PER_DAY);
-    const segmentMinutes = Math.min(60, remainingMinutes, minutesToNextDay);
+    const scheduleContext = state.lockedSchedule ? syncScheduledActiveMode(state) : null;
+    const minutesToNextBoundary = minutesToNextScheduleBoundary(state.worldTimeMinutes);
+    const segmentMinutes = Math.min(60, remainingMinutes, minutesToNextDay, minutesToNextBoundary);
     const beforeDay = currentCalendar.day;
     const mode = getActiveMode(state);
-    const hasActiveWork = mode.type !== "idle";
-    const overtime = applyWorldEffects && hasActiveWork && state.dailyActionMinutesUsed >= state.currentDailyActionMinutesLimit;
+    const hasActiveWork = state.lockedSchedule ? Boolean(scheduleContext && scheduleContext.slot) && mode.type !== "idle" : mode.type !== "idle";
+    const overtime = state.lockedSchedule
+      ? Boolean(scheduleContext && scheduleContext.phase && scheduleContext.phase.overtime && hasActiveWork)
+      : applyWorldEffects && hasActiveWork && state.dailyActionMinutesUsed >= state.currentDailyActionMinutesLimit;
     if (hasActiveWork) {
       state.dailyActionMinutesUsed += segmentMinutes;
       result.overtime = result.overtime || overtime;
@@ -1351,14 +1714,21 @@ function settleTime(state, now = Date.now(), options = {}) {
       } else if (mode.type === "skill") {
         const modifiers = getWorkModifiers(state, "skill", mode.item, overtime);
         messages.push(...settleSkillLearning(state, mode.item, segmentMinutes, modifiers));
+        if (scheduleContext && getSkillLevel(state, mode.item.id) > 0) markSchedulePhaseDone(state, scheduleContext.phase.id);
       } else if (mode.type === "project") {
         const modifiers = getWorkModifiers(state, "project", mode.item, overtime);
         messages.push(...settleProject(state, mode.item, segmentMinutes, { ...options, ...modifiers }));
+        if (scheduleContext && !state.activeProjectId && !state.projectProgress[mode.item.id]) markSchedulePhaseDone(state, scheduleContext.phase.id);
       }
     }
 
     state.worldTimeMinutes += segmentMinutes;
     remainingMinutes -= segmentMinutes;
+    processedSeconds += segmentMinutes;
+    if (scheduleContext && scheduleContext.phase) {
+      const minuteOfDay = state.worldTimeMinutes % MINUTES_PER_DAY;
+      if (minuteOfDay === scheduleContext.phase.end) markSchedulePhaseDone(state, scheduleContext.phase.id);
+    }
     const afterDay = getWorldCalendar(state.worldTimeMinutes).day;
     if (afterDay !== beforeDay) {
       if (applyWorldEffects) {
@@ -1370,6 +1740,12 @@ function settleTime(state, now = Date.now(), options = {}) {
       }
     }
     if (applyWorldEffects) checkProjectDeadlines(state, messages);
+    const calendar = getWorldCalendar(state.worldTimeMinutes);
+    if (calendar.hour === 9 && calendar.minute === 0 && state.lockedSchedule && state.lockedSchedule.day !== calendar.day) {
+      resetScheduleForCurrentDay(state);
+      messages.push("新的一天 09:00 到了，请先用 plan 安排并确认今日日程。");
+      break;
+    }
   }
 
   const changedResources = formatChangedResources(beforeResources, state.resources);
@@ -1387,8 +1763,8 @@ function settleTime(state, now = Date.now(), options = {}) {
     messages.push("今日预算已耗尽，进入低效加班：产出下降，压力和质量风险上升。");
   }
 
-  if (options.randomEvents && seconds > 0) {
-    const eventChance = Math.min(0.35, seconds / 3600 * 0.12);
+  if (options.randomEvents && processedSeconds > 0) {
+    const eventChance = Math.min(0.35, processedSeconds / 3600 * 0.12);
     const rng = options.rng || Math.random;
     if (rng() < eventChance) {
       const event = content.randomEvents[Math.floor(rng() * content.randomEvents.length)];
@@ -1402,7 +1778,8 @@ function settleTime(state, now = Date.now(), options = {}) {
   state.lastTick = now;
   clampState(state);
   clearCompletedSkillLearning(state);
-  return { seconds, messages };
+  syncScheduledActiveMode(state);
+  return { seconds: processedSeconds, messages };
 }
 
 function startActivity(state, id) {
@@ -1630,17 +2007,19 @@ function formatNextAdvice(state) {
   clearCompletedSkillLearning(state);
   const claimable = getClaimableGoals(state);
   if (claimable.length) return `建议：目标 ${claimable[0].name} 已完成，先 claim ${claimable[0].id} 领取奖励。`;
+  if (state.waitingForSchedule) return "建议：先用 plan 安排上午、下午和可选晚上，再 plan confirm。";
   if (state.activeSkillLearningId) return "建议：技能学习中，wait 或保持在线完成学习。";
   if (state.activeProjectId) return "建议：项目进行中，降低 Bug、技术债和压力可以提高交付成功率。";
-  if (!state.activeActivityId) return "建议：先 start feature-coding 或 start study，选择当前要推进的活动。";
-  if (state.resources.energy < 15 && state.activeActivityId !== "rest") return "建议：精力偏低，切到 start rest 恢复后再产出。";
-  if ((state.resources.pressure || 0) >= 70 && state.activeActivityId !== "rest") return "建议：压力偏高，切到 start rest 降压。";
-  if ((state.resources.bugs || 0) >= 25) return "建议：Bug 偏多，切到 start bug-hunting。";
-  if ((state.resources.techDebt || 0) >= 50) return "建议：技术债偏高，切到 start refactoring 或 start architecture。";
-  return "建议：查看 activities 选择当前最缺的资源，再用 goals 确认主线目标。";
+  if (!state.activeActivityId) return "建议：当前阶段在休整或任务已完成，等待下个阶段。";
+  if (state.resources.energy < 15 && state.activeActivityId !== "rest") return "建议：精力偏低，明天给某个阶段安排 rest。";
+  if ((state.resources.pressure || 0) >= 70 && state.activeActivityId !== "rest") return "建议：压力偏高，明天给某个阶段安排 rest。";
+  if ((state.resources.bugs || 0) >= 25) return "建议：Bug 偏多，明天安排 bug-hunting。";
+  if ((state.resources.techDebt || 0) >= 50) return "建议：技术债偏高，明天安排 refactoring 或 architecture。";
+  return "建议：查看 plan 确认今日阶段，或用 goals 确认主线目标。";
 }
 
 function formatState(state) {
+  syncScheduledActiveMode(state);
   clearCompletedSkillLearning(state);
   const role = roleById(state.currentRole);
   const active = activityById(state.activeActivityId);
@@ -1649,14 +2028,16 @@ function formatState(state) {
   const projectProgress = activeProject ? getProjectProgress(state, activeProject) : null;
   const skillLearningProgress = activeSkill ? getSkillLearningProgress(state, activeSkill) : null;
   const learnedSkills = content.skills.filter((skill) => getSkillLevel(state, skill.id) > 0).map((skill) => formatSkillProgress(state, skill.id));
-  const dailyTime = getDailyTimeStatus(state);
   const activeEvents = getActiveWorldEvents(state);
+  const currentPhase = getCurrentSchedulePhase(state.worldTimeMinutes);
   return [
     `档案：${state.profileId} - ${state.profileName}`,
     `人物卡：${getCharacterCardName(state.characterCardId)}`,
     `职位：${role ? role.name : state.currentRole}`,
     `世界时间：${formatWorldCalendar(state)}`,
-    `今日预算：${dailyTime.label}（剩余 ${formatNumber(dailyTime.remaining)}m）`,
+    `当前阶段：${currentPhase ? `${currentPhase.name} ${formatScheduleTimeRange(currentPhase)}` : "休整"}`,
+    `日程状态：${state.lockedSchedule ? "已确认" : "等待确认"}`,
+    formatSchedule(state),
     `本周重点：${formatWeeklyFocus(state)}`,
     `当前事件：${activeEvents.length ? activeEvents.map((event) => event.name).join("，") : "暂无"}`,
     formatNearestDeadline(state),
@@ -1684,15 +2065,22 @@ function helpText() {
   return [
     "命令：",
     "  status                 查看状态",
+    "  plan                   查看今日日程",
+    "  plan morning activity <id>   安排上午活动",
+    "  plan afternoon skill <id>    安排下午学习",
+    "  plan evening project <id>    安排晚上项目（加班）",
+    "  plan evening none            晚上休整",
+    "  plan confirm           确认今日日程，确认后不可修改",
+    "  plan clear             清空未确认的日程草稿",
     "  activities             查看活动列表",
     "  events                 查看当前世界事件",
-    "  start <id>             开始一个持续活动",
-    "  stop                   停止当前活动",
+    "  start <id>             旧入口：提示改用 plan",
+    "  stop                   暂停当前底层任务（调试用）",
     "  week <focus>           设置本周重点：learning|project|freelance|quality|balanced",
-    "  learn <id>             开始或继续学习技能",
+    "  learn <id>             旧入口：提示改用 plan",
     "  upgrade <id>           消耗技能经验和资源升级技能",
     "  buy <id>               买工具",
-    "  project <id>           开始或继续项目",
+    "  project <id>           旧入口：提示改用 plan",
     "  promote                申请晋升",
     "  goals                  查看目标链",
     "  claim [id|all]         领取已完成目标奖励",
@@ -1796,6 +2184,52 @@ function getActivityOptions(state) {
       command: unlocked ? `start ${activity.id}` : null
     };
   });
+}
+
+function getScheduleOptions(state) {
+  ensureScheduleForCurrentDay(state);
+  const schedule = state.lockedSchedule || state.scheduleDraft;
+  const currentPhase = getCurrentSchedulePhase(state.worldTimeMinutes);
+  const phaseOptions = SCHEDULE_PHASES.map((phase) => {
+    const slot = schedule.slots[phase.id];
+    const confirmed = Boolean(state.lockedSchedule);
+    return {
+      id: phase.id,
+      name: phase.name,
+      description: `${formatScheduleTimeRange(phase)}${phase.overtime ? "，加班阶段" : ""}`,
+      status: currentPhase && currentPhase.id === phase.id ? "当前阶段" : state.scheduleCompletedPhases.includes(phase.id) ? "已完成" : slot ? "已安排" : phase.required ? "必填" : "可选",
+      phaseId: phase.id,
+      slot,
+      effects: describeScheduleSlot(slot),
+      progress: confirmed ? "已确认，今日不可修改" : "选中阶段后，到活动/技能/项目面板按 Enter 写入草稿。",
+      command: null
+    };
+  });
+
+  return [
+    ...phaseOptions,
+    {
+      id: "evening-none",
+      name: "晚上休整",
+      description: "晚上不安排任务，避免加班压力。",
+      status: state.lockedSchedule ? "已锁定" : "可选择",
+      command: state.lockedSchedule ? null : "plan evening none"
+    },
+    {
+      id: "confirm",
+      name: "确认日程",
+      description: "确认后扣除学习/项目资源，今日不可再修改。",
+      status: state.lockedSchedule ? "已确认" : "待确认",
+      command: state.lockedSchedule ? null : "plan confirm"
+    },
+    {
+      id: "clear",
+      name: "清空草稿",
+      description: "只影响未确认的今日日程草稿。",
+      status: state.lockedSchedule ? "已锁定" : "可清空",
+      command: state.lockedSchedule ? null : "plan clear"
+    }
+  ];
 }
 
 function getCharacterCardOptions(options = {}) {
@@ -1993,6 +2427,7 @@ function getManagementOptions(state, type) {
 }
 
 function getGameViewModel(state) {
+  syncScheduledActiveMode(state);
   clearCompletedSkillLearning(state);
   const role = roleById(state.currentRole);
   const characterCard = characterCardById(state.characterCardId);
@@ -2006,6 +2441,8 @@ function getGameViewModel(state) {
   const calendar = getWorldCalendar(state.worldTimeMinutes);
   const dailyTime = getDailyTimeStatus(state);
   const weeklyFocus = getWeeklyFocus(state);
+  const currentPhase = getCurrentSchedulePhase(state.worldTimeMinutes);
+  const schedule = state.lockedSchedule || state.scheduleDraft || createScheduleDraft(calendar.day);
   const activeWorldEvents = getActiveWorldEvents(state).map((event) => ({
     id: event.id,
     name: event.name,
@@ -2019,6 +2456,35 @@ function getGameViewModel(state) {
     title: "代码人生",
     calendar,
     dailyTime,
+    schedule: {
+      day: schedule.day,
+      confirmed: Boolean(state.lockedSchedule),
+      waiting: Boolean(state.waitingForSchedule),
+      currentPhase: currentPhase ? {
+        id: currentPhase.id,
+        name: currentPhase.name,
+        start: currentPhase.start,
+        end: currentPhase.end,
+        timeRange: formatScheduleTimeRange(currentPhase),
+        overtime: Boolean(currentPhase.overtime)
+      } : null,
+      slots: SCHEDULE_PHASES.map((phase) => ({
+        id: phase.id,
+        name: phase.name,
+        timeRange: formatScheduleTimeRange(phase),
+        required: phase.required,
+        overtime: Boolean(phase.overtime),
+        completed: state.scheduleCompletedPhases.includes(phase.id),
+        slot: schedule.slots[phase.id],
+        label: describeScheduleSlot(schedule.slots[phase.id])
+      })),
+      options: getScheduleOptions(state),
+      actions: {
+        confirm: state.lockedSchedule ? null : "plan confirm",
+        clear: state.lockedSchedule ? null : "plan clear",
+        eveningNone: state.lockedSchedule ? null : "plan evening none"
+      }
+    },
     weeklyFocus,
     activeWorldEvents,
     nearestDeadline,
@@ -2564,7 +3030,7 @@ function processCommand(state, input, options = {}) {
   const command = parts[0];
   const args = parts.slice(1);
   const arg = args[0];
-  if (!trimmed.startsWith("wait ")) {
+  if (!trimmed.startsWith("wait ") && !trimmed.startsWith("plan")) {
     messages.push(...settleTime(state, now, { randomEvents: options.randomEvents, rng: options.rng }).messages);
   }
 
@@ -2578,17 +3044,20 @@ function processCommand(state, input, options = {}) {
     case "events":
       messages.push(formatWorldEvents(state));
       break;
+    case "plan":
+      messages.push(processPlanCommand(state, args));
+      break;
     case "week":
       messages.push(arg ? setWeeklyFocus(state, arg) : `本周重点：${formatWeeklyFocus(state)}。用法：week <learning|project|freelance|quality|balanced>`);
       break;
     case "start":
-      messages.push(arg ? startActivity(state, arg) : "用法：start <activityId>");
+      messages.push(arg ? `start 不再立即执行。请使用 plan morning activity ${arg} 或 plan afternoon activity ${arg} 安排到今日日程。` : "用法：plan <morning|afternoon|evening> activity <activityId>");
       break;
     case "stop":
       messages.push(stopActivity(state));
       break;
     case "learn":
-      messages.push(arg ? learnSkill(state, arg) : "用法：learn <id>");
+      messages.push(arg ? `learn 不再立即执行。请使用 plan morning skill ${arg} 或 plan afternoon skill ${arg} 安排学习。` : "用法：plan <morning|afternoon|evening> skill <id>");
       break;
     case "upgrade":
       messages.push(arg ? upgradeSkill(state, arg) : "用法：upgrade <id>");
@@ -2597,7 +3066,7 @@ function processCommand(state, input, options = {}) {
       messages.push(arg ? buyTool(state, arg) : "用法：buy <id>");
       break;
     case "project":
-      messages.push(arg ? submitProject(state, arg) : "用法：project <id>");
+      messages.push(arg ? `project 不再立即执行。请使用 plan morning project ${arg} 或 plan afternoon project ${arg} 安排项目。` : "用法：plan <morning|afternoon|evening> project <id>");
       break;
     case "promote":
       messages.push(promote(state));
@@ -2778,7 +3247,9 @@ module.exports = {
   ATTRIBUTE_NAMES,
   DEFAULT_ATTRIBUTES,
   OFFLINE_CAP_SECONDS,
+  SAVE_VERSION,
   SAVE_PATH,
+  SCHEDULE_PHASES,
   WORLD_START_MINUTES,
   addAttributeExp,
   buyTool,
@@ -2797,6 +3268,7 @@ module.exports = {
   formatLiveStatus,
   formatNearestDeadline,
   formatState,
+  formatSchedule,
   formatWorldCalendar,
   formatWorldEvents,
   calculateDailyActionMinutesLimit,
@@ -2814,6 +3286,7 @@ module.exports = {
   getNearestDeadline,
   getProductionRisk,
   getProfileOptions,
+  getScheduleOptions,
   getProjectProgress,
   getProjectSuccessRate,
   getSkillProgress,
@@ -2826,6 +3299,7 @@ module.exports = {
   loadProfile,
   normalizeState,
   processCommand,
+  processPlanCommand,
   promote,
   qualityPenalty,
   replaceStateContents,

@@ -80,8 +80,10 @@ test("新存档默认没有活动，并初始化职业资源和活动等级", ()
   assert.equal(getActivityLevel(state, "study"), 1);
 });
 
-test("旧存档会补齐活动字段、职业资源和目标领取记录", () => {
+test("旧存档加载为 v2 新状态，只保留档案元信息", () => {
   const state = normalizeState({
+    profileId: "legacy",
+    profileName: "旧档案",
     resources: { codeLines: 10, exp: 5, money: 30 },
     unlockedSkills: ["html-css"],
     attributes: { logic: 999, focus: -2 },
@@ -92,16 +94,20 @@ test("旧存档会补齐活动字段、职业资源和目标领取记录", () =>
   assert.equal(state.activeActivityId, null);
   assert.equal(state.activeProjectId, null);
   assert.deepEqual(state.projectProgress, {});
+  assert.equal(state.profileId, "legacy");
+  assert.equal(state.profileName, "旧档案");
+  assert.equal(state.saveVersion, 2);
   assert.equal(state.resources.knowledge, 0);
   assert.equal(Object.hasOwn(state.resources, "exp"), false);
   assert.deepEqual(state.claimedGoals, []);
-  assert.equal(getSkillProgress(state, "html-css").level, 1);
+  assert.equal(getSkillProgress(state, "html-css").level, 0);
   assert.equal(getActivityLevel(state, "feature-coding"), 1);
-  assert.equal(state.attributes.logic, 100);
-  assert.equal(state.attributes.focus, 1);
+  assert.equal(state.attributes.logic, DEFAULT_ATTRIBUTES.logic);
+  assert.equal(state.attributes.focus, DEFAULT_ATTRIBUTES.focus);
   assert.equal(state.attributes.learning, DEFAULT_ATTRIBUTES.learning);
-  assert.equal(getEffectiveAttribute(state, "logic"), 104);
+  assert.equal(getEffectiveAttribute(state, "logic"), DEFAULT_ATTRIBUTES.logic);
   assert.equal(state.characterCardId, null);
+  assert.equal(state.waitingForSchedule, true);
 });
 
 test("新存档初始化世界日历、每日预算和周重点", () => {
@@ -118,6 +124,7 @@ test("新存档初始化世界日历、每日预算和周重点", () => {
 test("世界时间按现实秒推进为游戏分钟并跨周月年", () => {
   const start = 1_700_000_000_000;
   const state = createNewState(start);
+  startActivity(state, "rest");
 
   settleTime(state, start + 60_000, { randomEvents: false });
   assert.equal(getWorldCalendar(state.worldTimeMinutes).hhmm, "10:00");
@@ -255,7 +262,7 @@ test("项目内容提供描述、长工时且不含基础经验奖励", () => {
   assert.equal(content.projects.find((project) => project.id === "rag-assistant").minWorkHours, 36);
 });
 
-test("旧单存档作为 default 档案兼容加载", () => {
+test("旧单存档作为 default 档案加载时重置为 v2 新进度", () => {
   const saveRoot = createTempSaveRoot();
   const savePath = path.join(saveRoot, "code-life.json");
   fs.writeFileSync(savePath, JSON.stringify({
@@ -268,8 +275,10 @@ test("旧单存档作为 default 档案兼容加载", () => {
 
   assert.equal(state.profileId, "default");
   assert.equal(state.profileName, "默认档案");
+  assert.equal(state.saveVersion, 2);
   assert.equal(Object.hasOwn(state.resources, "exp"), false);
-  assert.equal(state.resources.money, 99);
+  assert.equal(state.resources.money, 30);
+  assert.equal(state.waitingForSchedule, true);
   assert.equal(profiles.find((item) => item.id === "default").exists, true);
 });
 
@@ -338,18 +347,91 @@ function replaceCurrentProfileForTest(state, id) {
   state.profileName = id === "default" ? "默认档案" : id;
 }
 
-test("没有当前活动时，时间结算不会默认写代码", () => {
+test("未确认日程时 09:00 暂停且不会积压离线时间", () => {
   const now = 1_700_000_000_000;
   const state = createNewState(now);
 
   const result = settleTime(state, now + 60_000, { randomEvents: false });
 
-  assert.equal(result.seconds, 60);
-  assert.deepEqual(result.messages, []);
+  assert.equal(result.seconds, 0);
+  assert.match(result.messages.join("\n"), /09:00/);
+  assert.equal(getWorldCalendar(state.worldTimeMinutes).hhmm, "09:00");
   assert.equal(state.resources.codeLines, 0);
   assert.equal(Object.hasOwn(state.resources, "exp"), false);
   assert.equal(state.stats.totalCodeLines, 0);
   assert.equal(state.lastTick, now + 60_000);
+});
+
+test("plan confirm 校验必填阶段和资源，失败不扣资源", () => {
+  const state = createNewState(1_700_000_000_000);
+  const before = { ...state.resources };
+
+  let message = processCommand(state, "plan morning activity feature-coding").messages.join("\n");
+  assert.match(message, /已安排 上午/);
+
+  message = processCommand(state, "plan confirm").messages.join("\n");
+  assert.match(message, /下午 必须安排任务/);
+  assert.deepEqual(state.resources, before);
+
+  message = processCommand(state, "plan afternoon skill html-css").messages.join("\n");
+  assert.match(message, /已安排 下午/);
+
+  message = processCommand(state, "plan confirm").messages.join("\n");
+  assert.match(message, /资源不足/);
+  assert.deepEqual(state.resources, before);
+  assert.equal(state.lockedSchedule, null);
+});
+
+test("确认日程后按阶段执行，且确认后不可修改", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+
+  processCommand(state, "plan morning activity feature-coding");
+  processCommand(state, "plan afternoon activity study");
+  processCommand(state, "plan evening none");
+  const confirmed = processCommand(state, "plan confirm").messages.join("\n");
+  assert.match(confirmed, /今日日程已确认/);
+
+  const changed = processCommand(state, "plan morning activity rest").messages.join("\n");
+  assert.match(changed, /不能修改/);
+
+  settleTime(state, now + 60_000, { randomEvents: false });
+  assert.ok(state.resources.codeLines > 0);
+  assert.equal(state.activeActivityId, "feature-coding");
+
+  settleTime(state, now + 3 * 60_000, { randomEvents: false });
+  assert.equal(getWorldCalendar(state.worldTimeMinutes).hhmm, "12:00");
+  assert.equal(state.activeActivityId, null);
+
+  settleTime(state, now + 5 * 60_000, { randomEvents: false });
+  assert.equal(getWorldCalendar(state.worldTimeMinutes).hhmm, "14:00");
+  assert.equal(state.activeActivityId, "study");
+});
+
+test("晚上 none 不产生加班压力，同一技能多阶段只扣一次资源", () => {
+  const now = 1_700_000_000_000;
+  const rest = createNewState(now);
+  processCommand(rest, "plan morning activity rest");
+  processCommand(rest, "plan afternoon activity rest");
+  processCommand(rest, "plan evening none");
+  processCommand(rest, "plan confirm");
+  rest.worldTimeMinutes = 18 * 60;
+  rest.lastTick = now;
+  const pressureBefore = rest.resources.pressure;
+  settleTime(rest, now + 60_000, { randomEvents: false });
+  assert.equal(rest.resources.pressure, pressureBefore);
+  assert.equal(rest.activeActivityId, null);
+
+  const skill = createNewState(now);
+  skill.resources.knowledge = 40;
+  skill.resources.money = 20;
+  processCommand(skill, "plan morning skill html-css");
+  processCommand(skill, "plan afternoon skill html-css");
+  processCommand(skill, "plan evening none");
+  const confirmed = processCommand(skill, "plan confirm").messages.join("\n");
+  assert.match(confirmed, /今日日程已确认/);
+  assert.equal(skill.resources.knowledge, 0);
+  assert.equal(skill.resources.money, 0);
 });
 
 test("start feature-coding 后只结算写功能活动", () => {
@@ -369,7 +451,7 @@ test("start feature-coding 后只结算写功能活动", () => {
   assert.ok(state.activityStats.byActivity["feature-coding"] >= 60);
 });
 
-test("切换活动会先结算旧活动，再设置新活动", () => {
+test("start 命令不再立即切换活动，只提示使用日程", () => {
   const now = 1_700_000_000_000;
   const state = createNewState(now);
   startActivity(state, "feature-coding");
@@ -378,8 +460,8 @@ test("切换活动会先结算旧活动，再设置新活动", () => {
 
   assert.match(message, /写功能 60 秒：/);
   assert.match(message, /代码 \+\d+（\d+）/);
-  assert.match(message, /开始活动：系统学习/);
-  assert.equal(state.activeActivityId, "study");
+  assert.match(message, /start 不再立即执行/);
+  assert.equal(state.activeActivityId, "feature-coding");
   assert.ok(state.resources.codeLines > 0);
 });
 

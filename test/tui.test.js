@@ -9,10 +9,13 @@ const {
   getCharacterCardOptions,
   getGameViewModel,
   getProfileOptions,
-  loadProfile
+  loadProfile,
+  processCommand,
+  settleTime
 } = require("../src/game");
 const {
   MAX_LOGS,
+  TUI_CLOCK_TICK_MS,
   appendLogEntries,
   calculateLayoutBudget,
   createLogEntries,
@@ -25,9 +28,13 @@ const {
   handleProfileEnterKeypress,
   handleProfileDeleteKeypress,
   normalizeLogMessages,
+  pauseGameClock,
   profileDeleteUnavailableMessage,
+  processTuiCommand,
+  resumeGameClock,
   resolveProfileDeleteKeypress,
-  shouldExitProfileCreationMode
+  shouldExitProfileCreationMode,
+  syncPausedClock
 } = require("../src/tui");
 
 function createTempSaveRoot() {
@@ -109,6 +116,10 @@ test("calculateLayoutBudget falls back to 24 rows and expands taller terminals",
   assert.ok(tall.pageSize >= fallback.pageSize);
 });
 
+test("TUI world clock refreshes once per second", () => {
+  assert.equal(TUI_CLOCK_TICK_MS, 1000);
+});
+
 test("getPageWindow follows the selected absolute index", () => {
   assert.deepEqual(getPageWindow(0, 0, 5), { start: 0, end: 0, page: 0, pageCount: 0, pageSize: 5 });
   assert.deepEqual(getPageWindow(10, 0, 4), { start: 0, end: 4, page: 0, pageCount: 3, pageSize: 4 });
@@ -172,6 +183,88 @@ test("getOptionProgress freezes animated progress while paused", () => {
     text: "4 分钟/10 分钟"
   });
   assert.equal(getOptionProgress({ name: "无进度" }), null);
+});
+
+test("pause and resume drops real time spent paused", () => {
+  const start = 1_700_000_000_000;
+  const state = createNewState(start);
+  processCommand(state, "plan morning activity feature-coding");
+  processCommand(state, "plan afternoon activity study");
+  processCommand(state, "plan evening none");
+  processCommand(state, "plan confirm");
+  const initialWorldTime = state.worldTimeMinutes;
+
+  const pauseAt = start + 60_000;
+  const paused = pauseGameClock(state, pauseAt, { randomEvents: false });
+  assert.equal(paused.seconds, 60);
+  assert.equal(state.worldTimeMinutes, initialWorldTime + 60);
+
+  const resumeAt = pauseAt + 10 * 60_000;
+  resumeGameClock(state, resumeAt);
+  const resumed = settleTime(state, resumeAt + 1000, { randomEvents: false });
+
+  assert.equal(resumed.seconds, 1);
+  assert.equal(state.worldTimeMinutes, initialWorldTime + 61);
+});
+
+test("pausing first settles time up to the pause keypress", () => {
+  const start = 1_700_000_000_000;
+  const state = createNewState(start);
+  processCommand(state, "plan morning activity feature-coding");
+  processCommand(state, "plan afternoon activity study");
+  processCommand(state, "plan evening none");
+  processCommand(state, "plan confirm");
+  const initialWorldTime = state.worldTimeMinutes;
+  const codeBefore = state.resources.codeLines;
+
+  const result = pauseGameClock(state, start + 2_000, { randomEvents: false });
+
+  assert.equal(result.seconds, 2);
+  assert.equal(state.lastTick, start + 2_000);
+  assert.equal(state.worldTimeMinutes, initialWorldTime + 2);
+  assert.ok(state.resources.codeLines > codeBefore);
+});
+
+test("paused TUI commands sync lastTick before processCommand can settle time", () => {
+  const start = 1_700_000_000_000;
+  const state = createNewState(start);
+  processCommand(state, "plan morning activity feature-coding");
+  processCommand(state, "plan afternoon activity study");
+  processCommand(state, "plan evening none");
+  processCommand(state, "plan confirm");
+  pauseGameClock(state, start + 1000, { randomEvents: false });
+  const pausedWorldTime = state.worldTimeMinutes;
+  const pausedCode = state.resources.codeLines;
+  const commandAt = start + 10 * 60_000;
+
+  const status = processTuiCommand(state, "status", { paused: true, now: commandAt, randomEvents: false });
+
+  assert.match(status.messages.join("\n"), /当前/);
+  assert.equal(state.lastTick, commandAt);
+  assert.equal(state.worldTimeMinutes, pausedWorldTime);
+  assert.equal(state.resources.codeLines, pausedCode);
+
+  resumeGameClock(state, commandAt);
+  const resumed = settleTime(state, commandAt + 1000, { randomEvents: false });
+  assert.equal(resumed.seconds, 1);
+  assert.equal(state.worldTimeMinutes, pausedWorldTime + 1);
+});
+
+test("syncPausedClock lets paused saves discard paused real time", () => {
+  const start = 1_700_000_000_000;
+  const state = createNewState(start);
+  processCommand(state, "plan morning activity feature-coding");
+  processCommand(state, "plan afternoon activity study");
+  processCommand(state, "plan evening none");
+  processCommand(state, "plan confirm");
+  pauseGameClock(state, start + 1000, { randomEvents: false });
+
+  const synced = syncPausedClock(state, start + 600_000);
+
+  assert.equal(synced, start + 600_000);
+  assert.equal(state.lastTick, start + 600_000);
+  const resumed = settleTime(state, start + 601_000, { randomEvents: false });
+  assert.equal(resumed.seconds, 1);
 });
 
 test("getCharacterCardAttributeRows pairs initial card attributes with current growth", () => {
