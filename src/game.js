@@ -67,6 +67,38 @@ const SKILL_UPGRADE_RESOURCE_MULTIPLIERS = { 2: 1, 3: 2, 4: 4, 5: 7 };
 const WORLD_START_MINUTES = 9 * 60;
 const MINUTES_PER_DAY = 24 * 60;
 const SAVE_VERSION = 2;
+const ENERGY_MAX = 100;
+const ENERGY_STATUS_DEFS = [
+  { id: "depleted", name: "枯竭", min: 0, max: 0, productivityMultiplier: 0, riskMultiplier: 1.75 },
+  { id: "overdrawn", name: "透支", min: 1, max: 29, productivityMultiplier: 0.55, riskMultiplier: 1.75 },
+  { id: "tired", name: "疲惫", min: 30, max: 59, productivityMultiplier: 0.8, riskMultiplier: 1.25 },
+  { id: "stable", name: "平稳", min: 60, max: 89, productivityMultiplier: 1, riskMultiplier: 1 },
+  { id: "full", name: "充沛", min: 90, max: 100, productivityMultiplier: 1.1, riskMultiplier: 0.9 }
+];
+const ACTIVITY_ENERGY_COST_PER_HOUR = {
+  study: 6,
+  documentation: 6,
+  "prompt-engineering": 6,
+  "feature-coding": 8,
+  "bug-hunting": 8,
+  refactoring: 8,
+  testing: 8,
+  "open-source": 8,
+  "code-review": 8,
+  freelancing: 10,
+  architecture: 10,
+  "performance-tuning": 10,
+  "incident-response": 12
+};
+const SKILL_ENERGY_COST_PER_HOUR = 7;
+const PROJECT_ENERGY_COST_PER_HOUR_BY_DIFFICULTY = { 1: 8, 2: 8, 3: 10, 4: 12, 5: 14 };
+const REST_RECOVERY_PER_HOUR = {
+  active: 4,
+  rest_noon: 10,
+  rest_evening: 7,
+  rest_night: 5
+};
+const SIDE_HUSTLE_ENERGY_COST_PER_HOUR = 8;
 const SCHEDULE_PHASES = [
   { id: "morning", name: "上午", start: 9 * 60, end: 12 * 60, required: true },
   { id: "afternoon", name: "下午", start: 14 * 60, end: 18 * 60, required: true },
@@ -101,7 +133,7 @@ const LIFESTYLE_STANCES = {
   cyber_gaming: {
     id: "cyber_gaming",
     name: "Cyber Gaming",
-    description: "用赛博娱乐快速降压，深夜会压低次日精力上限。"
+    description: "用赛博娱乐快速降压，但恢复精力较慢。"
   },
   side_hustle: {
     id: "side_hustle",
@@ -241,7 +273,7 @@ function createNewState(now = Date.now(), options = {}) {
     resources: {
       codeLines: 0,
       money: 30,
-      energy: role.maxEnergy,
+      energy: ENERGY_MAX,
       bugs: 0,
       techDebt: 0,
       pressure: 0,
@@ -263,9 +295,6 @@ function createNewState(now = Date.now(), options = {}) {
     weeklyFocus: "balanced",
     lifestyleStanceId: "health",
     pendingLifestyleStanceId: null,
-    pendingMorningEnergyPenalty: 0,
-    pendingMorningEnergyCapMultiplier: 1,
-    dailyEnergyCapMultiplier: 1,
     lastMorningTransitionDay: 1,
     triggeredWorldEvents: [],
     activeProjectDeadlines: {},
@@ -363,9 +392,6 @@ function normalizeState(raw, now = Date.now()) {
     weeklyFocus: normalizeWeeklyFocus(raw && raw.weeklyFocus),
     lifestyleStanceId: normalizeLifestyleStanceId(raw && raw.lifestyleStanceId),
     pendingLifestyleStanceId: normalizePendingLifestyleStanceId(raw && raw.pendingLifestyleStanceId),
-    pendingMorningEnergyPenalty: Math.max(0, Number(raw && raw.pendingMorningEnergyPenalty) || 0),
-    pendingMorningEnergyCapMultiplier: normalizeEnergyCapMultiplier(raw && raw.pendingMorningEnergyCapMultiplier),
-    dailyEnergyCapMultiplier: normalizeEnergyCapMultiplier(raw && raw.dailyEnergyCapMultiplier),
     lastMorningTransitionDay: normalizeLastMorningTransitionDay(raw && raw.lastMorningTransitionDay, raw && raw.worldTimeMinutes),
     triggeredWorldEvents: Array.isArray(raw && raw.triggeredWorldEvents) ? raw.triggeredWorldEvents.filter((id) => WORLD_EVENTS.some((event) => event.id === id)) : [],
     activeProjectDeadlines: normalizeProjectDeadlines(raw && raw.activeProjectDeadlines),
@@ -398,6 +424,9 @@ function normalizeState(raw, now = Date.now()) {
   if (normalized.lockedSchedule) normalized.scheduleDraft = normalizeSchedule(normalized.scheduleDraft, normalized.lockedSchedule.day);
   delete normalized.dailyActionMinutesUsed;
   delete normalized.currentDailyActionMinutesLimit;
+  delete normalized.dailyEnergyCapMultiplier;
+  delete normalized.pendingMorningEnergyCapMultiplier;
+  delete normalized.pendingMorningEnergyPenalty;
   clampState(normalized);
   return normalized;
 }
@@ -417,11 +446,6 @@ function normalizeLifestyleStanceId(value) {
 
 function normalizePendingLifestyleStanceId(value) {
   return value && LIFESTYLE_STANCES[value] ? value : null;
-}
-
-function normalizeEnergyCapMultiplier(value) {
-  const number = Number(value);
-  return Number.isFinite(number) ? clamp(number, 0.5, 1) : 1;
 }
 
 function normalizeLastMorningTransitionDay(value, worldTimeMinutes) {
@@ -597,9 +621,29 @@ function setWeeklyFocus(state, id) {
 }
 
 function getEffectiveMaxEnergy(state) {
-  const role = roleById(state.currentRole) || content.roles[0];
-  const capMultiplier = normalizeEnergyCapMultiplier(state.dailyEnergyCapMultiplier);
-  return Math.max(1, role.maxEnergy * capMultiplier);
+  return ENERGY_MAX;
+}
+
+function getEnergyStatus(valueOrState) {
+  let value = Number(valueOrState);
+  if (typeof valueOrState === "object" && valueOrState !== null) {
+    const resourceEntries = Array.isArray(valueOrState.resources) ? valueOrState.resources : [];
+    const energyEntry = resourceEntries.find((entry) => entry && entry.id === "energy");
+    const candidates = [
+      valueOrState.resources && valueOrState.resources.energy,
+      energyEntry && energyEntry.value,
+      valueOrState.value,
+      valueOrState.energy
+    ];
+    value = candidates.map((candidate) => Number(candidate)).find((candidate) => Number.isFinite(candidate));
+  }
+  if (!Number.isFinite(value)) value = 0;
+  const energy = clamp(value, 0, ENERGY_MAX);
+  return ENERGY_STATUS_DEFS.find((status) => energy >= status.min && energy <= status.max) || ENERGY_STATUS_DEFS[0];
+}
+
+function formatEnergyStatus(state) {
+  return getEnergyStatus(state).name;
 }
 
 function getActiveWorldEvents(state) {
@@ -653,10 +697,10 @@ function getLifestyleOptions(state) {
 
 function formatLifestyleEffectSummary(id) {
   const stanceId = normalizeLifestyleStanceId(id);
-  if (stanceId === "health") return "休整恢复精力并降低压力，抗压越高恢复与减压越强。";
-  if (stanceId === "tech_surfing") return "休整获得知识，专注可带来少量减压，但不恢复精力。";
-  if (stanceId === "cyber_gaming") return "休整快速降低压力，深夜会降低次日精力上限，抗压可缓解代价。";
-  if (stanceId === "side_hustle") return "深夜休整产出金钱和声望并增加压力，次日扣精力；创造、沟通、抗压和专注影响收益与代价。";
+  if (stanceId === "health") return "休整完整恢复精力并降低压力。";
+  if (stanceId === "tech_surfing") return "休整以 40% 速度恢复精力，并获得知识。";
+  if (stanceId === "cyber_gaming") return "休整以 60% 速度恢复精力，并更强降低压力。";
+  if (stanceId === "side_hustle") return "深夜休整改为消耗精力，产出金钱和声望并增加压力。";
   return "";
 }
 
@@ -710,33 +754,34 @@ function mergeDeltas(target, source = {}) {
 function settleLifestyleRest(state, windowId, seconds) {
   const stance = getLifestyleStance(state.lifestyleStanceId);
   const deltas = {};
-  const minutes = Math.max(0, seconds);
-  if (!stance || !windowId || minutes <= 0) return deltas;
+  const duration = Math.max(0, seconds);
+  if (!stance || !windowId || duration <= 0) return deltas;
+  const baseRecoveryPerSecond = perHourToPerSecond(REST_RECOVERY_PER_HOUR[windowId] || 0);
+  const applyRecovery = (multiplier = 1) => {
+    const energyDelta = baseRecoveryPerSecond * Math.max(0, multiplier) * duration;
+    if (energyDelta > 0) deltas.energy = applyResourceDelta(state, "energy", energyDelta);
+  };
 
   if (stance.id === "health") {
-    const resilienceRecovery = 1 + attributeBonus(state, "resilience", 0.003, 0.24);
     const resilienceRelief = 1 + attributeBonus(state, "resilience", 0.004, 0.32);
-    deltas.energy = applyResourceDelta(state, "energy", minutes * 0.2 * resilienceRecovery);
-    deltas.pressure = applyResourceDelta(state, "pressure", -minutes * 0.05 * resilienceRelief);
+    applyRecovery(1);
+    deltas.pressure = applyResourceDelta(state, "pressure", -duration * 0.05 * resilienceRelief);
     return deltas;
   }
 
   if (stance.id === "tech_surfing") {
     const learningBoost = 1 + attributeBonus(state, "learning", 0.003, 0.24);
     const focusRelief = attributeBonus(state, "focus", 0.003, 0.18);
-    deltas.knowledge = applyResourceDelta(state, "knowledge", minutes * 0.06 * learningBoost);
-    if (focusRelief > 0) deltas.pressure = applyResourceDelta(state, "pressure", -minutes * 0.01 * focusRelief);
+    applyRecovery(0.4);
+    deltas.knowledge = applyResourceDelta(state, "knowledge", duration * 0.06 * learningBoost);
+    if (focusRelief > 0) deltas.pressure = applyResourceDelta(state, "pressure", -duration * 0.01 * focusRelief);
     return deltas;
   }
 
   if (stance.id === "cyber_gaming") {
     const resilienceRelief = 1 + attributeBonus(state, "resilience", 0.004, 0.32);
-    deltas.pressure = applyResourceDelta(state, "pressure", -minutes * 0.12 * resilienceRelief);
-    if (windowId === "rest_night") {
-      const penaltyRelief = attributeBonus(state, "resilience", 0.005, 0.4);
-      const capMultiplier = 1 - 0.2 * (1 - penaltyRelief);
-      state.pendingMorningEnergyCapMultiplier = Math.min(normalizeEnergyCapMultiplier(state.pendingMorningEnergyCapMultiplier), capMultiplier);
-    }
+    applyRecovery(0.6);
+    deltas.pressure = applyResourceDelta(state, "pressure", -duration * 0.12 * resilienceRelief);
     return deltas;
   }
 
@@ -744,11 +789,18 @@ function settleLifestyleRest(state, windowId, seconds) {
     const creativityBoost = 1 + attributeBonus(state, "creativity", 0.004, 0.32);
     const communicationBoost = 1 + attributeBonus(state, "communication", 0.003, 0.24);
     const resilienceRelief = attributeBonus(state, "resilience", 0.004, 0.3);
-    const focusRelief = attributeBonus(state, "focus", 0.004, 0.333);
-    deltas.money = applyResourceDelta(state, "money", minutes * 0.035 * creativityBoost);
-    deltas.reputation = applyResourceDelta(state, "reputation", minutes * 0.0008 * communicationBoost);
-    deltas.pressure = applyResourceDelta(state, "pressure", minutes * 0.018 * (1 - resilienceRelief));
-    state.pendingMorningEnergyPenalty = Math.max(Number(state.pendingMorningEnergyPenalty) || 0, 30 * (1 - focusRelief));
+    const energyCostPerSecond = perHourToPerSecond(SIDE_HUSTLE_ENERGY_COST_PER_HOUR);
+    const workSeconds = getAffordableWorkSeconds(state, energyCostPerSecond, duration);
+    if (workSeconds <= 0) return deltas;
+    deltas.energy = consumeWorkEnergy(state, energyCostPerSecond, workSeconds);
+    deltas.money = applyResourceDelta(state, "money", workSeconds * 0.035 * creativityBoost);
+    deltas.reputation = applyResourceDelta(state, "reputation", workSeconds * 0.0008 * communicationBoost);
+    deltas.pressure = applyResourceDelta(state, "pressure", workSeconds * 0.018 * (1 - resilienceRelief));
+    return deltas;
+  }
+
+  if (stance.id === "side_hustle") {
+    applyRecovery(1);
     return deltas;
   }
 
@@ -764,25 +816,24 @@ function getLifestyleRestTickerMeta(state, windowId) {
     return { name: "健康休整", defaultSummary: "恢复精力，降低压力", sideEffectSummary: "" };
   }
   if (stance.id === "tech_surfing") {
-    return { name: "技术浏览", defaultSummary: "获得知识，专注较高时少量降压", sideEffectSummary: "" };
+    return { name: "技术浏览", defaultSummary: "缓慢恢复精力，获得知识", sideEffectSummary: "" };
   }
   if (stance.id === "cyber_gaming") {
-    const night = windowId === "rest_night";
     return {
       name: "赛博娱乐",
-      defaultSummary: night ? "降低压力，并设置次日精力上限惩罚" : "降低压力",
-      sideEffectSummary: night ? "设置次日精力上限惩罚" : ""
+      defaultSummary: "缓慢恢复精力，并降低压力",
+      sideEffectSummary: ""
     };
   }
   if (stance.id === "side_hustle") {
     if (windowId === "rest_night") {
       return {
         name: "独立副业",
-        defaultSummary: "获得金钱和声望，增加压力，并设置次日精力扣除",
-        sideEffectSummary: "设置次日精力扣除"
+        defaultSummary: "消耗精力，获得金钱和声望，并增加压力",
+        sideEffectSummary: ""
       };
     }
-    return { name: "休整（副业只在深夜生效）", defaultSummary: "暂无可见产出", sideEffectSummary: "" };
+    return { name: "副业前休整", defaultSummary: "恢复精力", sideEffectSummary: "" };
   }
   return { name: "休整", defaultSummary: "暂无可见产出", sideEffectSummary: "" };
 }
@@ -803,22 +854,13 @@ function applyMorningTransitionIfDue(state, messages = [], events = []) {
   if (state.lastMorningTransitionDay === calendar.day) return false;
 
   state.lastMorningTransitionDay = calendar.day;
-  state.dailyEnergyCapMultiplier = normalizeEnergyCapMultiplier(state.pendingMorningEnergyCapMultiplier);
-  state.pendingMorningEnergyCapMultiplier = 1;
   clampState(state);
-
-  const energyPenalty = Math.max(0, Number(state.pendingMorningEnergyPenalty) || 0);
-  if (energyPenalty > 0) {
-    applyResourceDelta(state, "energy", -energyPenalty);
-    state.pendingMorningEnergyPenalty = 0;
-  }
 
   if (state.pendingLifestyleStanceId) {
     state.lifestyleStanceId = normalizeLifestyleStanceId(state.pendingLifestyleStanceId);
     state.pendingLifestyleStanceId = null;
   }
 
-  applyResourceDelta(state, "energy", 20);
   applyResourceDelta(state, "pressure", -5);
 
   pushMessageEvent(messages, events, "system", `09:00：${formatLifestyle(state).split("\n")[0]}。`);
@@ -857,8 +899,9 @@ function clampState(state) {
     state.resources[key] = Math.max(0, Number(state.resources[key]) || 0);
   }
   state.resources.pressure = clamp(state.resources.pressure, 0, 100);
-  state.dailyEnergyCapMultiplier = normalizeEnergyCapMultiplier(state.dailyEnergyCapMultiplier);
-  state.pendingMorningEnergyCapMultiplier = normalizeEnergyCapMultiplier(state.pendingMorningEnergyCapMultiplier);
+  delete state.dailyEnergyCapMultiplier;
+  delete state.pendingMorningEnergyCapMultiplier;
+  delete state.pendingMorningEnergyPenalty;
   state.resources.energy = clamp(Number(state.resources.energy) || 0, 0, getEffectiveMaxEnergy(state));
 }
 
@@ -1411,34 +1454,71 @@ function applyResourceDelta(state, key, rawDelta) {
   return state.resources[key] - before;
 }
 
+function perHourToPerSecond(value) {
+  return (Number(value) || 0) / 60;
+}
+
+function getProjectEnergyCostPerHour(project) {
+  const difficulty = clamp(Math.floor(Number(project && project.difficulty) || 1), 1, 5);
+  return PROJECT_ENERGY_COST_PER_HOUR_BY_DIFFICULTY[difficulty] || PROJECT_ENERGY_COST_PER_HOUR_BY_DIFFICULTY[1];
+}
+
+function getActivityEnergyCostPerHour(activity) {
+  if (!activity || activity.id === "rest") return 0;
+  return ACTIVITY_ENERGY_COST_PER_HOUR[activity.id] || 8;
+}
+
+function getWorkEnergyCostPerSecond(mode, overtime = false) {
+  if (!mode || !mode.item) return 0;
+  let perHour = 0;
+  if (mode.type === "activity") perHour = getActivityEnergyCostPerHour(mode.item);
+  if (mode.type === "skill") perHour = SKILL_ENERGY_COST_PER_HOUR;
+  if (mode.type === "project") perHour = getProjectEnergyCostPerHour(mode.item);
+  return perHourToPerSecond(perHour) * (overtime ? 1.25 : 1);
+}
+
+function getAffordableWorkSeconds(state, costPerSecond, seconds) {
+  const duration = Math.max(0, Number(seconds) || 0);
+  const cost = Math.max(0, Number(costPerSecond) || 0);
+  if (duration <= 0 || cost <= 0) return duration;
+  const energy = Math.max(0, Number(state.resources.energy) || 0);
+  if (energy <= 0) return 0;
+  return Math.min(duration, energy / cost);
+}
+
+function consumeWorkEnergy(state, costPerSecond, seconds) {
+  const cost = Math.max(0, Number(costPerSecond) || 0) * Math.max(0, Number(seconds) || 0);
+  return cost > 0 ? applyResourceDelta(state, "energy", -cost) : 0;
+}
+
 function settleActivity(state, activity, seconds, options = {}) {
+  const energyCostPerSecond = Number(options.energyCostPerSecond) || 0;
+  const energyStatus = getEnergyStatus(state);
+  if (activity.id !== "rest" && energyCostPerSecond > 0 && seconds <= 0) {
+    return { deltas: {}, levelUps: 0, lowEnergy: true };
+  }
   const level = getActivityLevel(state, activity.id);
   const activityMultiplier = 1 + (level - 1) * 0.08;
   const attributeMultiplier = 1 + attributeBonus(state, activity.primaryAttribute, 0.0025, 0.22);
   const multipliers = getMultipliers(state);
   const risk = getProductionRisk(state);
-  const maxEnergy = getEffectiveMaxEnergy(state);
-  const lowEnergy = activity.id !== "rest" && state.resources.energy <= 0;
-  const energyFactor = activity.id === "rest" ? 1 : clamp(0.35 + 0.65 * (state.resources.energy || 0) / maxEnergy, 0.35, 1);
-  const lowEnergyPenalty = activity.id !== "rest" && state.resources.energy < 30 ? 0.8 : 1;
   const overtimeRelief = options.overtime ? attributeBonus(state, "focus", 0.003, 0.24) : 0;
   const overtimeFactor = options.overtime ? 0.45 + overtimeRelief * 0.5 : 1;
   const focus = getWeeklyFocus(state);
   const learningFocusFactor = focus.id === "learning" && activity.id === "study" ? focus.learning : 1;
   const qualityActivityIds = new Set(["bug-hunting", "refactoring", "testing", "code-review"]);
   const qualityFactor = focus.id === "quality" && qualityActivityIds.has(activity.id) ? focus.quality : 1;
-  const positiveFactor = activityMultiplier * attributeMultiplier * energyFactor * lowEnergyPenalty * overtimeFactor * learningFocusFactor * qualityFactor;
+  const productivityFactor = activity.id === "rest" ? 1 : energyStatus.productivityMultiplier;
+  const positiveFactor = activityMultiplier * attributeMultiplier * productivityFactor * overtimeFactor * learningFocusFactor * qualityFactor;
   const deltas = {};
 
-  if (activity.energyCostPerSecond > 0) {
-    const focusRelief = attributeBonus(state, "focus", 0.0025, 0.2);
-    deltas.energy = applyResourceDelta(state, "energy", -activity.energyCostPerSecond * (1 - focusRelief) * seconds);
-  }
+  if (energyCostPerSecond > 0) deltas.energy = consumeWorkEnergy(state, energyCostPerSecond, seconds);
 
   for (const [key, value] of Object.entries(activity.effectsPerSecond || {})) {
     let delta = value * seconds;
-    if (delta > 0) delta *= positiveFactor;
-    if (key === "energy" && delta > 0) delta *= 1 + attributeBonus(state, "resilience", 0.0025, 0.2);
+    const fixedRestEnergy = activity.id === "rest" && key === "energy" && delta > 0;
+    if (fixedRestEnergy) delta = perHourToPerSecond(REST_RECOVERY_PER_HOUR.active) * seconds;
+    if (delta > 0 && !fixedRestEnergy) delta *= positiveFactor;
     if (key === "codeLines" && delta > 0) delta *= multipliers.code * risk.codeEfficiency;
     if (key === "money" && delta > 0) delta *= multipliers.money;
     if (key === "money" && delta > 0 && focus.id === "freelance") delta *= focus.money;
@@ -1456,21 +1536,17 @@ function settleActivity(state, activity, seconds, options = {}) {
     if (key === "bugs") delta *= multipliers.bug * risk.bugDebtBoost;
     if (key === "techDebt") delta *= multipliers.debt;
     if (key === "pressure") delta *= multipliers.pressure;
+    if (key === "bugs" || key === "techDebt" || key === "pressure") delta *= energyStatus.riskMultiplier;
     if (key === "pressure" && focus.id === "freelance") delta *= focus.pressure;
-    if (key === "bugs" && state.resources.energy < 10) delta *= 3;
-    if (lowEnergy && key === "pressure") delta *= 1.8;
     if (options.overtime && (key === "bugs" || key === "techDebt")) delta *= 1.8 * (1 - attributeBonus(state, "logic", 0.004, 0.3));
     if (options.overtime && key === "pressure") delta *= 1.5 * (1 - attributeBonus(state, "resilience", 0.004, 0.3));
     const applied = applyResourceDelta(state, key, delta);
     deltas[key] = (deltas[key] || 0) + applied;
   }
 
-  if (lowEnergy) {
-    deltas.pressure = (deltas.pressure || 0) + applyResourceDelta(state, "pressure", seconds * 0.006);
-  }
   if (options.overtime) {
     const resilienceRelief = attributeBonus(state, "resilience", 0.004, 0.3);
-    deltas.pressure = (deltas.pressure || 0) + applyResourceDelta(state, "pressure", seconds * 0.003 * (1 - resilienceRelief));
+    deltas.pressure = (deltas.pressure || 0) + applyResourceDelta(state, "pressure", seconds * 0.003 * energyStatus.riskMultiplier * (1 - resilienceRelief));
   }
 
   state.stats.totalCodeLines += Math.max(0, deltas.codeLines || 0);
@@ -1483,7 +1559,7 @@ function settleActivity(state, activity, seconds, options = {}) {
     addAttributeExp(state, attr, amount * seconds / 60);
   }
 
-  return { deltas, levelUps, lowEnergy: lowEnergy || (activity.id !== "rest" && state.resources.energy <= 0) };
+  return { deltas, levelUps, lowEnergy: activity.id !== "rest" && energyCostPerSecond > 0 && state.resources.energy <= 0 };
 }
 
 function ensureProjectProgress(state, projectId) {
@@ -1975,7 +2051,7 @@ function checkProjectDeadlines(state, messages = [], events = []) {
 function getWorkModifiers(state, type, item, overtime) {
   const focus = getWeeklyFocus(state);
   const overtimeRelief = overtime ? attributeBonus(state, "focus", 0.003, 0.24) : 0;
-  let workMultiplier = overtime ? 0.5 + overtimeRelief * 0.5 : 1;
+  let workMultiplier = (overtime ? 0.5 + overtimeRelief * 0.5 : 1) * getEnergyStatus(state).productivityMultiplier;
   let rewardMultiplier = getProjectRewardMultiplier(state);
   let skillExpMultiplier = 1;
   if (type === "project") {
@@ -1993,9 +2069,7 @@ function getWorkModifiers(state, type, item, overtime) {
   if (type === "skill") {
     if (focus.id === "learning") workMultiplier *= focus.skill;
     if (focus.id === "project") workMultiplier *= focus.skill;
-    if (state.resources.energy < 15) workMultiplier *= 0.5;
   }
-  if (state.resources.energy < 30 && type === "project") workMultiplier *= 0.8;
   return { workMultiplier, rewardMultiplier, skillExpMultiplier };
 }
 
@@ -2048,11 +2122,14 @@ function settleTime(state, now = Date.now(), options = {}) {
     const overtime = Boolean(scheduleContext && scheduleContext.phase && scheduleContext.phase.overtime && hasActiveWork);
     if (hasActiveWork) {
       result.overtime = result.overtime || overtime;
-      result.activeSeconds += segmentMinutes;
+      const energyCostPerSecond = getWorkEnergyCostPerSecond(mode, overtime);
+      const workSeconds = getAffordableWorkSeconds(state, energyCostPerSecond, segmentMinutes);
+      if (energyCostPerSecond > 0 && workSeconds < segmentMinutes) result.lowEnergy = true;
+      if (workSeconds > 0) result.activeSeconds += workSeconds;
       if (mode.type === "activity") {
         result.activityName = mode.item.name;
         result.activeName = mode.item.name;
-        const segment = settleActivity(state, mode.item, segmentMinutes, { overtime });
+        const segment = settleActivity(state, mode.item, workSeconds, { overtime, energyCostPerSecond });
         for (const [key, value] of Object.entries(segment.deltas || {})) {
           result.deltas[key] = (result.deltas[key] || 0) + value;
         }
@@ -2060,14 +2137,22 @@ function settleTime(state, now = Date.now(), options = {}) {
         result.lowEnergy = result.lowEnergy || segment.lowEnergy;
       } else if (mode.type === "skill") {
         result.activeName = `学习 ${mode.item.name}`;
-        const modifiers = getWorkModifiers(state, "skill", mode.item, overtime);
-        messages.push(...settleSkillLearning(state, mode.item, segmentMinutes, { ...modifiers, events }));
-        if (scheduleContext && getSkillLevel(state, mode.item.id) > 0) markSchedulePhaseDone(state, scheduleContext.phase.id);
+        if (workSeconds > 0) {
+          const modifiers = getWorkModifiers(state, "skill", mode.item, overtime);
+          const energyDelta = consumeWorkEnergy(state, energyCostPerSecond, workSeconds);
+          if (energyDelta) result.deltas.energy = (result.deltas.energy || 0) + energyDelta;
+          messages.push(...settleSkillLearning(state, mode.item, workSeconds, { ...modifiers, events }));
+          if (scheduleContext && getSkillLevel(state, mode.item.id) > 0) markSchedulePhaseDone(state, scheduleContext.phase.id);
+        }
       } else if (mode.type === "project") {
         result.activeName = `项目 ${mode.item.name}`;
-        const modifiers = getWorkModifiers(state, "project", mode.item, overtime);
-        messages.push(...settleProject(state, mode.item, segmentMinutes, { ...options, ...modifiers, events }));
-        if (scheduleContext && !state.activeProjectId && !state.projectProgress[mode.item.id]) markSchedulePhaseDone(state, scheduleContext.phase.id);
+        if (workSeconds > 0) {
+          const modifiers = getWorkModifiers(state, "project", mode.item, overtime);
+          const energyDelta = consumeWorkEnergy(state, energyCostPerSecond, workSeconds);
+          if (energyDelta) result.deltas.energy = (result.deltas.energy || 0) + energyDelta;
+          messages.push(...settleProject(state, mode.item, workSeconds, { ...options, ...modifiers, events }));
+          if (scheduleContext && !state.activeProjectId && !state.projectProgress[mode.item.id]) markSchedulePhaseDone(state, scheduleContext.phase.id);
+        }
       }
     } else {
       const restWindow = getRestWindow(state, state.worldTimeMinutes);
@@ -2113,7 +2198,7 @@ function settleTime(state, now = Date.now(), options = {}) {
     pushGameEvent(events, "skill", levelUpMessage, "good");
   }
   if (result.lowEnergy) {
-    pushMessageEvent(messages, events, "warning", "精力耗尽，当前活动收益下降，压力额外上升。", "danger");
+    pushMessageEvent(messages, events, "warning", "精力耗尽，消耗精力的行动已停止推进。", "danger");
   }
   collectBugRiskEvents(state, beforeResources, snapshotResources(state.resources), events);
 
@@ -2405,7 +2490,7 @@ function formatState(state) {
     `当前学习：${activeSkill ? `${activeSkill.name} 学习 ${skillLearningProgress.progressPercent}%` : "无"}`,
     `代码：${formatNumber(state.resources.codeLines)}  金钱：${formatNumber(state.resources.money)}  知识：${formatNumber(state.resources.knowledge)}`,
     `测试：${formatNumber(state.resources.tests)}  文档：${formatNumber(state.resources.docs)}  架构：${formatNumber(state.resources.architecture)}  线索：${formatNumber(state.resources.leads)}`,
-    `精力：${formatNumber(state.resources.energy)}  压力：${formatNumber(state.resources.pressure)}  Bug：${formatNumber(state.resources.bugs)}  技术债：${formatNumber(state.resources.techDebt)}  声望：${formatNumber(state.resources.reputation)}`,
+    `精力：${formatNumber(state.resources.energy)} ${formatEnergyStatus(state)}  压力：${formatNumber(state.resources.pressure)}  Bug：${formatNumber(state.resources.bugs)}  技术债：${formatNumber(state.resources.techDebt)}  声望：${formatNumber(state.resources.reputation)}`,
     `属性：${formatAttributes(state)}`,
     `技能：${learnedSkills.length ? learnedSkills.join("，") : "暂无"}`,
     `工具：${state.ownedTools.length ? state.ownedTools.join(", ") : "暂无"}`,
@@ -2483,7 +2568,8 @@ function getResourceEntries(state) {
   return RESOURCE_ORDER.map((id) => ({
     id,
     name: RESOURCE_NAMES[id] || id,
-    value: Math.floor(Number(state.resources[id]) || 0)
+    value: Math.floor(Number(state.resources[id]) || 0),
+    ...(id === "energy" ? { status: formatEnergyStatus(state), max: getEffectiveMaxEnergy(state) } : {})
   }));
 }
 
@@ -2883,8 +2969,9 @@ function getGameViewModel(state) {
     role: {
       id: state.currentRole,
       name: role ? role.name : state.currentRole,
-      maxEnergy: role ? role.maxEnergy : 0
+      maxEnergy: getEffectiveMaxEnergy(state)
     },
+    energyStatus: getEnergyStatus(state),
     activeActivity: active ? {
       id: active.id,
       name: active.name,
@@ -3122,11 +3209,10 @@ function promote(state) {
 
   state.currentRole = role.promoteTo;
   const nextRole = roleById(state.currentRole);
-  state.resources.energy = Math.min(nextRole.maxEnergy, state.resources.energy + 20);
   applyAttributeExpRewards(state, nextRole.attributeExp);
   return formatLines([
     `晋升成功！当前职位：${nextRole.name}。`,
-    `精力：职位上限 ${nextRole.maxEnergy}，本次恢复到 ${formatNumber(state.resources.energy)}。`,
+    `固定精力上限：${ENERGY_MAX}。当前精力 ${formatNumber(state.resources.energy)}（${formatEnergyStatus(state)}）。`,
     formatAttributeExpRewards(nextRole.attributeExp),
     formatNextAdvice(state)
   ]);
@@ -3617,6 +3703,7 @@ module.exports = {
   ATTRIBUTE_IDS,
   ATTRIBUTE_NAMES,
   DEFAULT_ATTRIBUTES,
+  ENERGY_MAX,
   OFFLINE_CAP_SECONDS,
   SAVE_VERSION,
   SAVE_PATH,
@@ -3653,6 +3740,8 @@ module.exports = {
   getBreakthrough,
   getCharacterCardOptions,
   getEffectiveAttribute,
+  getEffectiveMaxEnergy,
+  getEnergyStatus,
   getGameViewModel,
   getGoalOptions,
   getLifestyleOptions,

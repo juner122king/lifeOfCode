@@ -6,6 +6,7 @@ const test = require("node:test");
 const content = require("../src/content");
 const {
   DEFAULT_ATTRIBUTES,
+  ENERGY_MAX,
   OFFLINE_CAP_SECONDS,
   addAttributeExp,
   characterCardById,
@@ -25,6 +26,8 @@ const {
   getActivityProgress,
   getCharacterCardOptions,
   getEffectiveAttribute,
+  getEffectiveMaxEnergy,
+  getEnergyStatus,
   getGameViewModel,
   getGoalOptions,
   getManagementOptions,
@@ -125,11 +128,20 @@ test("v2 存档迁移会清理废弃的每日预算字段", () => {
   const raw = createNewState(1_700_000_000_000);
   raw.dailyActionMinutesUsed = 123;
   raw.currentDailyActionMinutesLimit = 456;
+  raw.dailyEnergyCapMultiplier = 0.5;
+  raw.pendingMorningEnergyCapMultiplier = 0.7;
+  raw.pendingMorningEnergyPenalty = 30;
+  raw.resources.energy = 160;
 
   const state = normalizeState(raw, 1_700_000_010_000);
 
   assert.equal(Object.hasOwn(state, "dailyActionMinutesUsed"), false);
   assert.equal(Object.hasOwn(state, "currentDailyActionMinutesLimit"), false);
+  assert.equal(Object.hasOwn(state, "dailyEnergyCapMultiplier"), false);
+  assert.equal(Object.hasOwn(state, "pendingMorningEnergyCapMultiplier"), false);
+  assert.equal(Object.hasOwn(state, "pendingMorningEnergyPenalty"), false);
+  assert.equal(state.resources.energy, ENERGY_MAX);
+  assert.equal(getEffectiveMaxEnergy(state), ENERGY_MAX);
 });
 
 test("新存档初始化世界日历和周重点", () => {
@@ -138,11 +150,29 @@ test("新存档初始化世界日历和周重点", () => {
   assert.equal(formatWorldCalendar(state, "short"), "Y1 M01 W1 周一 D001 09:00");
   assert.equal(Object.hasOwn(state, "dailyActionMinutesUsed"), false);
   assert.equal(Object.hasOwn(state, "currentDailyActionMinutesLimit"), false);
+  assert.equal(Object.hasOwn(state, "dailyEnergyCapMultiplier"), false);
+  assert.equal(Object.hasOwn(state, "pendingMorningEnergyCapMultiplier"), false);
+  assert.equal(Object.hasOwn(state, "pendingMorningEnergyPenalty"), false);
+  assert.equal(state.resources.energy, ENERGY_MAX);
+  assert.equal(getEnergyStatus(state).name, "充沛");
   assert.equal(state.weeklyFocus, "balanced");
   assert.equal(state.lifestyleStanceId, "health");
   assert.equal(state.pendingLifestyleStanceId, null);
   assert.deepEqual(state.triggeredWorldEvents, []);
   assert.deepEqual(state.activeProjectDeadlines, {});
+});
+
+test("精力状态可从数值、状态和资源条目正确计算", () => {
+  const state = createNewState();
+  state.resources.energy = 89;
+  const view = getGameViewModel(state);
+  const energyEntry = view.resources.find((resource) => resource.id === "energy");
+
+  assert.equal(getEnergyStatus(89).name, "平稳");
+  assert.equal(getEnergyStatus(state).name, "平稳");
+  assert.equal(getEnergyStatus(view).name, "平稳");
+  assert.equal(getEnergyStatus(energyEntry).name, "平稳");
+  assert.equal(energyEntry.status, "平稳");
 });
 
 test("世界时间按现实秒推进为游戏分钟并跨周月年", () => {
@@ -284,7 +314,7 @@ test("lifestyle 命令只设置明日作息并在次日 09:00 生效", () => {
   assert.match(message, /明日作息已设为/);
   assert.match(message, /作息效果/);
   assert.match(message, /金钱和声望/);
-  assert.match(message, /次日扣精力/);
+  assert.match(message, /消耗精力/);
   assert.equal(state.lifestyleStanceId, "health");
   assert.equal(state.pendingLifestyleStanceId, "side_hustle");
   assert.match(processCommand(state, "lifestyle", { randomEvents: false }).messages.join("\n"), /明日：Indie Side-Hustle/);
@@ -340,7 +370,7 @@ test("日程选项包含可执行的作息基调入口", () => {
   const updated = getScheduleOptions(state).find((option) => option.id === "lifestyle-side_hustle");
   assert.equal(updated.status, "明日生效");
   assert.match(updated.effects, /金钱和声望/);
-  assert.match(updated.effects, /次日扣精力/);
+  assert.match(updated.effects, /消耗精力/);
 });
 
 test("日程确认后仍可从日程选项设置明日作息", () => {
@@ -611,7 +641,7 @@ test("作息基调按休整窗口和属性结算", () => {
   highHealth.attributes.resilience = 100;
   settleTime(lowHealth, now + 60_000, { randomEvents: false });
   settleTime(highHealth, now + 60_000, { randomEvents: false });
-  assert.ok(highHealth.resources.energy > lowHealth.resources.energy);
+  assert.equal(highHealth.resources.energy, lowHealth.resources.energy);
   assert.ok(highHealth.resources.pressure < lowHealth.resources.pressure);
 
   const lowTech = createNewState(now);
@@ -625,7 +655,8 @@ test("作息基调按休整窗口和属性结算", () => {
   highTech.attributes.learning = 100;
   settleTime(lowTech, now + 60_000, { randomEvents: false });
   settleTime(highTech, now + 60_000, { randomEvents: false });
-  assert.equal(lowTech.resources.energy, 20);
+  assert.ok(lowTech.resources.energy > 20);
+  assert.equal(highTech.resources.energy, lowTech.resources.energy);
   assert.ok(highTech.resources.knowledge > lowTech.resources.knowledge);
 
   const gaming = createNewState(now);
@@ -635,10 +666,11 @@ test("作息基调按休整窗口和属性结算", () => {
   gaming.resources.pressure = 60;
   settleTime(gaming, now + 60_000, { randomEvents: false });
   assert.ok(gaming.resources.pressure < 60);
-  assert.ok(gaming.pendingMorningEnergyCapMultiplier < 1);
+  assert.ok(gaming.resources.energy > 0);
+  assert.equal(gaming.pendingMorningEnergyCapMultiplier, undefined);
 });
 
-test("side_hustle 只在深夜产生收益并在次日扣精力", () => {
+test("side_hustle 深夜即时消耗精力并产生收益", () => {
   const now = 1_700_000_000_000;
   const noon = createNewState(now);
   noon.lifestyleStanceId = "side_hustle";
@@ -646,6 +678,7 @@ test("side_hustle 只在深夜产生收益并在次日扣精力", () => {
   noon.lastTick = now;
   settleTime(noon, now + 60_000, { randomEvents: false });
   assert.equal(noon.resources.money, 30);
+  assert.ok(noon.resources.energy > 0);
   assert.equal(noon.resources.reputation, 0);
 
   const night = createNewState(now);
@@ -657,7 +690,7 @@ test("side_hustle 只在深夜产生收益并在次日扣精力", () => {
   assert.ok(night.resources.money > 30);
   assert.ok(night.resources.reputation > 0);
   assert.ok(night.resources.pressure > 0);
-  assert.equal(night.pendingMorningEnergyPenalty, 0);
+  assert.equal(night.pendingMorningEnergyPenalty, undefined);
   assert.ok(night.resources.energy < 100);
 
   const lowFocus = createNewState(now);
@@ -671,7 +704,7 @@ test("side_hustle 只在深夜产生收益并在次日扣精力", () => {
   highFocus.attributes.focus = 100;
   settleTime(lowFocus, now + 12 * 60 * 1000, { randomEvents: false });
   settleTime(highFocus, now + 12 * 60 * 1000, { randomEvents: false });
-  assert.ok(highFocus.resources.energy > lowFocus.resources.energy);
+  assert.equal(highFocus.resources.energy, lowFocus.resources.energy);
 });
 
 test("休整 tick 显示具体行动和实际产出摘要", () => {
@@ -700,8 +733,8 @@ test("休整 tick 显示具体行动和实际产出摘要", () => {
   sideNoon.worldTimeMinutes = 12 * 60;
   sideNoon.lastTick = now;
   const sideNoonTicker = settleTime(sideNoon, now + 60_000, { randomEvents: false }).ticker.join("\n");
-  assert.match(sideNoonTicker, /休整（副业只在深夜生效） 60 秒/);
-  assert.match(sideNoonTicker, /暂无可见产出/);
+  assert.match(sideNoonTicker, /副业前休整 60 秒/);
+  assert.match(sideNoonTicker, /恢复精力/);
 
   const sideNight = createNewState(now);
   sideNight.lifestyleStanceId = "side_hustle";
@@ -712,7 +745,7 @@ test("休整 tick 显示具体行动和实际产出摘要", () => {
   assert.match(sideNightTicker, /金钱 \+/);
   assert.match(sideNightTicker, /声望 \+/);
   assert.match(sideNightTicker, /压力 \+/);
-  assert.match(sideNightTicker, /设置次日精力扣除/);
+  assert.match(sideNightTicker, /精力 -/);
 });
 
 test("start feature-coding 后只结算写功能活动", () => {
@@ -782,17 +815,15 @@ test("activities 展示活动列表、等级、锁定状态和当前状态", () 
 test("活动经验达到阈值后升级", () => {
   const now = 1_700_000_000_000;
   const state = createNewState(now);
+  state.activityExp["feature-coding"] = 190;
   startActivity(state, "feature-coding");
 
-  settleTime(state, now + 300_000, { randomEvents: false });
-  assert.equal(getActivityLevel(state, "feature-coding"), 1);
-
-  settleTime(state, now + 1_000_000, { randomEvents: false });
+  settleTime(state, now + 60_000, { randomEvents: false });
   assert.ok(getActivityLevel(state, "feature-coding") > 1);
   assert.ok(getActivityProgress(state, "feature-coding").exp >= 0);
 });
 
-test("精力耗尽时非休息活动收益降低并提示风险", () => {
+test("精力耗尽时非休息活动停止推进并提示", () => {
   const now = 1_700_000_000_000;
   const state = createNewState(now);
   state.resources.energy = 0;
@@ -801,7 +832,48 @@ test("精力耗尽时非休息活动收益降低并提示风险", () => {
   const result = settleTime(state, now + 60_000, { randomEvents: false });
 
   assert.match(result.messages.join("\n"), /精力耗尽/);
-  assert.ok(state.resources.pressure > 0);
+  assert.equal(state.resources.codeLines, 0);
+  assert.equal(state.activityStats.totalActiveSeconds, 0);
+});
+
+test("技能学习精力不足时只推进可负担工时", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  state.resources.knowledge = 60;
+  state.resources.money = 100;
+  state.resources.energy = 1;
+  learnSkill(state, "html-css");
+
+  const first = settleTime(state, now + 60_000, { randomEvents: false });
+  const worked = state.skillLearningProgress["html-css"].workedSeconds;
+
+  assert.match(first.messages.join("\n"), /精力耗尽/);
+  assert.ok(worked > 0);
+  assert.ok(worked < 60);
+  assert.equal(state.resources.energy, 0);
+
+  settleTime(state, now + 120_000, { randomEvents: false });
+  assert.equal(state.skillLearningProgress["html-css"].workedSeconds, worked);
+});
+
+test("项目推进精力不足时只推进可负担工时且保留投入", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  state.resources.energy = 1;
+  state.activeProjectId = "homepage";
+  state.projectProgress.homepage = { workedSeconds: 0, resourcesPaid: true };
+
+  const first = settleTime(state, now + 60_000, { randomEvents: false, rng: () => 0 });
+  const worked = state.projectProgress.homepage.workedSeconds;
+
+  assert.match(first.messages.join("\n"), /精力耗尽/);
+  assert.ok(worked > 0);
+  assert.ok(worked < 60);
+  assert.equal(state.resources.energy, 0);
+  assert.equal(state.projectProgress.homepage.resourcesPaid, true);
+
+  settleTime(state, now + 120_000, { randomEvents: false, rng: () => 0 });
+  assert.equal(state.projectProgress.homepage.workedSeconds, worked);
 });
 
 test("活动结算只显示可见整数变化并附带当前总数", () => {
@@ -876,6 +948,7 @@ test("learn 消耗资源并启动耗时学习，完成后才解锁技能", () =>
   assert.ok(state.resources.knowledge > 15);
   state.resources.knowledge = 60;
   state.resources.money = 100;
+  state.resources.energy = 100;
 
   const beforeKnowledge = state.resources.knowledge;
   const message = learnSkill(state, "html-css");
@@ -885,7 +958,7 @@ test("learn 消耗资源并启动耗时学习，完成后才解锁技能", () =>
   assert.equal(state.activeSkillLearningId, "html-css");
   assert.equal(state.unlockedSkills.includes("html-css"), false);
 
-  const result = settleTime(state, now + 901_000, { randomEvents: false });
+  const result = settleTime(state, state.lastTick + 660_000, { randomEvents: false });
 
   assert.match(result.messages.join("\n"), /技能 HTML\/CSS 学习完成/);
   assert.deepEqual(formatGameEvents(result.events).filter((line) => line.includes("HTML/CSS")), ["[技能] 技能 HTML/CSS 学习完成，达到 入门。"]);
@@ -1279,9 +1352,14 @@ test("晋升会检查活动等级条件", () => {
 
   state.activityLevels["feature-coding"] = 3;
   state.activityLevels.study = 2;
+  state.resources.energy = 40;
 
-  assert.match(promote(state), /晋升成功/);
+  const message = promote(state);
+  assert.match(message, /晋升成功/);
+  assert.doesNotMatch(message, /职位上限/);
   assert.equal(state.currentRole, "junior");
+  assert.equal(state.resources.energy, 40);
+  assert.equal(getGameViewModel(state).role.maxEnergy, ENERGY_MAX);
 });
 
 test("goals 基于活动进度推进并可领取", () => {

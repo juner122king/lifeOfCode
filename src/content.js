@@ -2,7 +2,6 @@ const roles = [
   {
     id: "intern",
     name: "实习程序员",
-    maxEnergy: 100,
     promoteTo: "junior",
     attributeExp: { focus: 30, learning: 30 },
     promoteRequirements: {
@@ -15,7 +14,6 @@ const roles = [
   {
     id: "junior",
     name: "初级程序员",
-    maxEnergy: 120,
     promoteTo: "middle",
     attributeExp: { learning: 70, communication: 50 },
     promoteRequirements: {
@@ -28,7 +26,6 @@ const roles = [
   {
     id: "middle",
     name: "中级程序员",
-    maxEnergy: 140,
     promoteTo: "senior",
     attributeExp: { logic: 90, resilience: 70 },
     promoteRequirements: {
@@ -41,7 +38,6 @@ const roles = [
   {
     id: "senior",
     name: "高级程序员",
-    maxEnergy: 160,
     promoteTo: null,
     attributeExp: { logic: 120, communication: 100 },
     promoteRequirements: null
@@ -214,7 +210,6 @@ const rawActivities = [
     tier: 1,
     primaryAttribute: "focus",
     activityExpPerSecond: 0.5,
-    energyCostPerSecond: 0.045,
     effectsPerSecond: { codeLines: 0.9 },
     risksPerSecond: { bugs: 0.018, techDebt: 0.012, pressure: 0.004 },
     attributeExpPerMinute: { focus: 2, logic: 1 }
@@ -226,7 +221,6 @@ const rawActivities = [
     tier: 1,
     primaryAttribute: "logic",
     activityExpPerSecond: 0.45,
-    energyCostPerSecond: 0.035,
     effectsPerSecond: { bugs: -0.18, tests: 0.04, pressure: -0.01 },
     attributeExpPerMinute: { logic: 2, resilience: 1 }
   },
@@ -237,7 +231,6 @@ const rawActivities = [
     tier: 1,
     primaryAttribute: "logic",
     activityExpPerSecond: 0.42,
-    energyCostPerSecond: 0.04,
     effectsPerSecond: { techDebt: -0.16, architecture: 0.025, pressure: -0.006 },
     attributeExpPerMinute: { logic: 2, focus: 1 }
   },
@@ -248,7 +241,6 @@ const rawActivities = [
     tier: 1,
     primaryAttribute: "learning",
     activityExpPerSecond: 0.48,
-    energyCostPerSecond: 0.025,
     effectsPerSecond: { knowledge: 0.12 },
     risksPerSecond: { pressure: 0.001 },
     attributeExpPerMinute: { learning: 3 }
@@ -261,7 +253,6 @@ const rawActivities = [
     primaryAttribute: "focus",
     requirements: { activityLevels: { "feature-coding": 2 } },
     activityExpPerSecond: 0.42,
-    energyCostPerSecond: 0.035,
     effectsPerSecond: { tests: 0.12, bugs: -0.04 },
     attributeExpPerMinute: { focus: 2, logic: 1 }
   },
@@ -273,7 +264,6 @@ const rawActivities = [
     primaryAttribute: "communication",
     requirements: { activityLevels: { study: 2 } },
     activityExpPerSecond: 0.4,
-    energyCostPerSecond: 0.025,
     effectsPerSecond: { docs: 0.1, techDebt: -0.035 },
     attributeExpPerMinute: { communication: 3 }
   },
@@ -285,7 +275,6 @@ const rawActivities = [
     primaryAttribute: "communication",
     requirements: { activityLevels: { "feature-coding": 3 } },
     activityExpPerSecond: 0.38,
-    energyCostPerSecond: 0.05,
     effectsPerSecond: { money: 0.12, leads: 0.035 },
     risksPerSecond: { bugs: 0.006, techDebt: 0.006, pressure: 0.008 },
     attributeExpPerMinute: { communication: 2, resilience: 1 }
@@ -298,7 +287,6 @@ const rawActivities = [
     primaryAttribute: "communication",
     requirements: { skills: ["git"], activityLevels: { documentation: 3 } },
     activityExpPerSecond: 0.36,
-    energyCostPerSecond: 0.035,
     effectsPerSecond: { reputation: 0.006, codeLines: 0.16 },
     risksPerSecond: { pressure: 0.003 },
     attributeExpPerMinute: { communication: 2, creativity: 1 }
@@ -311,7 +299,6 @@ const rawActivities = [
     primaryAttribute: "logic",
     requirements: { skills: ["sql"], activityLevels: { refactoring: 5 } },
     activityExpPerSecond: 0.34,
-    energyCostPerSecond: 0.045,
     effectsPerSecond: { architecture: 0.1, docs: 0.035, techDebt: -0.08 },
     attributeExpPerMinute: { logic: 3, creativity: 1 }
   },
@@ -323,7 +310,6 @@ const rawActivities = [
     primaryAttribute: "communication",
     requirements: { skills: ["git"], activityLevels: { "feature-coding": 3, testing: 2 } },
     activityExpPerSecond: 0.38,
-    energyCostPerSecond: 0.035,
     effectsPerSecond: { bugs: -0.12, techDebt: -0.07, docs: 0.03 },
     risksPerSecond: { pressure: 0.002 },
     attributeExpPerMinute: { communication: 2, logic: 1 }
@@ -336,7 +322,6 @@ const rawActivities = [
     primaryAttribute: "logic",
     requirements: { skills: ["sql"], activityLevels: { refactoring: 4, architecture: 2 } },
     activityExpPerSecond: 0.34,
-    energyCostPerSecond: 0.045,
     effectsPerSecond: { codeLines: 0.18, architecture: 0.06, money: 0.04, techDebt: -0.04 },
     risksPerSecond: { bugs: 0.003, pressure: 0.005 },
     attributeExpPerMinute: { logic: 3, resilience: 1 }
@@ -349,7 +334,6 @@ const rawActivities = [
     primaryAttribute: "creativity",
     requirements: { activityLevels: { study: 3, documentation: 2 } },
     activityExpPerSecond: 0.4,
-    energyCostPerSecond: 0.03,
     effectsPerSecond: { knowledge: 0.1, docs: 0.08, leads: 0.02, codeLines: 0.04 },
     risksPerSecond: { techDebt: 0.004, pressure: 0.004 },
     attributeExpPerMinute: { creativity: 2, learning: 1 }
@@ -362,7 +346,6 @@ const rawActivities = [
     primaryAttribute: "resilience",
     requirements: { activityLevels: { "bug-hunting": 3, testing: 3 } },
     activityExpPerSecond: 0.36,
-    energyCostPerSecond: 0.055,
     effectsPerSecond: { bugs: -0.22, tests: 0.03, reputation: 0.003 },
     risksPerSecond: { pressure: 0.03, techDebt: 0.004 },
     attributeExpPerMinute: { resilience: 3, logic: 1 }
@@ -374,7 +357,6 @@ const rawActivities = [
     tier: 1,
     primaryAttribute: "resilience",
     activityExpPerSecond: 0.25,
-    energyCostPerSecond: 0,
     effectsPerSecond: { energy: 0.28, pressure: -0.08 },
     attributeExpPerMinute: { resilience: 2 }
   }

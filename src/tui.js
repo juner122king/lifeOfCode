@@ -142,12 +142,15 @@ function getCurrentLogRows(view, ticker = null) {
     { id: "current-weekly-focus", kind: "resource", resourceId: "weeklyFocus", text: `本周重点 ${weeklyFocus}` },
     ...CURRENT_RESOURCE_IDS.map((id) => {
       const resource = byId.get(id);
+      const valueText = resource && resource.id === "energy" && resource.status
+        ? `${resource.value} ${resource.status}`
+        : resource && resource.value;
       return {
         id: `current-${id}`,
         kind: "resource",
         resourceId: id,
         resource,
-        text: resource ? `${resource.name} ${resource.value}` : `${id} --`
+        text: resource ? `${resource.name} ${valueText}` : `${id} --`
       };
     })
   ];
@@ -574,8 +577,9 @@ async function startTui() {
 
   function ResourceLine({ item }) {
     const tone = toneForResource(item);
+    const valueText = item.id === "energy" && item.status ? `${item.value} ${item.status}` : String(item.value);
     return h(Text, { color: tone.color, bold: tone.label === "critical" },
-      `${item.name.padEnd(4, " ")} ${String(item.value).padStart(4, " ")}`
+      `${item.name.padEnd(4, " ")} ${valueText.padStart(4, " ")}`
     );
   }
 
@@ -584,7 +588,7 @@ async function startTui() {
       view.resources.slice(0, 4),
       view.resources.slice(4, 8),
       view.resources.slice(8, 13)
-    ].map((items) => items.map((item) => `${item.name} ${item.value}`).join("  "));
+    ].map((items) => items.map((item) => `${item.name} ${item.id === "energy" && item.status ? `${item.value} ${item.status}` : item.value}`).join("  "));
     const attrs = view.attributes.map((attr) => `${attr.name} ${attr.value}${attr.breakthrough ? `(+${attr.breakthrough})` : ""}`);
     const activityLevels = view.activityLevels.map((activity) => `${activity.active ? "*" : ""}${activity.name} Lv.${activity.level}`);
     const width = Math.max(38, Math.floor((budget.terminalColumns - 8) / 2));
