@@ -135,44 +135,10 @@ const characterCards = [
   }
 ];
 
-const POSITIVE_ACTIVITY_RESOURCE_SCALE = {
-  codeLines: 0.55,
-  tests: 0.55,
-  docs: 0.55,
-  architecture: 0.55,
-  knowledge: 0.55,
-  leads: 0.55,
-  money: 0.5,
-  reputation: 0.5,
-  energy: 0.16 / 0.28
-};
-const NEGATIVE_QUALITY_SCALE = { bugs: 0.65, techDebt: 0.65, pressure: 0.65 };
-const RISK_SCALE = { bugs: 1.15, techDebt: 1.15, pressure: 1.15 };
-const PROJECT_RESOURCE_SCALE = { 1: 1.6, 2: 2, 3: 2.4, 4: 3, 5: 3.5 };
+const PROJECT_RESOURCE_SCALE = { 1: 1.4, 2: 1.7, 3: 2, 4: 2.4, 5: 2.6 };
 
 function roundBalance(value) {
   return Math.round(value * 10000) / 10000;
-}
-
-function scaleActivityEffects(effects = {}) {
-  return Object.fromEntries(Object.entries(effects).map(([key, value]) => {
-    if (value > 0) return [key, roundBalance(value * (POSITIVE_ACTIVITY_RESOURCE_SCALE[key] || 1))];
-    if (value < 0) return [key, roundBalance(value * (NEGATIVE_QUALITY_SCALE[key] || 1))];
-    return [key, value];
-  }));
-}
-
-function scaleActivityRisks(risks = {}) {
-  return Object.fromEntries(Object.entries(risks).map(([key, value]) => [key, roundBalance(value * (RISK_SCALE[key] || 1))]));
-}
-
-function scaleActivity(activity) {
-  return {
-    ...activity,
-    activityExpPerSecond: roundBalance(activity.activityExpPerSecond * 0.45),
-    effectsPerSecond: scaleActivityEffects(activity.effectsPerSecond),
-    risksPerSecond: scaleActivityRisks(activity.risksPerSecond)
-  };
 }
 
 function scaleCodeMultiplier(value) {
@@ -195,6 +161,11 @@ function scaleProjectResources(resources = {}, difficulty = 1) {
   return Object.fromEntries(Object.entries(resources).map(([key, value]) => [key, Math.ceil(value * scale)]));
 }
 
+function capProjectActivityLevels(activityLevels = {}, difficulty = 1) {
+  const cap = difficulty >= 5 ? 5 : difficulty >= 4 ? 4 : Number.POSITIVE_INFINITY;
+  return Object.fromEntries(Object.entries(activityLevels).map(([id, level]) => [id, Math.min(level, cap)]));
+}
+
 function scaleProjectRewards(rewards = {}) {
   return {
     ...(rewards.money ? { money: Math.ceil(rewards.money * 0.75) } : {}),
@@ -202,174 +173,206 @@ function scaleProjectRewards(rewards = {}) {
   };
 }
 
-const rawActivities = [
-  {
+function activity(config) {
+  return {
+    ...config,
+    outputsPerHour: config.outputsPerHour || {},
+    mitigationPerHour: config.mitigationPerHour || {},
+    risksPerHour: config.risksPerHour || {},
+    energyCostPerHour: config.energyCostPerHour ?? (config.id === "rest" ? 0 : 8),
+    activityExpPerHour: config.activityExpPerHour ?? 30,
+    attributeExpPerHour: config.attributeExpPerHour || {}
+  };
+}
+
+const activities = [
+  activity({
     id: "feature-coding",
     name: "写功能",
     description: "把需求变成代码，核心产出最高，但也会制造 Bug 和技术债。",
     tier: 1,
     primaryAttribute: "focus",
-    activityExpPerSecond: 0.5,
-    effectsPerSecond: { codeLines: 0.9 },
-    risksPerSecond: { bugs: 0.018, techDebt: 0.012, pressure: 0.004 },
-    attributeExpPerMinute: { focus: 2, logic: 1 }
-  },
-  {
+    energyCostPerHour: 8,
+    activityExpPerHour: 45,
+    outputsPerHour: { codeLines: 32 },
+    risksPerHour: { bugs: 1.61, techDebt: 1.04, pressure: 0.35 },
+    attributeExpPerHour: { focus: 6, logic: 3 }
+  }),
+  activity({
     id: "bug-hunting",
     name: "排查 Bug",
     description: "降低 Bug，积累测试用例，适合在质量风险升高时切换。",
     tier: 1,
     primaryAttribute: "logic",
-    activityExpPerSecond: 0.45,
-    effectsPerSecond: { bugs: -0.18, tests: 0.04, pressure: -0.01 },
-    attributeExpPerMinute: { logic: 2, resilience: 1 }
-  },
-  {
+    energyCostPerHour: 8,
+    activityExpPerHour: 36,
+    outputsPerHour: { tests: 3 },
+    mitigationPerHour: { bugs: 5.6 },
+    attributeExpPerHour: { logic: 6, resilience: 3 }
+  }),
+  activity({
     id: "refactoring",
     name: "重构代码",
     description: "降低技术债，积累架构资产，为中后期项目铺路。",
     tier: 1,
     primaryAttribute: "logic",
-    activityExpPerSecond: 0.42,
-    effectsPerSecond: { techDebt: -0.16, architecture: 0.025, pressure: -0.006 },
-    attributeExpPerMinute: { logic: 2, focus: 1 }
-  },
-  {
+    energyCostPerHour: 8,
+    activityExpPerHour: 36,
+    outputsPerHour: { architecture: 1.5 },
+    mitigationPerHour: { techDebt: 4.9 },
+    attributeExpPerHour: { logic: 6, focus: 3 }
+  }),
+  activity({
     id: "study",
     name: "系统学习",
     description: "产出知识，用于学习技能，压力较低但不会直接交付项目。",
     tier: 1,
     primaryAttribute: "learning",
-    activityExpPerSecond: 0.48,
-    effectsPerSecond: { knowledge: 0.12 },
-    risksPerSecond: { pressure: 0.001 },
-    attributeExpPerMinute: { learning: 3 }
-  },
-  {
+    energyCostPerHour: 6,
+    activityExpPerHour: 40,
+    outputsPerHour: { knowledge: 14 },
+    risksPerHour: { pressure: 0.2 },
+    attributeExpPerHour: { learning: 9 }
+  }),
+  activity({
     id: "testing",
     name: "写测试",
     description: "产出测试用例，并小幅压低 Bug。",
     tier: 2,
     primaryAttribute: "focus",
     requirements: { activityLevels: { "feature-coding": 2 } },
-    activityExpPerSecond: 0.42,
-    effectsPerSecond: { tests: 0.12, bugs: -0.04 },
-    attributeExpPerMinute: { focus: 2, logic: 1 }
-  },
-  {
+    energyCostPerHour: 8,
+    activityExpPerHour: 40,
+    outputsPerHour: { tests: 8.5 },
+    mitigationPerHour: { bugs: 1.75 },
+    attributeExpPerHour: { focus: 6, logic: 3 }
+  }),
+  activity({
     id: "documentation",
     name: "写文档",
     description: "产出文档，降低交接成本，并小幅减少技术债。",
     tier: 2,
     primaryAttribute: "communication",
     requirements: { activityLevels: { study: 2 } },
-    activityExpPerSecond: 0.4,
-    effectsPerSecond: { docs: 0.1, techDebt: -0.035 },
-    attributeExpPerMinute: { communication: 3 }
-  },
-  {
+    energyCostPerHour: 6,
+    activityExpPerHour: 42,
+    outputsPerHour: { docs: 10 },
+    mitigationPerHour: { techDebt: 1.4 },
+    attributeExpPerHour: { communication: 9 }
+  }),
+  activity({
     id: "freelancing",
     name: "接外包",
     description: "产出金钱和客户线索，但会带来压力和质量风险。",
     tier: 2,
     primaryAttribute: "communication",
     requirements: { activityLevels: { "feature-coding": 3 } },
-    activityExpPerSecond: 0.38,
-    effectsPerSecond: { money: 0.12, leads: 0.035 },
-    risksPerSecond: { bugs: 0.006, techDebt: 0.006, pressure: 0.008 },
-    attributeExpPerMinute: { communication: 2, resilience: 1 }
-  },
-  {
+    energyCostPerHour: 10,
+    activityExpPerHour: 42,
+    outputsPerHour: { money: 14, leads: 3.2, reputation: 0.08 },
+    risksPerHour: { bugs: 1.15, techDebt: 1.15, pressure: 1.6 },
+    attributeExpPerHour: { communication: 6, resilience: 3 }
+  }),
+  activity({
     id: "open-source",
     name: "开源协作",
     description: "积累声望和少量代码，适合走长期影响力路线。",
     tier: 3,
     primaryAttribute: "communication",
     requirements: { skills: ["git"], activityLevels: { documentation: 3 } },
-    activityExpPerSecond: 0.36,
-    effectsPerSecond: { reputation: 0.006, codeLines: 0.16 },
-    risksPerSecond: { pressure: 0.003 },
-    attributeExpPerMinute: { communication: 2, creativity: 1 }
-  },
-  {
+    energyCostPerHour: 8,
+    activityExpPerHour: 42,
+    outputsPerHour: { reputation: 0.8, codeLines: 8, docs: 2 },
+    risksPerHour: { pressure: 0.7 },
+    attributeExpPerHour: { communication: 6, creativity: 3 }
+  }),
+  activity({
     id: "architecture",
     name: "架构设计",
     description: "高效产出架构资产，并明显压低技术债。",
     tier: 3,
     primaryAttribute: "logic",
-    requirements: { skills: ["sql"], activityLevels: { refactoring: 5 } },
-    activityExpPerSecond: 0.34,
-    effectsPerSecond: { architecture: 0.1, docs: 0.035, techDebt: -0.08 },
-    attributeExpPerMinute: { logic: 3, creativity: 1 }
-  },
-  {
+    requirements: { skills: ["sql"], activityLevels: { refactoring: 4 } },
+    energyCostPerHour: 10,
+    activityExpPerHour: 42,
+    outputsPerHour: { architecture: 11, docs: 4 },
+    mitigationPerHour: { techDebt: 3.5 },
+    attributeExpPerHour: { logic: 9, creativity: 3 }
+  }),
+  activity({
     id: "code-review",
     name: "代码评审",
     description: "LGTM 不是结论，是一段复杂人际关系的开始。",
     tier: 3,
     primaryAttribute: "communication",
     requirements: { skills: ["git"], activityLevels: { "feature-coding": 3, testing: 2 } },
-    activityExpPerSecond: 0.38,
-    effectsPerSecond: { bugs: -0.12, techDebt: -0.07, docs: 0.03 },
-    risksPerSecond: { pressure: 0.002 },
-    attributeExpPerMinute: { communication: 2, logic: 1 }
-  },
-  {
+    energyCostPerHour: 8,
+    activityExpPerHour: 40,
+    outputsPerHour: { docs: 3 },
+    mitigationPerHour: { bugs: 5.6, techDebt: 3.5 },
+    risksPerHour: { pressure: 0.7 },
+    attributeExpPerHour: { communication: 6, logic: 3 }
+  }),
+  activity({
     id: "performance-tuning",
     name: "性能调优",
     description: "把 P99 从玄学指标调成老板看得懂的 KPI。",
     tier: 4,
     primaryAttribute: "logic",
     requirements: { skills: ["sql"], activityLevels: { refactoring: 4, architecture: 2 } },
-    activityExpPerSecond: 0.34,
-    effectsPerSecond: { codeLines: 0.18, architecture: 0.06, money: 0.04, techDebt: -0.04 },
-    risksPerSecond: { bugs: 0.003, pressure: 0.005 },
-    attributeExpPerMinute: { logic: 3, resilience: 1 }
-  },
-  {
+    energyCostPerHour: 10,
+    activityExpPerHour: 40,
+    outputsPerHour: { codeLines: 12, architecture: 6, money: 1.5 },
+    mitigationPerHour: { techDebt: 2.1 },
+    risksPerHour: { bugs: 0.69, pressure: 1.2 },
+    attributeExpPerHour: { logic: 9, resilience: 3 }
+  }),
+  activity({
     id: "prompt-engineering",
     name: "提示词工程",
     description: "把“帮我写个功能”包装成结构化上下文和验收标准。",
     tier: 3,
     primaryAttribute: "creativity",
     requirements: { activityLevels: { study: 3, documentation: 2 } },
-    activityExpPerSecond: 0.4,
-    effectsPerSecond: { knowledge: 0.1, docs: 0.08, leads: 0.02, codeLines: 0.04 },
-    risksPerSecond: { techDebt: 0.004, pressure: 0.004 },
-    attributeExpPerMinute: { creativity: 2, learning: 1 }
-  },
-  {
+    energyCostPerHour: 6,
+    activityExpPerHour: 40,
+    outputsPerHour: { knowledge: 8, docs: 6, leads: 1.5, codeLines: 4 },
+    risksPerHour: { techDebt: 1.04, pressure: 0.9 },
+    attributeExpPerHour: { creativity: 6, learning: 3 }
+  }),
+  activity({
     id: "incident-response",
     name: "线上救火",
     description: "先止血，再复盘，最后把 TODO 留给未来的自己。",
     tier: 3,
     primaryAttribute: "resilience",
     requirements: { activityLevels: { "bug-hunting": 3, testing: 3 } },
-    activityExpPerSecond: 0.36,
-    effectsPerSecond: { bugs: -0.22, tests: 0.03, reputation: 0.003 },
-    risksPerSecond: { pressure: 0.03, techDebt: 0.004 },
-    attributeExpPerMinute: { resilience: 3, logic: 1 }
-  },
-  {
+    energyCostPerHour: 12,
+    activityExpPerHour: 44,
+    outputsPerHour: { tests: 2, reputation: 0.2 },
+    mitigationPerHour: { bugs: 8.4 },
+    risksPerHour: { pressure: 3.8, techDebt: 0.92 },
+    attributeExpPerHour: { resilience: 9, logic: 3 }
+  }),
+  activity({
     id: "rest",
     name: "休息恢复",
-    description: "恢复精力并降低压力，是所有产出活动的机会成本。",
+    description: "恢复精力，是所有产出活动的机会成本。",
     tier: 1,
     primaryAttribute: "resilience",
-    activityExpPerSecond: 0.25,
-    effectsPerSecond: { energy: 0.28, pressure: -0.08 },
-    attributeExpPerMinute: { resilience: 2 }
-  }
+    energyCostPerHour: 0,
+    activityExpPerHour: 12,
+    outputsPerHour: { energy: 5 },
+    attributeExpPerHour: { resilience: 6 }
+  })
 ];
 
-const activities = rawActivities.map(scaleActivity);
-
 const skillTierDefaults = {
-  1: { cost: { knowledge: 120, money: 80 }, learningSeconds: 600 },
-  2: { cost: { knowledge: 300, money: 220 }, learningSeconds: 1200 },
-  3: { cost: { knowledge: 650, money: 520 }, learningSeconds: 2100 },
-  4: { cost: { knowledge: 1100, money: 900 }, learningSeconds: 3300 },
-  5: { cost: { knowledge: 1700, money: 1600 }, learningSeconds: 5400 }
+  1: { cost: { knowledge: 80, money: 60 }, learningSeconds: 240 },
+  2: { cost: { knowledge: 240, money: 180 }, learningSeconds: 500 },
+  3: { cost: { knowledge: 520, money: 420 }, learningSeconds: 900 },
+  4: { cost: { knowledge: 900, money: 760 }, learningSeconds: 1500 },
+  5: { cost: { knowledge: 1400, money: 1300 }, learningSeconds: 2400 }
 };
 
 function roundCost(cost, multiplier) {
@@ -517,7 +520,7 @@ function project(config) {
     requirements: {
       resources: scaleProjectResources(resources, config.difficulty),
       skills,
-      activityLevels: config.activityLevels || {}
+      activityLevels: capProjectActivityLevels(config.activityLevels || {}, config.difficulty)
     },
     rewards: scaleProjectRewards(rewards),
     skillExpRewards: config.skillExpRewards || splitSkillExp(skills, config.skillExp || (config.difficulty * 90)),
@@ -526,11 +529,12 @@ function project(config) {
 }
 
 function trainingProject(id, name, skillId) {
+  const skill = skills.find((item) => item.id === skillId);
   return project({
     id,
     name,
     description: `围绕 ${skillId} 做专项演练，用小范围需求打通实现、验证和复盘，沉淀可复用的手感。`,
-    difficulty: 1,
+    difficulty: Math.max(1, Math.min(3, Math.ceil(((skill && skill.tier) || 1) / 2))),
     minWorkHours: 1,
     skills: [skillId],
     skillExpRewards: { [skillId]: 70 },

@@ -15,6 +15,7 @@ const {
   createProfile,
   createNewState,
   deleteProfile,
+  estimateActivityPerHour,
   formatActivities,
   formatGameEvents,
   formatGoals,
@@ -430,7 +431,12 @@ test("人物卡只应用初始状态，不自动开始活动", () => {
 test("内容不再包含全局经验资源、成本、倍率和奖励", () => {
   const noExpKey = (value) => !value || !Object.hasOwn(value, "exp");
 
-  assert.ok(content.activities.every((activity) => noExpKey(activity.effectsPerSecond)));
+  assert.ok(content.activities.every((activity) => !Object.hasOwn(activity, "effectsPerSecond")));
+  assert.ok(content.activities.every((activity) => !Object.hasOwn(activity, "risksPerSecond")));
+  assert.ok(content.activities.every((activity) => noExpKey(activity.outputsPerHour)));
+  assert.ok(content.activities.every((activity) => noExpKey(activity.mitigationPerHour)));
+  assert.ok(content.activities.every((activity) => noExpKey(activity.risksPerHour)));
+  assert.ok(content.activities.every((activity) => !Object.hasOwn(activity.mitigationPerHour, "pressure")));
   assert.ok(content.skills.every((skill) => noExpKey(skill.cost) && noExpKey(skill.multipliers)));
   assert.ok(content.tools.every((tool) => noExpKey(tool.multipliers)));
   assert.ok(content.roles.every((role) => noExpKey(role.promoteRequirements)));
@@ -714,7 +720,7 @@ test("压力按线性倍率抑制正向精力恢复", () => {
   assert.ok(Math.abs(settleNoonAtPressure(100) - 0.8) < 0.000001);
 });
 
-test("主动 rest 的精力恢复受压力抑制但仍降低压力", () => {
+test("主动 rest 的精力恢复受压力抑制但不再降低压力", () => {
   const now = 1_700_000_000_000;
   const lowPressure = createNewState(now);
   const highPressure = createNewState(now);
@@ -722,6 +728,7 @@ test("主动 rest 的精力恢复受压力抑制但仍降低压力", () => {
     state.worldTimeMinutes = 9 * 60;
     state.lastTick = now;
     state.resources.energy = 0;
+    state.resources.pressure = 0;
     startActivity(state, "rest");
   }
   highPressure.resources.pressure = 100;
@@ -729,9 +736,10 @@ test("主动 rest 的精力恢复受压力抑制但仍降低压力", () => {
   settleTime(lowPressure, now + 60_000, { randomEvents: false });
   settleTime(highPressure, now + 60_000, { randomEvents: false });
 
-  assert.ok(Math.abs(lowPressure.resources.energy - 4) < 0.000001);
-  assert.ok(Math.abs(highPressure.resources.energy - 0.8) < 0.000001);
-  assert.ok(highPressure.resources.pressure < 100);
+  assert.ok(Math.abs(lowPressure.resources.energy - 5) < 0.000001);
+  assert.ok(Math.abs(highPressure.resources.energy - 1) < 0.000001);
+  assert.equal(lowPressure.resources.pressure, 0);
+  assert.equal(highPressure.resources.pressure, 100);
 });
 
 test("side_hustle 深夜即时消耗精力并产生收益", () => {
@@ -848,9 +856,9 @@ test("start feature-coding 后只结算写功能活动", () => {
 
   const startMessage = startActivity(state, "feature-coding");
   assert.match(startMessage, /开始活动：写功能/);
-  assert.match(startMessage, /收益\/游戏小时：代码 \+29\.7/);
-  assert.match(startMessage, /风险\/游戏小时：Bug \+1\.24，技术债 \+0\.83，压力 \+0\.28/);
-  assert.match(startMessage, /消耗\/游戏小时：精力 -8/);
+  assert.match(startMessage, /收益\/游戏小时：代码 \+35\.55/);
+  assert.match(startMessage, /风险\/游戏小时：Bug \+1\.45，技术债 \+0\.94，压力 \+0\.32/);
+  assert.match(startMessage, /精力消耗\/游戏小时：精力 -8/);
   settleTime(state, now + 60_000, { randomEvents: false });
 
   assert.ok(state.resources.codeLines > 0);
@@ -892,7 +900,7 @@ test("锁定活动不可启动，满足条件后可启动", () => {
   assert.match(startActivity(state, "architecture"), /还未解锁/);
 
   state.unlockedSkills.push("sql");
-  state.activityLevels.refactoring = 5;
+  state.activityLevels.refactoring = 4;
 
   assert.match(startActivity(state, "architecture"), /开始活动：架构设计/);
   assert.equal(state.activeActivityId, "architecture");
@@ -906,8 +914,8 @@ test("activities 展示活动列表、等级、锁定状态和当前状态", () 
 
   assert.match(message, /feature-coding - 写功能 \[进行中\] Lv\.1/);
   assert.match(message, /等级经验/);
-  assert.match(message, /产出：收益\/游戏小时：代码 \+29\.7/);
-  assert.match(message, /风险\/游戏小时：Bug \+1\.24/);
+  assert.match(message, /产出：收益\/游戏小时：代码 \+35\.55/);
+  assert.match(message, /风险\/游戏小时：Bug \+1\.45/);
   assert.match(message, /architecture - 架构设计 \[未解锁\]/);
   assert.match(message, /rest - 休息恢复/);
 });
@@ -922,13 +930,37 @@ test("activity options 按游戏小时展示收益、风险、改善和精力", 
 
   assert.equal(
     featureCoding.output,
-    "收益/游戏小时：代码 +29.7；风险/游戏小时：Bug +1.24，技术债 +0.83，压力 +0.28；消耗/游戏小时：精力 -8"
+    "收益/游戏小时：代码 +35.55；风险/游戏小时：Bug +1.45，技术债 +0.94，压力 +0.32；精力消耗/游戏小时：精力 -8"
   );
   assert.equal(
     bugHunting.output,
-    "收益/游戏小时：测试 +1.32；改善/游戏小时：Bug -7.02，压力 -0.39；消耗/游戏小时：精力 -8"
+    "收益/游戏小时：测试 +1.33；精力消耗/游戏小时：精力 -8"
   );
-  assert.equal(rest.output, "收益/游戏小时：精力 +4；改善/游戏小时：压力 -3.12");
+  assert.equal(rest.output, "当前无可见变化");
+});
+
+test("activity estimate matches one-hour settlement deltas", () => {
+  const now = 1_700_000_000_000;
+  const setup = (state) => {
+    state.resources.energy = 50;
+    state.resources.bugs = 50;
+    state.resources.techDebt = 50;
+    state.resources.pressure = 50;
+  };
+  const estimateState = createNewState(now);
+  const settleState = createNewState(now);
+  setup(estimateState);
+  setup(settleState);
+  const activity = content.activities.find((item) => item.id === "bug-hunting");
+
+  const estimate = estimateActivityPerHour(estimateState, activity).deltas;
+  startActivity(settleState, "bug-hunting");
+  const before = { ...settleState.resources };
+  settleTime(settleState, now + 60_000, { randomEvents: false });
+
+  for (const key of ["tests", "bugs", "energy"]) {
+    assert.ok(Math.abs(estimate[key] - (settleState.resources[key] - before[key])) < 0.000001);
+  }
 });
 
 test("活动经验达到阈值后升级", () => {
@@ -1056,6 +1088,76 @@ test("refactoring 降低技术债并产出架构资产", () => {
 
   assert.ok(state.resources.techDebt < 30);
   assert.ok(state.resources.architecture > 0);
+});
+
+test("maintenance activities scale side outputs and activity proficiency by current risk", () => {
+  const now = 1_700_000_000_000;
+  const bugHunting = content.activities.find((item) => item.id === "bug-hunting");
+  const lowBugs = createNewState(now);
+  const highBugs = createNewState(now);
+  lowBugs.resources.bugs = 0;
+  highBugs.resources.bugs = 50;
+
+  const lowBugEstimate = estimateActivityPerHour(lowBugs, bugHunting).deltas;
+  const highBugEstimate = estimateActivityPerHour(highBugs, bugHunting).deltas;
+  assert.ok(highBugEstimate.tests > lowBugEstimate.tests * 2);
+
+  startActivity(lowBugs, "bug-hunting");
+  startActivity(highBugs, "bug-hunting");
+  settleTime(lowBugs, now + 60_000, { randomEvents: false });
+  settleTime(highBugs, now + 60_000, { randomEvents: false });
+  assert.ok(highBugs.activityExp["bug-hunting"] > lowBugs.activityExp["bug-hunting"] * 2);
+
+  const refactoring = content.activities.find((item) => item.id === "refactoring");
+  const lowDebt = createNewState(now);
+  const highDebt = createNewState(now);
+  lowDebt.resources.techDebt = 0;
+  highDebt.resources.techDebt = 50;
+  assert.ok(estimateActivityPerHour(highDebt, refactoring).deltas.architecture > estimateActivityPerHour(lowDebt, refactoring).deltas.architecture * 2);
+});
+
+test("freelancing pays more than performance tuning and carries higher risk", () => {
+  const freelancing = content.activities.find((item) => item.id === "freelancing");
+  const performance = content.activities.find((item) => item.id === "performance-tuning");
+
+  assert.ok(freelancing.outputsPerHour.money > performance.outputsPerHour.money);
+  assert.ok(freelancing.risksPerHour.bugs > performance.risksPerHour.bugs);
+  assert.ok(freelancing.risksPerHour.pressure > performance.risksPerHour.pressure);
+});
+
+test("architecture outproduces refactoring and unlocks at refactoring Lv4 plus sql", () => {
+  const architecture = content.activities.find((item) => item.id === "architecture");
+  const refactoring = content.activities.find((item) => item.id === "refactoring");
+
+  assert.ok(architecture.outputsPerHour.architecture > refactoring.outputsPerHour.architecture);
+  assert.deepEqual(architecture.requirements, { skills: ["sql"], activityLevels: { refactoring: 4 } });
+});
+
+test("activity attribute growth is tripled and global exp resource is absent", () => {
+  const expected = {
+    "feature-coding": { focus: 6, logic: 3 },
+    "bug-hunting": { logic: 6, resilience: 3 },
+    refactoring: { logic: 6, focus: 3 },
+    study: { learning: 9 },
+    testing: { focus: 6, logic: 3 },
+    documentation: { communication: 9 },
+    freelancing: { communication: 6, resilience: 3 },
+    "open-source": { communication: 6, creativity: 3 },
+    architecture: { logic: 9, creativity: 3 },
+    "code-review": { communication: 6, logic: 3 },
+    "performance-tuning": { logic: 9, resilience: 3 },
+    "prompt-engineering": { creativity: 6, learning: 3 },
+    "incident-response": { resilience: 9, logic: 3 },
+    rest: { resilience: 6 }
+  };
+
+  for (const activity of content.activities) {
+    assert.deepEqual(activity.attributeExpPerHour, expected[activity.id]);
+    assert.equal(Object.hasOwn(activity.outputsPerHour, "exp"), false);
+    assert.equal(Object.hasOwn(activity.mitigationPerHour, "exp"), false);
+    assert.equal(Object.hasOwn(activity.risksPerHour, "exp"), false);
+  }
+  assert.equal(Object.hasOwn(createNewState().resources, "exp"), false);
 });
 
 test("learn 消耗资源并启动耗时学习，完成后才解锁技能", () => {
@@ -1211,9 +1313,9 @@ test("新增项目组件库内卷可开始并在成功 RNG 下交付", () => {
 
   assert.match(message, /开始项目：组件库内卷/);
   assert.equal(state.activeProjectId, "component-library");
-  assert.equal(state.resources.codeLines, 80);
-  assert.equal(state.resources.docs, 14);
-  assert.equal(state.resources.tests, 10);
+  assert.equal(state.resources.codeLines, 158);
+  assert.equal(state.resources.docs, 19);
+  assert.equal(state.resources.tests, 17);
 
   const result = settleActiveProjectToCompletion(state, () => 0);
 
@@ -1250,7 +1352,7 @@ test("testing、documentation、freelancing、rest 分别产出对应资源", ()
   startActivity(rest, "rest");
   settleTime(rest, start + 60_000, { randomEvents: false });
   assert.ok(rest.resources.energy > 30);
-  assert.ok(rest.resources.pressure < 50);
+  assert.equal(rest.resources.pressure, 50);
 });
 
 test("项目会检查条件，开始时投入资源并按工时推进", () => {
@@ -1271,14 +1373,32 @@ test("项目会检查条件，开始时投入资源并按工时推进", () => {
   assert.equal(state.activeProjectId, "homepage");
   assert.equal(state.activeActivityId, null);
   assert.equal(state.projectProgress.homepage.resourcesPaid, true);
-  assert.equal(state.resources.codeLines, 0);
-  assert.equal(state.resources.docs, 0);
+  assert.equal(state.resources.codeLines, 16);
+  assert.equal(state.resources.docs, 1);
   assert.equal(state.completedProjects.includes("homepage"), false);
 
   settleTime(state, state.lastTick + 300_000, { randomEvents: false });
   const progress = getProjectProgress(state, "homepage");
   assert.ok(progress.workedSeconds > 0);
   assert.ok(progress.progressPercent < 100);
+});
+
+test("project activity level requirements are capped and training difficulty follows skill tier", () => {
+  const flashSale = content.projects.find((item) => item.id === "flash-sale");
+  const legacyRescue = content.projects.find((item) => item.id === "legacy-rescue");
+  const webQuality = content.projects.find((item) => item.id === "web-quality-overhaul");
+  const vanilla = content.projects.find((item) => item.id === "vanilla-widget");
+  const docker = content.projects.find((item) => item.id === "container-demo");
+  const llmAgent = content.projects.find((item) => item.id === "llm-prompt-bench");
+
+  assert.equal(flashSale.requirements.activityLevels.architecture, 5);
+  assert.equal(flashSale.requirements.activityLevels.refactoring, 5);
+  assert.equal(legacyRescue.requirements.activityLevels.refactoring, 4);
+  assert.equal(legacyRescue.requirements.activityLevels["bug-hunting"], 4);
+  assert.equal(webQuality.requirements.activityLevels.testing, 4);
+  assert.equal(vanilla.difficulty, 1);
+  assert.equal(docker.difficulty, 2);
+  assert.equal(llmAgent.difficulty, 3);
 });
 
 test("项目达标后会自动成功并发放奖励", () => {
@@ -1650,7 +1770,7 @@ test("提示词工程使用创造属性并偏向知识文档线索", () => {
 
   const activity = content.activities.find((item) => item.id === "prompt-engineering");
   assert.equal(activity.primaryAttribute, "creativity");
-  assert.ok(activity.effectsPerSecond.docs > activity.effectsPerSecond.codeLines);
+  assert.ok(activity.outputsPerHour.docs > activity.outputsPerHour.codeLines);
   assert.ok(highCreativity.resources.docs > lowCreativity.resources.docs);
   assert.ok(highCreativity.resources.knowledge > lowCreativity.resources.knowledge);
 });
@@ -1793,7 +1913,7 @@ test("management options 标出技能、工具和项目动作状态", () => {
   assert.equal(project.command, "project homepage");
   assert.match(project.description, /个人品牌/);
   assert.match(project.rewards, /技能经验：HTML\/CSS \+80/);
-  assert.equal(project.cost, "代码 128，文档 13");
+  assert.equal(project.cost, "代码 112，文档 12");
   assert.equal(project.difficultyLabel, "★☆☆☆☆（难度 1）");
   assert.doesNotMatch(project.effects, /难度 1/);
   assert.match(project.effects, /成功率/);

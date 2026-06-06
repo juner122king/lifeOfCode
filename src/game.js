@@ -40,6 +40,8 @@ const RESOURCE_NAMES = {
   leads: "线索"
 };
 const RESOURCE_ORDER = ["codeLines", "money", "knowledge", "tests", "docs", "architecture", "leads", "energy", "pressure", "bugs", "techDebt", "reputation"];
+const RISK_RESOURCE_IDS = new Set(["bugs", "techDebt", "pressure"]);
+const QUALITY_ACTIVITY_IDS = new Set(["bug-hunting", "refactoring", "testing", "code-review", "incident-response"]);
 const EVENT_LABELS = {
   command: "命令",
   project: "项目",
@@ -66,6 +68,7 @@ const SKILL_UPGRADE_KNOWLEDGE_MULTIPLIERS = { 2: 2, 3: 4, 4: 7, 5: 11 };
 const SKILL_UPGRADE_RESOURCE_MULTIPLIERS = { 2: 1, 3: 2, 4: 4, 5: 7 };
 const WORLD_START_MINUTES = 9 * 60;
 const MINUTES_PER_DAY = 24 * 60;
+const GAME_MINUTES_PER_HOUR = 60;
 const SAVE_VERSION = 2;
 const ENERGY_MAX = 100;
 const ENERGY_STATUS_DEFS = [
@@ -760,10 +763,10 @@ function settleLifestyleRest(state, windowId, seconds) {
   const deltas = {};
   const duration = Math.max(0, seconds);
   if (!stance || !windowId || duration <= 0) return deltas;
-  const baseRecoveryPerSecond = perHourToPerSecond(REST_RECOVERY_PER_HOUR[windowId] || 0);
+  const baseRecoveryPerGameMinute = perHourToPerGameMinute(REST_RECOVERY_PER_HOUR[windowId] || 0);
   const pressureRecoveryMultiplier = getPressureRecoveryMultiplier(state);
   const applyRecovery = (multiplier = 1) => {
-    const energyDelta = baseRecoveryPerSecond * Math.max(0, multiplier) * pressureRecoveryMultiplier * duration;
+    const energyDelta = baseRecoveryPerGameMinute * Math.max(0, multiplier) * pressureRecoveryMultiplier * duration;
     if (energyDelta > 0) deltas.energy = applyResourceDelta(state, "energy", energyDelta);
   };
 
@@ -794,10 +797,10 @@ function settleLifestyleRest(state, windowId, seconds) {
     const creativityBoost = 1 + attributeBonus(state, "creativity", 0.004, 0.32);
     const communicationBoost = 1 + attributeBonus(state, "communication", 0.003, 0.24);
     const resilienceRelief = attributeBonus(state, "resilience", 0.004, 0.3);
-    const energyCostPerSecond = perHourToPerSecond(SIDE_HUSTLE_ENERGY_COST_PER_HOUR);
-    const workSeconds = getAffordableWorkSeconds(state, energyCostPerSecond, duration);
+    const energyCostPerGameMinute = perHourToPerGameMinute(SIDE_HUSTLE_ENERGY_COST_PER_HOUR);
+    const workSeconds = getAffordableWorkSeconds(state, energyCostPerGameMinute, duration);
     if (workSeconds <= 0) return deltas;
-    deltas.energy = consumeWorkEnergy(state, energyCostPerSecond, workSeconds);
+    deltas.energy = consumeWorkEnergy(state, energyCostPerGameMinute, workSeconds);
     deltas.money = applyResourceDelta(state, "money", workSeconds * 0.035 * creativityBoost);
     deltas.reputation = applyResourceDelta(state, "reputation", workSeconds * 0.0008 * communicationBoost);
     deltas.pressure = applyResourceDelta(state, "pressure", workSeconds * 0.018 * (1 - resilienceRelief));
@@ -1191,33 +1194,20 @@ function formatResourceRateEntries(entries = []) {
   return formatted.length ? formatted.join("，") : "无";
 }
 
-function activityEffectRatesPerGameHour(activity) {
-  const rates = {};
-  for (const [key, value] of Object.entries(activity.effectsPerSecond || {})) {
-    let perHour = value * 60;
-    if (activity.id === "rest" && key === "energy" && perHour > 0) {
-      perHour = REST_RECOVERY_PER_HOUR.active;
-    }
-    rates[key] = perHour;
-  }
-  return rates;
-}
-
-function formatActivityRateSummary(activity) {
-  const effects = Object.entries(activityEffectRatesPerGameHour(activity));
-  const gains = effects.filter(([, value]) => value > 0);
-  const improvements = effects.filter(([, value]) => value < 0);
-  const risks = Object.entries(activity.risksPerSecond || {}).map(([key, value]) => [key, value * 60]);
-  const riskCosts = risks.filter(([, value]) => value > 0);
-  const riskImprovements = risks.filter(([, value]) => value < 0);
+function formatActivityRateSummary(state, activity, options = {}) {
+  const estimate = estimateActivityPerHour(state, activity, options);
+  const entries = Object.entries(estimate.deltas || {});
+  const gains = entries.filter(([key, value]) => value > 0 && !RISK_RESOURCE_IDS.has(key));
+  const improvements = entries.filter(([key, value]) => value < 0 && RISK_RESOURCE_IDS.has(key));
+  const riskCosts = entries.filter(([key, value]) => value > 0 && RISK_RESOURCE_IDS.has(key));
+  const energyCost = entries.filter(([key, value]) => key === "energy" && value < 0);
   const sections = [];
   if (gains.length) sections.push(`收益/游戏小时：${formatResourceRateEntries(gains)}`);
   if (improvements.length) sections.push(`改善/游戏小时：${formatResourceRateEntries(improvements)}`);
   if (riskCosts.length) sections.push(`风险/游戏小时：${formatResourceRateEntries(riskCosts)}`);
-  if (riskImprovements.length) sections.push(`风险改善/游戏小时：${formatResourceRateEntries(riskImprovements)}`);
-  const energyCost = getActivityEnergyCostPerHour(activity);
-  if (energyCost > 0) sections.push(`消耗/游戏小时：${formatResourceRateEntries([["energy", -energyCost]])}`);
-  return sections.length ? sections.join("；") : "无";
+  if (energyCost.length) sections.push(`精力消耗/游戏小时：${formatResourceRateEntries(energyCost)}`);
+  if (estimate.lowEnergy) sections.push("精力不足：只能推进部分时间");
+  return sections.length ? sections.join("；") : "当前无可见变化";
 }
 
 function formatProjectResourceList(values = {}) {
@@ -1488,7 +1478,7 @@ function formatActivities(state) {
       const status = state.activeActivityId === activity.id
         ? "进行中"
         : activityUnlocked(state, activity) ? "可开始" : "未解锁";
-      return `${activity.id} - ${activity.name} [${status}] Lv.${progress.level} 等级经验 ${formatNumber(progress.exp)}/${formatNumber(progress.next)}，解锁：${formatActivityRequirements(activity.requirements)}，产出：${formatActivityRateSummary(activity)}。${activity.description}`;
+      return `${activity.id} - ${activity.name} [${status}] Lv.${progress.level} 等级经验 ${formatNumber(progress.exp)}/${formatNumber(progress.next)}，解锁：${formatActivityRequirements(activity.requirements)}，产出：${formatActivityRateSummary(state, activity)}。${activity.description}`;
     })
   ]);
 }
@@ -1506,8 +1496,46 @@ function applyResourceDelta(state, key, rawDelta) {
   return state.resources[key] - before;
 }
 
-function perHourToPerSecond(value) {
-  return (Number(value) || 0) / 60;
+function applyResourceDeltaTo(resources, key, rawDelta, maxEnergy = ENERGY_MAX) {
+  if (!rawDelta) return 0;
+  const before = resources[key] || 0;
+  if (key === "energy") {
+    resources.energy = clamp(before + rawDelta, 0, maxEnergy);
+  } else if (key === "pressure") {
+    resources.pressure = clamp(before + rawDelta, 0, 100);
+  } else {
+    resources[key] = Math.max(0, before + rawDelta);
+  }
+  return resources[key] - before;
+}
+
+function mergeDelta(target, key, value) {
+  if (!value) return;
+  target[key] = (target[key] || 0) + value;
+}
+
+function applyActivityDeltaEntries(state, entries = []) {
+  const deltas = {};
+  for (const [key, rawDelta] of entries) {
+    const applied = applyResourceDelta(state, key, rawDelta);
+    mergeDelta(deltas, key, applied);
+  }
+  return deltas;
+}
+
+function previewActivityDeltaEntries(state, entries = []) {
+  const resources = { ...state.resources };
+  const deltas = {};
+  const maxEnergy = getEffectiveMaxEnergy(state);
+  for (const [key, rawDelta] of entries) {
+    const applied = applyResourceDeltaTo(resources, key, rawDelta, maxEnergy);
+    mergeDelta(deltas, key, applied);
+  }
+  return deltas;
+}
+
+function perHourToPerGameMinute(value) {
+  return (Number(value) || 0) / GAME_MINUTES_PER_HOUR;
 }
 
 function getProjectEnergyCostPerHour(project) {
@@ -1516,104 +1544,152 @@ function getProjectEnergyCostPerHour(project) {
 }
 
 function getActivityEnergyCostPerHour(activity) {
-  if (!activity || activity.id === "rest") return 0;
-  return ACTIVITY_ENERGY_COST_PER_HOUR[activity.id] || 8;
+  if (!activity) return 0;
+  return Number(activity.energyCostPerHour ?? ACTIVITY_ENERGY_COST_PER_HOUR[activity.id] ?? 8) || 0;
 }
 
-function getWorkEnergyCostPerSecond(mode, overtime = false) {
+function getWorkEnergyCostPerGameMinute(mode, overtime = false) {
   if (!mode || !mode.item) return 0;
   let perHour = 0;
   if (mode.type === "activity") perHour = getActivityEnergyCostPerHour(mode.item);
   if (mode.type === "skill") perHour = SKILL_ENERGY_COST_PER_HOUR;
   if (mode.type === "project") perHour = getProjectEnergyCostPerHour(mode.item);
-  return perHourToPerSecond(perHour) * (overtime ? 1.25 : 1);
+  return perHourToPerGameMinute(perHour) * (overtime ? 1.25 : 1);
 }
 
-function getAffordableWorkSeconds(state, costPerSecond, seconds) {
+function getAffordableWorkSeconds(state, costPerGameMinute, seconds) {
   const duration = Math.max(0, Number(seconds) || 0);
-  const cost = Math.max(0, Number(costPerSecond) || 0);
+  const cost = Math.max(0, Number(costPerGameMinute) || 0);
   if (duration <= 0 || cost <= 0) return duration;
   const energy = Math.max(0, Number(state.resources.energy) || 0);
   if (energy <= 0) return 0;
   return Math.min(duration, energy / cost);
 }
 
-function consumeWorkEnergy(state, costPerSecond, seconds) {
-  const cost = Math.max(0, Number(costPerSecond) || 0) * Math.max(0, Number(seconds) || 0);
+function consumeWorkEnergy(state, costPerGameMinute, seconds) {
+  const cost = Math.max(0, Number(costPerGameMinute) || 0) * Math.max(0, Number(seconds) || 0);
   return cost > 0 ? applyResourceDelta(state, "energy", -cost) : 0;
 }
 
-function settleActivity(state, activity, seconds, options = {}) {
-  const energyCostPerSecond = Number(options.energyCostPerSecond) || 0;
+function getActivityRateContext(state, activity, options = {}) {
   const energyStatus = getEnergyStatus(state);
-  if (activity.id !== "rest" && energyCostPerSecond > 0 && seconds <= 0) {
-    return { deltas: {}, levelUps: 0, lowEnergy: true };
-  }
   const level = getActivityLevel(state, activity.id);
   const activityMultiplier = 1 + (level - 1) * 0.08;
   const attributeMultiplier = 1 + attributeBonus(state, activity.primaryAttribute, 0.0025, 0.22);
-  const multipliers = getMultipliers(state);
-  const risk = getProductionRisk(state);
   const overtimeRelief = options.overtime ? attributeBonus(state, "focus", 0.003, 0.24) : 0;
   const overtimeFactor = options.overtime ? 0.45 + overtimeRelief * 0.5 : 1;
   const focus = getWeeklyFocus(state);
   const learningFocusFactor = focus.id === "learning" && activity.id === "study" ? focus.learning : 1;
-  const qualityActivityIds = new Set(["bug-hunting", "refactoring", "testing", "code-review"]);
-  const qualityFactor = focus.id === "quality" && qualityActivityIds.has(activity.id) ? focus.quality : 1;
+  const qualityFactor = focus.id === "quality" && QUALITY_ACTIVITY_IDS.has(activity.id) ? focus.quality : 1;
   const productivityFactor = activity.id === "rest" ? 1 : energyStatus.productivityMultiplier;
-  const positiveFactor = activityMultiplier * attributeMultiplier * productivityFactor * overtimeFactor * learningFocusFactor * qualityFactor;
-  const pressureRecoveryMultiplier = getPressureRecoveryMultiplier(state);
-  const deltas = {};
+  const maintenanceFactor = getMaintenanceActivityFactor(state, activity);
+  return {
+    activityMultiplier,
+    attributeMultiplier,
+    energyStatus,
+    focus,
+    learningFocusFactor,
+    multipliers: getMultipliers(state),
+    outputFactor: activityMultiplier * attributeMultiplier * productivityFactor * overtimeFactor * learningFocusFactor * qualityFactor * maintenanceFactor,
+    mitigationFactor: activityMultiplier * attributeMultiplier * productivityFactor * overtimeFactor * qualityFactor,
+    maintenanceFactor,
+    overtimeFactor,
+    qualityFactor,
+    pressureRecoveryMultiplier: getPressureRecoveryMultiplier(state),
+    risk: getProductionRisk(state)
+  };
+}
 
-  if (energyCostPerSecond > 0) deltas.energy = consumeWorkEnergy(state, energyCostPerSecond, seconds);
+function getMaintenanceActivityFactor(state, activity) {
+  const id = activity && activity.id;
+  const bugs = Number(state.resources.bugs) || 0;
+  const techDebt = Number(state.resources.techDebt) || 0;
+  if (id === "bug-hunting") return clamp(bugs / 30, 0.4, 1);
+  if (id === "refactoring") return clamp(techDebt / 30, 0.4, 1);
+  if (id === "code-review") return clamp(Math.max(bugs, techDebt) / 30, 0.4, 1);
+  if (id === "incident-response") return clamp(bugs / 50, 0.25, 1);
+  return 1;
+}
 
-  for (const [key, value] of Object.entries(activity.effectsPerSecond || {})) {
-    let delta = value * seconds;
-    const fixedRestEnergy = activity.id === "rest" && key === "energy" && delta > 0;
-    if (fixedRestEnergy) delta = perHourToPerSecond(REST_RECOVERY_PER_HOUR.active) * seconds;
-    if (fixedRestEnergy) delta *= pressureRecoveryMultiplier;
-    if (delta > 0 && !fixedRestEnergy) delta *= positiveFactor;
-    if (key === "codeLines" && delta > 0) delta *= multipliers.code * risk.codeEfficiency;
-    if (key === "money" && delta > 0) delta *= multipliers.money;
-    if (key === "money" && delta > 0 && focus.id === "freelance") delta *= focus.money;
-    if (key === "codeLines" && delta > 0 && focus.id === "quality") delta *= focus.code;
-    if (key === "money" && delta > 0 && focus.id === "quality") delta *= focus.money;
-    if (key === "bugs" && delta < 0) delta *= 1 + attributeBonus(state, "logic", 0.004, 0.32);
-    if (key === "techDebt" && delta < 0) delta *= 1 + attributeBonus(state, "logic", 0.003, 0.24);
-    if (key === "pressure" && delta < 0) delta *= 1 + attributeBonus(state, "resilience", 0.004, 0.32);
-    const applied = applyResourceDelta(state, key, delta);
-    deltas[key] = (deltas[key] || 0) + applied;
+function activityRateToDelta(ratePerHour, gameMinutes) {
+  return perHourToPerGameMinute(ratePerHour) * Math.max(0, Number(gameMinutes) || 0);
+}
+
+function calculateActivityDeltaEntries(state, activity, gameMinutes, options = {}) {
+  const context = getActivityRateContext(state, activity, options);
+  const entries = [];
+  const energyCostPerGameMinute = Number(options.energyCostPerGameMinute) || 0;
+  const duration = Math.max(0, Number(gameMinutes) || 0);
+  if (energyCostPerGameMinute > 0) entries.push(["energy", -energyCostPerGameMinute * duration]);
+
+  for (const [key, rate] of Object.entries(activity.outputsPerHour || {})) {
+    let delta = activityRateToDelta(rate, duration);
+    if (key === "energy" && activity.id === "rest") delta *= context.pressureRecoveryMultiplier;
+    else delta *= context.outputFactor;
+    if (key === "codeLines" && delta > 0) delta *= context.multipliers.code * context.risk.codeEfficiency;
+    if (key === "money" && delta > 0) delta *= context.multipliers.money;
+    if (key === "money" && delta > 0 && context.focus.id === "freelance") delta *= context.focus.money;
+    if (key === "codeLines" && delta > 0 && context.focus.id === "quality") delta *= context.focus.code;
+    if (key === "money" && delta > 0 && context.focus.id === "quality") delta *= context.focus.money;
+    entries.push([key, delta]);
   }
 
-  for (const [key, value] of Object.entries(activity.risksPerSecond || {})) {
-    let delta = value * seconds;
-    if (key === "bugs") delta *= multipliers.bug * risk.bugDebtBoost;
-    if (key === "techDebt") delta *= multipliers.debt;
-    if (key === "pressure") delta *= multipliers.pressure;
-    if (key === "bugs" || key === "techDebt" || key === "pressure") delta *= energyStatus.riskMultiplier;
-    if (key === "pressure" && focus.id === "freelance") delta *= focus.pressure;
+  for (const [key, rate] of Object.entries(activity.mitigationPerHour || {})) {
+    let delta = -activityRateToDelta(rate, duration) * context.mitigationFactor;
+    if (key === "bugs") delta *= 1 + attributeBonus(state, "logic", 0.004, 0.32);
+    if (key === "techDebt") delta *= 1 + attributeBonus(state, "logic", 0.003, 0.24);
+    if (key === "pressure") delta *= 1 + attributeBonus(state, "resilience", 0.004, 0.32);
+    entries.push([key, delta]);
+  }
+
+  for (const [key, rate] of Object.entries(activity.risksPerHour || {})) {
+    let delta = activityRateToDelta(rate, duration);
+    if (key === "bugs") delta *= context.multipliers.bug * context.risk.bugDebtBoost;
+    if (key === "techDebt") delta *= context.multipliers.debt;
+    if (key === "pressure") delta *= context.multipliers.pressure;
+    if (RISK_RESOURCE_IDS.has(key)) delta *= context.energyStatus.riskMultiplier;
+    if (key === "pressure" && context.focus.id === "freelance") delta *= context.focus.pressure;
     if (options.overtime && (key === "bugs" || key === "techDebt")) delta *= 1.8 * (1 - attributeBonus(state, "logic", 0.004, 0.3));
     if (options.overtime && key === "pressure") delta *= 1.5 * (1 - attributeBonus(state, "resilience", 0.004, 0.3));
-    const applied = applyResourceDelta(state, key, delta);
-    deltas[key] = (deltas[key] || 0) + applied;
+    entries.push([key, delta]);
   }
 
   if (options.overtime) {
     const resilienceRelief = attributeBonus(state, "resilience", 0.004, 0.3);
-    deltas.pressure = (deltas.pressure || 0) + applyResourceDelta(state, "pressure", seconds * 0.003 * energyStatus.riskMultiplier * (1 - resilienceRelief));
+    entries.push(["pressure", duration * 0.003 * context.energyStatus.riskMultiplier * (1 - resilienceRelief)]);
   }
+  return { entries, context };
+}
 
+function estimateActivityPerHour(state, activity, options = {}) {
+  const energyCostPerGameMinute = perHourToPerGameMinute(getActivityEnergyCostPerHour(activity)) * (options.overtime ? 1.25 : 1);
+  const workMinutes = getAffordableWorkSeconds(state, energyCostPerGameMinute, GAME_MINUTES_PER_HOUR);
+  const { entries } = calculateActivityDeltaEntries(state, activity, workMinutes, { ...options, energyCostPerGameMinute });
+  return {
+    deltas: previewActivityDeltaEntries(state, entries),
+    lowEnergy: energyCostPerGameMinute > 0 && workMinutes < GAME_MINUTES_PER_HOUR,
+    minutes: workMinutes
+  };
+}
+
+function settleActivity(state, activity, seconds, options = {}) {
+  const energyCostPerGameMinute = Number(options.energyCostPerGameMinute) || 0;
+  if (activity.id !== "rest" && energyCostPerGameMinute > 0 && seconds <= 0) {
+    return { deltas: {}, levelUps: 0, lowEnergy: true };
+  }
+  const { entries, context } = calculateActivityDeltaEntries(state, activity, seconds, options);
+  const deltas = applyActivityDeltaEntries(state, entries);
   state.stats.totalCodeLines += Math.max(0, deltas.codeLines || 0);
   state.stats.totalBugsFixed += Math.max(0, -(deltas.bugs || 0));
   state.activityStats.totalActiveSeconds += seconds;
   state.activityStats.byActivity[activity.id] = (state.activityStats.byActivity[activity.id] || 0) + seconds;
 
-  const levelUps = addActivityExp(state, activity.id, activity.activityExpPerSecond * seconds * attributeMultiplier * overtimeFactor * learningFocusFactor * qualityFactor);
-  for (const [attr, amount] of Object.entries(activity.attributeExpPerMinute || {})) {
-    addAttributeExp(state, attr, amount * seconds / 60);
+  const levelUps = addActivityExp(state, activity.id, activityRateToDelta(activity.activityExpPerHour, seconds) * context.attributeMultiplier * context.overtimeFactor * context.learningFocusFactor * context.qualityFactor * context.maintenanceFactor);
+  for (const [attr, amount] of Object.entries(activity.attributeExpPerHour || {})) {
+    addAttributeExp(state, attr, activityRateToDelta(amount, seconds));
   }
 
-  return { deltas, levelUps, lowEnergy: activity.id !== "rest" && energyCostPerSecond > 0 && state.resources.energy <= 0 };
+  return { deltas, levelUps, lowEnergy: activity.id !== "rest" && energyCostPerGameMinute > 0 && state.resources.energy <= 0 };
 }
 
 function ensureProjectProgress(state, projectId) {
@@ -2176,14 +2252,14 @@ function settleTime(state, now = Date.now(), options = {}) {
     const overtime = Boolean(scheduleContext && scheduleContext.phase && scheduleContext.phase.overtime && hasActiveWork);
     if (hasActiveWork) {
       result.overtime = result.overtime || overtime;
-      const energyCostPerSecond = getWorkEnergyCostPerSecond(mode, overtime);
-      const workSeconds = getAffordableWorkSeconds(state, energyCostPerSecond, segmentMinutes);
-      if (energyCostPerSecond > 0 && workSeconds < segmentMinutes) result.lowEnergy = true;
+      const energyCostPerGameMinute = getWorkEnergyCostPerGameMinute(mode, overtime);
+      const workSeconds = getAffordableWorkSeconds(state, energyCostPerGameMinute, segmentMinutes);
+      if (energyCostPerGameMinute > 0 && workSeconds < segmentMinutes) result.lowEnergy = true;
       if (workSeconds > 0) result.activeSeconds += workSeconds;
       if (mode.type === "activity") {
         result.activityName = mode.item.name;
         result.activeName = mode.item.name;
-        const segment = settleActivity(state, mode.item, workSeconds, { overtime, energyCostPerSecond });
+        const segment = settleActivity(state, mode.item, workSeconds, { overtime, energyCostPerGameMinute });
         for (const [key, value] of Object.entries(segment.deltas || {})) {
           result.deltas[key] = (result.deltas[key] || 0) + value;
         }
@@ -2193,7 +2269,7 @@ function settleTime(state, now = Date.now(), options = {}) {
         result.activeName = `学习 ${mode.item.name}`;
         if (workSeconds > 0) {
           const modifiers = getWorkModifiers(state, "skill", mode.item, overtime);
-          const energyDelta = consumeWorkEnergy(state, energyCostPerSecond, workSeconds);
+          const energyDelta = consumeWorkEnergy(state, energyCostPerGameMinute, workSeconds);
           if (energyDelta) result.deltas.energy = (result.deltas.energy || 0) + energyDelta;
           messages.push(...settleSkillLearning(state, mode.item, workSeconds, { ...modifiers, events }));
           if (scheduleContext && getSkillLevel(state, mode.item.id) > 0) markSchedulePhaseDone(state, scheduleContext.phase.id);
@@ -2202,7 +2278,7 @@ function settleTime(state, now = Date.now(), options = {}) {
         result.activeName = `项目 ${mode.item.name}`;
         if (workSeconds > 0) {
           const modifiers = getWorkModifiers(state, "project", mode.item, overtime);
-          const energyDelta = consumeWorkEnergy(state, energyCostPerSecond, workSeconds);
+          const energyDelta = consumeWorkEnergy(state, energyCostPerGameMinute, workSeconds);
           if (energyDelta) result.deltas.energy = (result.deltas.energy || 0) + energyDelta;
           messages.push(...settleProject(state, mode.item, workSeconds, { ...options, ...modifiers, events }));
           if (scheduleContext && !state.activeProjectId && !state.projectProgress[mode.item.id]) markSchedulePhaseDone(state, scheduleContext.phase.id);
@@ -2294,7 +2370,7 @@ function startActivity(state, id) {
   state.activeActivityId = id;
   return formatLines([
     `开始活动：${activity.name}。`,
-    `主要产出：${formatActivityRateSummary(activity)}`,
+    `主要产出：${formatActivityRateSummary(state, activity)}`,
     formatNextAdvice(state)
   ]);
 }
@@ -2680,7 +2756,7 @@ function getActivityOptions(state) {
       progressActive: active,
       progressText: `${formatNumber(progress.exp)}/${formatNumber(progress.next)}`,
       requirements: formatActivityRequirements(activity.requirements),
-      output: formatActivityRateSummary(activity),
+      output: formatActivityRateSummary(state, activity),
       command: unlocked ? `start ${activity.id}` : null
     };
   });
@@ -3780,6 +3856,7 @@ module.exports = {
   formatGoals,
   formatGoalSummary,
   formatLiveStatus,
+  estimateActivityPerHour,
   formatLifestyle,
   formatNearestDeadline,
   formatState,
