@@ -94,9 +94,9 @@ const SKILL_ENERGY_COST_PER_HOUR = 7;
 const PROJECT_ENERGY_COST_PER_HOUR_BY_DIFFICULTY = { 1: 8, 2: 8, 3: 10, 4: 12, 5: 14 };
 const REST_RECOVERY_PER_HOUR = {
   active: 4,
-  rest_noon: 10,
-  rest_evening: 7,
-  rest_night: 5
+  rest_noon: 4,
+  rest_evening: 6,
+  rest_night: 8
 };
 const SIDE_HUSTLE_ENERGY_COST_PER_HOUR = 8;
 const SCHEDULE_PHASES = [
@@ -697,10 +697,10 @@ function getLifestyleOptions(state) {
 
 function formatLifestyleEffectSummary(id) {
   const stanceId = normalizeLifestyleStanceId(id);
-  if (stanceId === "health") return "休整完整恢复精力并降低压力。";
-  if (stanceId === "tech_surfing") return "休整以 40% 速度恢复精力，并获得知识。";
-  if (stanceId === "cyber_gaming") return "休整以 60% 速度恢复精力，并更强降低压力。";
-  if (stanceId === "side_hustle") return "深夜休整改为消耗精力，产出金钱和声望并增加压力。";
+  if (stanceId === "health") return "休整恢复精力并降低压力，精力恢复受当前压力抑制。";
+  if (stanceId === "tech_surfing") return "休整以 40% 速度恢复精力，并获得知识；精力恢复受当前压力抑制。";
+  if (stanceId === "cyber_gaming") return "休整以 60% 速度恢复精力，并更强降低压力；精力恢复受当前压力抑制。";
+  if (stanceId === "side_hustle") return "深夜休整改为消耗精力，产出金钱和声望并增加压力；非深夜恢复受当前压力抑制。";
   return "";
 }
 
@@ -751,14 +751,19 @@ function mergeDeltas(target, source = {}) {
   }
 }
 
+function getPressureRecoveryMultiplier(state) {
+  return clamp(1 - (Number(state.resources && state.resources.pressure) || 0) / 125, 0.2, 1);
+}
+
 function settleLifestyleRest(state, windowId, seconds) {
   const stance = getLifestyleStance(state.lifestyleStanceId);
   const deltas = {};
   const duration = Math.max(0, seconds);
   if (!stance || !windowId || duration <= 0) return deltas;
   const baseRecoveryPerSecond = perHourToPerSecond(REST_RECOVERY_PER_HOUR[windowId] || 0);
+  const pressureRecoveryMultiplier = getPressureRecoveryMultiplier(state);
   const applyRecovery = (multiplier = 1) => {
-    const energyDelta = baseRecoveryPerSecond * Math.max(0, multiplier) * duration;
+    const energyDelta = baseRecoveryPerSecond * Math.max(0, multiplier) * pressureRecoveryMultiplier * duration;
     if (energyDelta > 0) deltas.energy = applyResourceDelta(state, "energy", energyDelta);
   };
 
@@ -1168,6 +1173,53 @@ function formatResourceList(values = {}) {
   return entries.length ? entries.join("，") : "无";
 }
 
+function roundRate(value) {
+  const rounded = Math.round((Number(value) || 0) * 100) / 100;
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function formatRateNumber(value) {
+  const rounded = roundRate(value);
+  return Number.isInteger(rounded) ? rounded.toString() : rounded.toString();
+}
+
+function formatResourceRateEntries(entries = []) {
+  const formatted = entries
+    .map(([key, value]) => [key, roundRate(value)])
+    .filter(([, value]) => value !== 0)
+    .map(([key, value]) => `${RESOURCE_NAMES[key] || key} ${value > 0 ? "+" : ""}${formatRateNumber(value)}`);
+  return formatted.length ? formatted.join("，") : "无";
+}
+
+function activityEffectRatesPerGameHour(activity) {
+  const rates = {};
+  for (const [key, value] of Object.entries(activity.effectsPerSecond || {})) {
+    let perHour = value * 60;
+    if (activity.id === "rest" && key === "energy" && perHour > 0) {
+      perHour = REST_RECOVERY_PER_HOUR.active;
+    }
+    rates[key] = perHour;
+  }
+  return rates;
+}
+
+function formatActivityRateSummary(activity) {
+  const effects = Object.entries(activityEffectRatesPerGameHour(activity));
+  const gains = effects.filter(([, value]) => value > 0);
+  const improvements = effects.filter(([, value]) => value < 0);
+  const risks = Object.entries(activity.risksPerSecond || {}).map(([key, value]) => [key, value * 60]);
+  const riskCosts = risks.filter(([, value]) => value > 0);
+  const riskImprovements = risks.filter(([, value]) => value < 0);
+  const sections = [];
+  if (gains.length) sections.push(`收益/游戏小时：${formatResourceRateEntries(gains)}`);
+  if (improvements.length) sections.push(`改善/游戏小时：${formatResourceRateEntries(improvements)}`);
+  if (riskCosts.length) sections.push(`风险/游戏小时：${formatResourceRateEntries(riskCosts)}`);
+  if (riskImprovements.length) sections.push(`风险改善/游戏小时：${formatResourceRateEntries(riskImprovements)}`);
+  const energyCost = getActivityEnergyCostPerHour(activity);
+  if (energyCost > 0) sections.push(`消耗/游戏小时：${formatResourceRateEntries([["energy", -energyCost]])}`);
+  return sections.length ? sections.join("；") : "无";
+}
+
 function formatProjectResourceList(values = {}) {
   const entries = Object.entries(values)
     .filter(([, value]) => value)
@@ -1436,7 +1488,7 @@ function formatActivities(state) {
       const status = state.activeActivityId === activity.id
         ? "进行中"
         : activityUnlocked(state, activity) ? "可开始" : "未解锁";
-      return `${activity.id} - ${activity.name} [${status}] Lv.${progress.level} 等级经验 ${formatNumber(progress.exp)}/${formatNumber(progress.next)}，解锁：${formatActivityRequirements(activity.requirements)}。${activity.description}`;
+      return `${activity.id} - ${activity.name} [${status}] Lv.${progress.level} 等级经验 ${formatNumber(progress.exp)}/${formatNumber(progress.next)}，解锁：${formatActivityRequirements(activity.requirements)}，产出：${formatActivityRateSummary(activity)}。${activity.description}`;
     })
   ]);
 }
@@ -1510,6 +1562,7 @@ function settleActivity(state, activity, seconds, options = {}) {
   const qualityFactor = focus.id === "quality" && qualityActivityIds.has(activity.id) ? focus.quality : 1;
   const productivityFactor = activity.id === "rest" ? 1 : energyStatus.productivityMultiplier;
   const positiveFactor = activityMultiplier * attributeMultiplier * productivityFactor * overtimeFactor * learningFocusFactor * qualityFactor;
+  const pressureRecoveryMultiplier = getPressureRecoveryMultiplier(state);
   const deltas = {};
 
   if (energyCostPerSecond > 0) deltas.energy = consumeWorkEnergy(state, energyCostPerSecond, seconds);
@@ -1518,6 +1571,7 @@ function settleActivity(state, activity, seconds, options = {}) {
     let delta = value * seconds;
     const fixedRestEnergy = activity.id === "rest" && key === "energy" && delta > 0;
     if (fixedRestEnergy) delta = perHourToPerSecond(REST_RECOVERY_PER_HOUR.active) * seconds;
+    if (fixedRestEnergy) delta *= pressureRecoveryMultiplier;
     if (delta > 0 && !fixedRestEnergy) delta *= positiveFactor;
     if (key === "codeLines" && delta > 0) delta *= multipliers.code * risk.codeEfficiency;
     if (key === "money" && delta > 0) delta *= multipliers.money;
@@ -1771,7 +1825,7 @@ function isSchedulePauseMinute(state) {
 
 function describeScheduleSlot(slot) {
   if (!slot) return "未安排";
-  if (slot.type === "none") return "休整";
+  if (slot.type === "none") return "晚间放松";
   if (slot.type === "activity") {
     const activity = activityById(slot.id);
     return activity ? `活动：${activity.name}` : `活动：${slot.id}`;
@@ -1816,7 +1870,7 @@ function setScheduleSlot(state, phaseId, type, id) {
   if (type === "none") {
     if (phase.id !== "evening") return "只有晚上可以安排 none。";
     state.scheduleDraft.slots[phase.id] = { type: "none", id: null };
-    return `已安排 ${phase.name}：休整。`;
+    return `已安排 ${phase.name}：晚间放松。`;
   }
   if (!["activity", "skill", "project"].includes(type)) return "类型只能是 activity、skill、project，晚上还可 none。";
   const slot = normalizeScheduleSlot({ type, id }, phase.id);
@@ -2240,7 +2294,7 @@ function startActivity(state, id) {
   state.activeActivityId = id;
   return formatLines([
     `开始活动：${activity.name}。`,
-    `主要产出：${formatResourceList(activity.effectsPerSecond || {})}`,
+    `主要产出：${formatActivityRateSummary(activity)}`,
     formatNextAdvice(state)
   ]);
 }
@@ -2513,7 +2567,7 @@ function helpText() {
     "  plan morning activity <id>   安排上午活动",
     "  plan afternoon skill <id>    安排下午学习",
     "  plan evening project <id>    安排晚上项目（加班）",
-    "  plan evening none            晚上休整",
+    "  plan evening none            晚间放松",
     "  plan confirm           确认今日日程，确认后不可修改",
     "  plan clear             清空未确认的日程草稿",
     "  activities             查看活动列表",
@@ -2626,7 +2680,7 @@ function getActivityOptions(state) {
       progressActive: active,
       progressText: `${formatNumber(progress.exp)}/${formatNumber(progress.next)}`,
       requirements: formatActivityRequirements(activity.requirements),
-      output: formatResourceList(activity.effectsPerSecond || {}),
+      output: formatActivityRateSummary(activity),
       command: unlocked ? `start ${activity.id}` : null
     };
   });
@@ -2664,8 +2718,8 @@ function getScheduleOptions(state) {
     ...phaseOptions,
     {
       id: "evening-none",
-      name: "晚上休整",
-      description: "晚上不安排任务，避免加班压力。",
+      name: "晚间放松",
+      description: "晚上不安排任务，避免加班压力，并按当前作息基调进行轻量恢复。",
       status: state.lockedSchedule ? "已锁定" : "可选择",
       command: state.lockedSchedule ? null : "plan evening none"
     },

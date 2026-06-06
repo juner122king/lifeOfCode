@@ -670,6 +670,70 @@ test("作息基调按休整窗口和属性结算", () => {
   assert.equal(gaming.pendingMorningEnergyCapMultiplier, undefined);
 });
 
+test("基础精力恢复速率为午休低于晚间低于深夜", () => {
+  const now = 1_700_000_000_000;
+  const makeRestState = (minuteOfDay) => {
+    const state = createNewState(now);
+    state.worldTimeMinutes = minuteOfDay;
+    state.lastTick = now;
+    state.resources.energy = 0;
+    state.resources.pressure = 0;
+    state.lockedSchedule = { day: 1, slots: { evening: { type: "none", id: null } } };
+    return state;
+  };
+
+  const noon = makeRestState(12 * 60);
+  const evening = makeRestState(18 * 60);
+  const night = makeRestState(21 * 60);
+
+  settleTime(noon, now + 60_000, { randomEvents: false });
+  settleTime(evening, now + 60_000, { randomEvents: false });
+  settleTime(night, now + 60_000, { randomEvents: false });
+
+  assert.ok(noon.resources.energy < evening.resources.energy);
+  assert.ok(evening.resources.energy < night.resources.energy);
+  assert.ok(Math.abs(noon.resources.energy - 4) < 0.000001);
+  assert.ok(Math.abs(evening.resources.energy - 6) < 0.000001);
+  assert.ok(Math.abs(night.resources.energy - 8) < 0.000001);
+});
+
+test("压力按线性倍率抑制正向精力恢复", () => {
+  const now = 1_700_000_000_000;
+  const settleNoonAtPressure = (pressure) => {
+    const state = createNewState(now);
+    state.worldTimeMinutes = 12 * 60;
+    state.lastTick = now;
+    state.resources.energy = 0;
+    state.resources.pressure = pressure;
+    settleTime(state, now + 60_000, { randomEvents: false });
+    return state.resources.energy;
+  };
+
+  assert.ok(Math.abs(settleNoonAtPressure(0) - 4) < 0.000001);
+  assert.ok(Math.abs(settleNoonAtPressure(50) - 2.4) < 0.000001);
+  assert.ok(Math.abs(settleNoonAtPressure(100) - 0.8) < 0.000001);
+});
+
+test("主动 rest 的精力恢复受压力抑制但仍降低压力", () => {
+  const now = 1_700_000_000_000;
+  const lowPressure = createNewState(now);
+  const highPressure = createNewState(now);
+  for (const state of [lowPressure, highPressure]) {
+    state.worldTimeMinutes = 9 * 60;
+    state.lastTick = now;
+    state.resources.energy = 0;
+    startActivity(state, "rest");
+  }
+  highPressure.resources.pressure = 100;
+
+  settleTime(lowPressure, now + 60_000, { randomEvents: false });
+  settleTime(highPressure, now + 60_000, { randomEvents: false });
+
+  assert.ok(Math.abs(lowPressure.resources.energy - 4) < 0.000001);
+  assert.ok(Math.abs(highPressure.resources.energy - 0.8) < 0.000001);
+  assert.ok(highPressure.resources.pressure < 100);
+});
+
 test("side_hustle 深夜即时消耗精力并产生收益", () => {
   const now = 1_700_000_000_000;
   const noon = createNewState(now);
@@ -705,6 +769,36 @@ test("side_hustle 深夜即时消耗精力并产生收益", () => {
   settleTime(lowFocus, now + 12 * 60 * 1000, { randomEvents: false });
   settleTime(highFocus, now + 12 * 60 * 1000, { randomEvents: false });
   assert.equal(highFocus.resources.energy, lowFocus.resources.energy);
+});
+
+test("side_hustle 深夜消耗不受压力影响，午休恢复仍受压力抑制", () => {
+  const now = 1_700_000_000_000;
+  const lowPressureNight = createNewState(now);
+  const highPressureNight = createNewState(now);
+  for (const state of [lowPressureNight, highPressureNight]) {
+    state.lifestyleStanceId = "side_hustle";
+    state.worldTimeMinutes = 21 * 60;
+    state.lastTick = now;
+    state.resources.energy = 100;
+  }
+  highPressureNight.resources.pressure = 100;
+  settleTime(lowPressureNight, now + 60_000, { randomEvents: false });
+  settleTime(highPressureNight, now + 60_000, { randomEvents: false });
+  assert.equal(highPressureNight.resources.energy, lowPressureNight.resources.energy);
+
+  const lowPressureNoon = createNewState(now);
+  const highPressureNoon = createNewState(now);
+  for (const state of [lowPressureNoon, highPressureNoon]) {
+    state.lifestyleStanceId = "side_hustle";
+    state.worldTimeMinutes = 12 * 60;
+    state.lastTick = now;
+    state.resources.energy = 0;
+  }
+  highPressureNoon.resources.pressure = 100;
+  settleTime(lowPressureNoon, now + 60_000, { randomEvents: false });
+  settleTime(highPressureNoon, now + 60_000, { randomEvents: false });
+  assert.ok(Math.abs(lowPressureNoon.resources.energy - 4) < 0.000001);
+  assert.ok(Math.abs(highPressureNoon.resources.energy - 0.8) < 0.000001);
 });
 
 test("休整 tick 显示具体行动和实际产出摘要", () => {
@@ -752,7 +846,11 @@ test("start feature-coding 后只结算写功能活动", () => {
   const now = 1_700_000_000_000;
   const state = createNewState(now);
 
-  assert.match(startActivity(state, "feature-coding"), /开始活动：写功能/);
+  const startMessage = startActivity(state, "feature-coding");
+  assert.match(startMessage, /开始活动：写功能/);
+  assert.match(startMessage, /收益\/游戏小时：代码 \+29\.7/);
+  assert.match(startMessage, /风险\/游戏小时：Bug \+1\.24，技术债 \+0\.83，压力 \+0\.28/);
+  assert.match(startMessage, /消耗\/游戏小时：精力 -8/);
   settleTime(state, now + 60_000, { randomEvents: false });
 
   assert.ok(state.resources.codeLines > 0);
@@ -808,8 +906,29 @@ test("activities 展示活动列表、等级、锁定状态和当前状态", () 
 
   assert.match(message, /feature-coding - 写功能 \[进行中\] Lv\.1/);
   assert.match(message, /等级经验/);
+  assert.match(message, /产出：收益\/游戏小时：代码 \+29\.7/);
+  assert.match(message, /风险\/游戏小时：Bug \+1\.24/);
   assert.match(message, /architecture - 架构设计 \[未解锁\]/);
   assert.match(message, /rest - 休息恢复/);
+});
+
+test("activity options 按游戏小时展示收益、风险、改善和精力", () => {
+  const state = createNewState();
+
+  const options = getActivityOptions(state);
+  const featureCoding = options.find((item) => item.id === "feature-coding");
+  const bugHunting = options.find((item) => item.id === "bug-hunting");
+  const rest = options.find((item) => item.id === "rest");
+
+  assert.equal(
+    featureCoding.output,
+    "收益/游戏小时：代码 +29.7；风险/游戏小时：Bug +1.24，技术债 +0.83，压力 +0.28；消耗/游戏小时：精力 -8"
+  );
+  assert.equal(
+    bugHunting.output,
+    "收益/游戏小时：测试 +1.32；改善/游戏小时：Bug -7.02，压力 -0.39；消耗/游戏小时：精力 -8"
+  );
+  assert.equal(rest.output, "收益/游戏小时：精力 +4；改善/游戏小时：压力 -3.12");
 });
 
 test("活动经验达到阈值后升级", () => {
