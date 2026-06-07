@@ -79,19 +79,19 @@ const ENERGY_STATUS_DEFS = [
   { id: "full", name: "充沛", min: 90, max: 100, productivityMultiplier: 1.1, riskMultiplier: 0.9 }
 ];
 const ACTIVITY_ENERGY_COST_PER_HOUR = {
-  study: 6,
-  documentation: 6,
-  "prompt-engineering": 6,
-  "feature-coding": 8,
-  "bug-hunting": 8,
-  refactoring: 8,
-  testing: 8,
-  "open-source": 8,
-  "code-review": 8,
-  freelancing: 10,
-  architecture: 10,
-  "performance-tuning": 10,
-  "incident-response": 12
+  study: 8.4,
+  documentation: 8.4,
+  "prompt-engineering": 8.4,
+  "feature-coding": 11.2,
+  "bug-hunting": 11.2,
+  refactoring: 11.2,
+  testing: 11.2,
+  "open-source": 11.2,
+  "code-review": 11.2,
+  freelancing: 14,
+  architecture: 14,
+  "performance-tuning": 14,
+  "incident-response": 16.8
 };
 const SKILL_ENERGY_COST_PER_HOUR = 7;
 const PROJECT_ENERGY_COST_PER_HOUR_BY_DIFFICULTY = { 1: 8, 2: 8, 3: 10, 4: 12, 5: 14 };

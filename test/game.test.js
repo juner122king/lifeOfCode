@@ -858,7 +858,7 @@ test("start feature-coding 后只结算写功能活动", () => {
   assert.match(startMessage, /开始活动：写功能/);
   assert.match(startMessage, /收益\/游戏小时：代码 \+35\.55/);
   assert.match(startMessage, /风险\/游戏小时：Bug \+1\.45，技术债 \+0\.94，压力 \+0\.32/);
-  assert.match(startMessage, /精力消耗\/游戏小时：精力 -8/);
+  assert.match(startMessage, /精力消耗\/游戏小时：精力 -11\.2/);
   settleTime(state, now + 60_000, { randomEvents: false });
 
   assert.ok(state.resources.codeLines > 0);
@@ -930,13 +930,50 @@ test("activity options 按游戏小时展示收益、风险、改善和精力", 
 
   assert.equal(
     featureCoding.output,
-    "收益/游戏小时：代码 +35.55；风险/游戏小时：Bug +1.45，技术债 +0.94，压力 +0.32；精力消耗/游戏小时：精力 -8"
+    "收益/游戏小时：代码 +35.55；风险/游戏小时：Bug +1.45，技术债 +0.94，压力 +0.32；精力消耗/游戏小时：精力 -11.2"
   );
   assert.equal(
     bugHunting.output,
-    "收益/游戏小时：测试 +1.33；精力消耗/游戏小时：精力 -8"
+    "收益/游戏小时：测试 +1.33；精力消耗/游戏小时：精力 -11.2"
   );
   assert.equal(rest.output, "当前无可见变化");
+});
+
+test("activity energy costs and quality mitigation match balance targets", () => {
+  const byId = Object.fromEntries(content.activities.map((activity) => [activity.id, activity]));
+  const expectedEnergyCosts = {
+    study: 8.4,
+    documentation: 8.4,
+    "prompt-engineering": 8.4,
+    "feature-coding": 11.2,
+    "bug-hunting": 11.2,
+    refactoring: 11.2,
+    testing: 11.2,
+    "open-source": 11.2,
+    "code-review": 11.2,
+    freelancing: 14,
+    architecture: 14,
+    "performance-tuning": 14,
+    "incident-response": 16.8,
+    rest: 0
+  };
+  const expectedMitigation = {
+    "bug-hunting": { bugs: 3.64 },
+    refactoring: { techDebt: 3.19 },
+    testing: { bugs: 1.14 },
+    documentation: { techDebt: 0.91 },
+    architecture: { techDebt: 2.28 },
+    "code-review": { bugs: 3.64, techDebt: 2.28 },
+    "performance-tuning": { techDebt: 1.37 },
+    "incident-response": { bugs: 5.46 }
+  };
+
+  for (const [id, cost] of Object.entries(expectedEnergyCosts)) {
+    assert.equal(byId[id].energyCostPerHour, cost);
+  }
+  for (const [id, mitigation] of Object.entries(expectedMitigation)) {
+    assert.deepEqual(byId[id].mitigationPerHour, mitigation);
+  }
 });
 
 test("activity estimate matches one-hour settlement deltas", () => {
