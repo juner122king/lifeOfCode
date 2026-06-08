@@ -1342,6 +1342,7 @@ function pushMessageEvent(messages, events, category, text, severity = "info") {
 }
 
 function createTuiTicker(state, result = null, changedResources = "") {
+  syncScheduledActiveMode(state);
   const activeSeconds = result && Number(result.activeSeconds) > 0 ? Math.floor(Number(result.activeSeconds)) : 0;
   const activeName = result && result.activeName;
   if (activeSeconds > 0 && activeName) {
@@ -2223,6 +2224,7 @@ function settleTime(state, now = Date.now(), options = {}) {
     return { seconds: 0, messages, events, ticker: createTuiTicker(state) };
   }
 
+  syncScheduledActiveMode(state);
   if (seconds <= 0) {
     return { seconds: 0, messages, events, ticker: createTuiTicker(state) };
   }

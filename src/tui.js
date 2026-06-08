@@ -15,6 +15,7 @@ const {
   processCommand,
   replaceStateContents,
   saveProfile,
+  SCHEDULE_PHASES,
   settleTime
 } = require("./game");
 const {
@@ -47,6 +48,18 @@ const DEFAULT_TERMINAL_COLUMNS = 80;
 const TOP_BAR_HEIGHT = 6;
 const TUI_SETTLE_TICK_MS = 3000;
 const TOP_RESOURCE_SUMMARY_IDS = ["codeLines", "money", "knowledge", "tests", "docs", "architecture", "leads", "reputation", "bugs", "techDebt"];
+const DAILY_PLANNER_KINDS = ["activity", "skill", "project"];
+const DAILY_PLANNER_KIND_TO_PANEL = {
+  activity: "activities",
+  skill: "skills",
+  project: "projects"
+};
+const DAILY_PLANNER_KIND_LABELS = {
+  activity: "活动",
+  skill: "技能学习",
+  project: "项目"
+};
+const SCHEDULE_PHASE_IDS = SCHEDULE_PHASES.map((phase) => phase.id);
 const GRAPHEME_SEGMENTER = typeof Intl !== "undefined" && Intl.Segmenter
   ? new Intl.Segmenter("zh-Hans", { granularity: "grapheme" })
   : null;
@@ -491,6 +504,72 @@ function commandForPanel(panelId, option, schedulePhase = "morning") {
   if (panelId === "skills") return option.command && option.command.startsWith("learn ") ? `plan ${schedulePhase} skill ${option.id}` : option.command;
   if (panelId === "projects") return option.id === "promote" ? option.command : `plan ${schedulePhase} project ${option.id}`;
   return option.command;
+}
+
+function normalizeDailyPlannerKind(kind) {
+  const value = String(kind || "").toLowerCase();
+  if (value === "activities" || value === "a") return "activity";
+  if (value === "skills" || value === "s") return "skill";
+  if (value === "projects" || value === "p") return "project";
+  return DAILY_PLANNER_KINDS.includes(value) ? value : null;
+}
+
+function isDailyPlannerMode(view) {
+  const schedule = view && view.schedule;
+  return Boolean(schedule && schedule.waiting && !schedule.confirmed);
+}
+
+function getDailyPlannerCandidateOptions(state, kind) {
+  const normalized = normalizeDailyPlannerKind(kind);
+  if (!normalized) return [];
+  if (normalized === "activity") return getActivityOptions(state);
+  if (normalized === "skill") {
+    return getManagementOptions(state, "skills")
+      .filter((option) => option && option.command && option.command.startsWith("learn "));
+  }
+  if (normalized === "project") {
+    return getManagementOptions(state, "projects")
+      .filter((option) => option && option.id !== "promote");
+  }
+  return [];
+}
+
+function commandForDailyPlannerSelection(kind, option, phaseId) {
+  const normalizedKind = normalizeDailyPlannerKind(kind);
+  const normalizedPhase = SCHEDULE_PHASE_IDS.includes(phaseId) ? phaseId : null;
+  if (!option || !normalizedKind || !normalizedPhase) return null;
+  if (normalizedKind === "activity") return option.unlocked && !option.locked ? `plan ${normalizedPhase} activity ${option.id}` : null;
+  if (normalizedKind === "skill") return option.command && option.command.startsWith("learn ") ? `plan ${normalizedPhase} skill ${option.id}` : null;
+  if (normalizedKind === "project") return option.id === "promote" ? null : `plan ${normalizedPhase} project ${option.id}`;
+  return null;
+}
+
+function getNextDailyPlannerPhaseId(phaseId) {
+  if (phaseId === "morning") return "afternoon";
+  if (phaseId === "afternoon") return "evening";
+  if (phaseId === "evening") return "evening";
+  return "morning";
+}
+
+function handleDailyPlannerEnterKeypress(kind, option, phaseId) {
+  const command = commandForDailyPlannerSelection(kind, option, phaseId);
+  return {
+    command,
+    nextPhaseId: command ? getNextDailyPlannerPhaseId(phaseId) : phaseId
+  };
+}
+
+function normalizeDailyPlannerDay(day) {
+  const numeric = Number(day);
+  return Number.isFinite(numeric) ? Math.floor(numeric) : null;
+}
+
+function shouldResetDailyPlannerPhase(wasDailyPlannerMode, previousDay, nextDailyPlannerMode, nextDay) {
+  if (!nextDailyPlannerMode) return false;
+  if (!wasDailyPlannerMode) return true;
+  const normalizedNextDay = normalizeDailyPlannerDay(nextDay);
+  if (normalizedNextDay === null) return false;
+  return normalizeDailyPlannerDay(previousDay) !== normalizedNextDay;
 }
 
 function shouldExitProfileCreationMode(input, key = {}) {
@@ -969,6 +1048,64 @@ async function startTui() {
     );
   }
 
+  function DailyPlannerPanel({ view, phaseId, kind, options, selectedIndex, budget, paused }) {
+    const normalizedKind = normalizeDailyPlannerKind(kind) || "activity";
+    const activePanel = DAILY_PLANNER_KIND_TO_PANEL[normalizedKind] || "activities";
+    const accent = THEME.panels.schedule || THEME.panel;
+    const listAccent = THEME.panels[activePanel] || THEME.panel;
+    const page = getPageWindow(options.length, selectedIndex, budget.pageSize);
+    const visibleOptions = options.slice(page.start, page.end);
+    const selectedOption = options[selectedIndex];
+    const mainWidth = budget.terminalColumns - 2;
+    const slotWidth = budget.narrow ? mainWidth : 36;
+    const listWidth = budget.narrow ? mainWidth : Math.max(28, Math.floor((mainWidth - slotWidth - 3) * 0.45));
+    const detailWidth = budget.narrow ? mainWidth : Math.max(30, mainWidth - slotWidth - listWidth - 3);
+    const contentWidth = Math.max(16, slotWidth - 4);
+    const slots = view && view.schedule && Array.isArray(view.schedule.slots) ? view.schedule.slots : [];
+    const slotPanel = h(Box, { borderStyle: "round", borderColor: accent, paddingX: 1, flexDirection: "column", height: budget.narrow ? undefined : budget.mainHeight, width: budget.narrow ? undefined : slotWidth },
+      h(SectionTitle, { color: accent }, "今日日程草稿"),
+      ...slots.map((slot, index) => {
+        const selected = slot.id === phaseId;
+        const required = slot.required ? "必填" : "可选";
+        const marker = selected ? ">" : " ";
+        return h(Box, { key: slot.id, gap: 1 },
+          h(Text, { color: selected ? accent : THEME.muted, bold: selected }, `${marker}${index + 1}`),
+          h(Text, { color: selected ? accent : THEME.text, bold: selected }, trimText(`${slot.name} ${slot.timeRange}`, 14)),
+          h(Text, { color: slot.required ? THEME.status.warn : THEME.muted }, required),
+          h(Text, { color: THEME.text }, trimText(slot.label || "未安排", Math.max(8, contentWidth - 20)))
+        );
+      })
+    );
+    const listPanel = h(Box, { borderStyle: "round", borderColor: listAccent, paddingX: 1, flexDirection: "column", height: budget.narrow ? budget.listHeight : budget.mainHeight, width: budget.narrow ? undefined : listWidth },
+      h(Text, { color: THEME.muted }, `${DAILY_PLANNER_KIND_LABELS[normalizedKind]}  第 ${page.pageCount ? page.page + 1 : 0}/${page.pageCount} 页  ${options.length} 项`),
+      ...visibleOptions.map((option, offset) => {
+        const absoluteIndex = page.start + offset;
+        const selected = absoluteIndex === selectedIndex;
+        const meta = compactOptionMeta(option);
+        const nameWidth = Math.max(8, listWidth - 22);
+        return h(Box, { key: option.id, gap: 1 },
+          h(Text, { color: selected ? listAccent : THEME.muted, bold: selected }, selected ? ">" : " "),
+          h(Text, { color: selected ? listAccent : THEME.text, bold: selected }, trimText(option.name, nameWidth)),
+          h(Badge, { status: option.status }),
+          meta ? h(Text, { color: THEME.muted }, trimText(meta, 16)) : null
+        );
+      })
+    );
+    const detailPanel = h(DetailPanel, { activePanel, option: selectedOption, height: budget.detailHeight, width: detailWidth, paused });
+    if (budget.narrow) {
+      return h(Box, { flexDirection: "column", gap: 0, height: budget.mainHeight },
+        slotPanel,
+        listPanel,
+        detailPanel
+      );
+    }
+    return h(Box, { flexDirection: "row", gap: 1, height: budget.mainHeight },
+      slotPanel,
+      listPanel,
+      detailPanel
+    );
+  }
+
   function CharacterCardPanel({ view, budget }) {
     const card = view.characterCard;
     const attributeRows = getCharacterCardAttributeRows(view);
@@ -1064,7 +1201,7 @@ async function startTui() {
 
   const MemoLogPanel = React.memo(LogPanel);
 
-  function Footer({ paused, creatingProfile, schedulePhase }) {
+  function Footer({ paused, creatingProfile, schedulePhase, dailyPlannerMode }) {
     if (creatingProfile) {
       return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
         h(KeyHint, { label: "Tab", text: "切换" }),
@@ -1072,6 +1209,19 @@ async function startTui() {
         h(KeyHint, { label: "PgUp/PgDn", text: "翻页" }),
         h(KeyHint, { label: "Enter", text: "选择人物卡" }),
         h(KeyHint, { label: "Esc", text: "取消" }),
+        h(KeyHint, { label: "Space", text: paused ? "恢复" : "暂停" }),
+        h(KeyHint, { label: "Q", text: "保存退出" })
+      );
+    }
+    if (dailyPlannerMode) {
+      return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
+        h(KeyHint, { label: "1/2/3", text: "阶段" }),
+        h(KeyHint, { label: "A/S/P", text: "类型" }),
+        h(KeyHint, { label: "↑/↓", text: "选择" }),
+        h(KeyHint, { label: "Enter", text: "安排" }),
+        h(KeyHint, { label: "0", text: "放松" }),
+        h(KeyHint, { label: "Y", text: "确认" }),
+        h(KeyHint, { label: "X", text: "清空" }),
         h(KeyHint, { label: "Space", text: paused ? "恢复" : "暂停" }),
         h(KeyHint, { label: "Q", text: "保存退出" })
       );
@@ -1095,8 +1245,11 @@ async function startTui() {
     const [selected, setSelected] = useState({});
     const [paused, setPaused] = useState(false);
     const [schedulePhase, setSchedulePhase] = useState("morning");
+    const [dailyPlannerKind, setDailyPlannerKind] = useState("activity");
     const [profileCreationStartedAt, setProfileCreationStartedAt] = useState(null);
     const pendingDeleteProfileIdRef = useRef(null);
+    const dailyPlannerModeRef = useRef(false);
+    const dailyPlannerDayRef = useRef(null);
     const [logs, setLogs] = useState([]);
     const [ticker, setTicker] = useState(() => createTuiTicker(stateRef.current));
     const [revision, refresh] = useReducer((value) => value + 1, 0);
@@ -1111,6 +1264,28 @@ async function startTui() {
       setLogs((current) => appendLogEntries(current, created.entries));
     }
 
+    function updateDailyPlannerAutoPanel() {
+      const nextView = getGameViewModel(stateRef.current);
+      const nextMode = !needsInitialProfile && isDailyPlannerMode(nextView);
+      const nextDay = nextMode && nextView.schedule ? nextView.schedule.day : null;
+      if (nextMode && !dailyPlannerModeRef.current) setActivePanel("schedule");
+      if (shouldResetDailyPlannerPhase(dailyPlannerModeRef.current, dailyPlannerDayRef.current, nextMode, nextDay)) {
+        setSchedulePhase("morning");
+      }
+      dailyPlannerModeRef.current = nextMode;
+      dailyPlannerDayRef.current = nextMode ? nextDay : null;
+    }
+
+    function runCommand(command) {
+      const result = processTuiCommand(stateRef.current, command, { paused, randomEvents: true });
+      addLogs(createCommandLogMessages(command, result.messages));
+      setTicker(createTuiTicker(stateRef.current));
+      if (result.exit) exit();
+      updateDailyPlannerAutoPanel();
+      refresh();
+      return result;
+    }
+
     useEffect(() => {
       if (needsInitialProfile) {
         addLogs(["请选择人物卡创建 default 档案。"], "system");
@@ -1123,6 +1298,7 @@ async function startTui() {
       if (offline.seconds > 0 || (offline.events && offline.events.length)) {
         addLogs([{ category: "system", severity: "info", text: `离线结算 ${offline.seconds} 秒。` }, ...(offline.events || [])]);
       }
+      updateDailyPlannerAutoPanel();
       refresh();
     }, []);
 
@@ -1135,12 +1311,19 @@ async function startTui() {
         setTicker(result.ticker || createTuiTicker(stateRef.current));
         if (result.events && result.events.length) addLogs(result.events);
         if (shouldSaveSettleResult(result)) saveProfile(stateRef.current);
+        updateDailyPlannerAutoPanel();
         refresh();
       }, TUI_SETTLE_TICK_MS);
       return () => clearInterval(timer);
     }, [paused, needsInitialProfile]);
 
+    const view = getGameViewModel(stateRef.current);
+    const budget = calculateLayoutBudget(stdout && stdout.rows, stdout && stdout.columns);
+    const creatingProfile = activePanel === "profiles" && profileCreationStartedAt !== null;
+    const dailyPlannerMode = activePanel === "schedule" && !needsInitialProfile && !creatingProfile && isDailyPlannerMode(view);
+    const selectedKey = dailyPlannerMode ? `dailyPlanner:${dailyPlannerKind}` : activePanel;
     const options = useMemo(() => {
+      if (dailyPlannerMode) return getDailyPlannerCandidateOptions(stateRef.current, dailyPlannerKind);
       if (needsInitialProfile && activePanel === "cards") return getCharacterCardOptions();
       if (activePanel === "profiles") {
         return getProfilePageOptions(stateRef.current, {
@@ -1149,11 +1332,8 @@ async function startTui() {
         });
       }
       return getPanelOptions(stateRef.current, activePanel);
-    }, [activePanel, revision, needsInitialProfile, profileCreationStartedAt]);
-    const selectedIndex = Math.min(selected[activePanel] || 0, Math.max(0, options.length - 1));
-    const view = getGameViewModel(stateRef.current);
-    const budget = calculateLayoutBudget(stdout && stdout.rows, stdout && stdout.columns);
-    const creatingProfile = activePanel === "profiles" && profileCreationStartedAt !== null;
+    }, [activePanel, revision, needsInitialProfile, profileCreationStartedAt, dailyPlannerMode, dailyPlannerKind]);
+    const selectedIndex = Math.min(selected[selectedKey] || 0, Math.max(0, options.length - 1));
 
     useInput((input, key) => {
       if (input.toLowerCase() === "q") {
@@ -1186,6 +1366,59 @@ async function startTui() {
         addLogs([`当前排程阶段：${phases[Number(input) - 1]}`], "command");
         return;
       }
+      if (dailyPlannerMode) {
+        const plannerShortcut = { a: "activity", s: "skill", p: "project" }[input.toLowerCase()];
+        if (plannerShortcut) {
+          setDailyPlannerKind(plannerShortcut);
+          addLogs([`当前候选类型：${DAILY_PLANNER_KIND_LABELS[plannerShortcut]}`], "command");
+          pendingDeleteProfileIdRef.current = null;
+          return;
+        }
+        if (input === "0") {
+          runCommand("plan evening none");
+          pendingDeleteProfileIdRef.current = null;
+          return;
+        }
+        if (input.toLowerCase() === "y") {
+          runCommand("plan confirm");
+          pendingDeleteProfileIdRef.current = null;
+          return;
+        }
+        if (input.toLowerCase() === "x") {
+          runCommand("plan clear");
+          pendingDeleteProfileIdRef.current = null;
+          return;
+        }
+        if (key.upArrow) {
+          setSelected((current) => ({ ...current, [selectedKey]: Math.max(0, selectedIndex - 1) }));
+          pendingDeleteProfileIdRef.current = null;
+          return;
+        }
+        if (key.downArrow) {
+          setSelected((current) => ({ ...current, [selectedKey]: Math.min(Math.max(0, options.length - 1), selectedIndex + 1) }));
+          pendingDeleteProfileIdRef.current = null;
+          return;
+        }
+        if (key.pageUp) {
+          setSelected((current) => ({ ...current, [selectedKey]: Math.max(0, selectedIndex - budget.pageSize) }));
+          pendingDeleteProfileIdRef.current = null;
+          return;
+        }
+        if (key.pageDown) {
+          setSelected((current) => ({ ...current, [selectedKey]: Math.min(Math.max(0, options.length - 1), selectedIndex + budget.pageSize) }));
+          pendingDeleteProfileIdRef.current = null;
+          return;
+        }
+        if (key.return) {
+          const result = handleDailyPlannerEnterKeypress(dailyPlannerKind, options[selectedIndex], schedulePhase);
+          if (result.command) {
+            runCommand(result.command);
+            setSchedulePhase(result.nextPhaseId);
+          }
+          pendingDeleteProfileIdRef.current = null;
+          return;
+        }
+      }
       if (key.tab) {
         const currentIndex = PANELS.findIndex((panel) => panel.id === activePanel);
         setActivePanel(PANELS[(currentIndex + 1) % PANELS.length].id);
@@ -1207,22 +1440,22 @@ async function startTui() {
         return;
       }
       if (key.upArrow) {
-        setSelected((current) => ({ ...current, [activePanel]: Math.max(0, selectedIndex - 1) }));
+        setSelected((current) => ({ ...current, [selectedKey]: Math.max(0, selectedIndex - 1) }));
         pendingDeleteProfileIdRef.current = null;
         return;
       }
       if (key.downArrow) {
-        setSelected((current) => ({ ...current, [activePanel]: Math.min(Math.max(0, options.length - 1), selectedIndex + 1) }));
+        setSelected((current) => ({ ...current, [selectedKey]: Math.min(Math.max(0, options.length - 1), selectedIndex + 1) }));
         pendingDeleteProfileIdRef.current = null;
         return;
       }
       if (key.pageUp) {
-        setSelected((current) => ({ ...current, [activePanel]: Math.max(0, selectedIndex - budget.pageSize) }));
+        setSelected((current) => ({ ...current, [selectedKey]: Math.max(0, selectedIndex - budget.pageSize) }));
         pendingDeleteProfileIdRef.current = null;
         return;
       }
       if (key.pageDown) {
-        setSelected((current) => ({ ...current, [activePanel]: Math.min(Math.max(0, options.length - 1), selectedIndex + budget.pageSize) }));
+        setSelected((current) => ({ ...current, [selectedKey]: Math.min(Math.max(0, options.length - 1), selectedIndex + budget.pageSize) }));
         pendingDeleteProfileIdRef.current = null;
         return;
       }
@@ -1263,11 +1496,7 @@ async function startTui() {
         }
         const command = commandForPanel(activePanel, selectedOption, schedulePhase);
         if (!command) return;
-        const result = processTuiCommand(stateRef.current, command, { paused, randomEvents: true });
-        addLogs(createCommandLogMessages(command, result.messages));
-        setTicker(createTuiTicker(stateRef.current));
-        if (result.exit) exit();
-        refresh();
+        runCommand(command);
       }
       if (input.toLowerCase() === "d" && activePanel === "profiles") {
         const option = options[selectedIndex];
@@ -1281,11 +1510,13 @@ async function startTui() {
 
     return h(Box, { flexDirection: "column", paddingX: 1 },
       h(TopBar, { view, paused, activePanel, budget }),
-      activePanel === "cards" && !needsInitialProfile
+      dailyPlannerMode
+        ? h(DailyPlannerPanel, { view, phaseId: schedulePhase, kind: dailyPlannerKind, options, selectedIndex, budget, paused })
+        : activePanel === "cards" && !needsInitialProfile
         ? h(CharacterCardPanel, { view, budget })
         : h(MainPanel, { activePanel, options, selectedIndex, budget, paused }),
       h(MemoLogPanel, { ticker, logs, view, budget }),
-      h(Footer, { paused, creatingProfile, schedulePhase })
+      h(Footer, { paused, creatingProfile, schedulePhase, dailyPlannerMode })
     );
   }
 
@@ -1304,6 +1535,7 @@ module.exports = {
   TUI_SETTLE_TICK_MS,
   appendLogEntries,
   calculateLayoutBudget,
+  commandForDailyPlannerSelection,
   createCommandLogMessages,
   createLogEntries,
   formatOptionDetail,
@@ -1312,19 +1544,24 @@ module.exports = {
   formatTopStatusLine,
   getCharacterCardAttributeRows,
   getCurrentLogRows,
+  getDailyPlannerCandidateOptions,
+  getNextDailyPlannerPhaseId,
   getTextDisplayWidth,
   getOptionProgress,
   getProfilePageOptions,
   getPageWindow,
   getLogRows,
+  handleDailyPlannerEnterKeypress,
   handleProfileEnterKeypress,
   handleProfileDeleteKeypress,
+  isDailyPlannerMode,
   normalizeLogMessages,
   pauseGameClock,
   profileDeleteUnavailableMessage,
   processTuiCommand,
   resumeGameClock,
   resolveProfileDeleteKeypress,
+  shouldResetDailyPlannerPhase,
   shouldExitProfileCreationMode,
   syncPausedClock,
   startTui

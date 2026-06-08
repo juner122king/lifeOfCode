@@ -19,6 +19,7 @@ const {
   TUI_SETTLE_TICK_MS,
   appendLogEntries,
   calculateLayoutBudget,
+  commandForDailyPlannerSelection,
   createCommandLogMessages,
   createLogEntries,
   formatOptionDetail,
@@ -27,19 +28,24 @@ const {
   formatTopStatusLine,
   getCharacterCardAttributeRows,
   getCurrentLogRows,
+  getDailyPlannerCandidateOptions,
+  getNextDailyPlannerPhaseId,
   getTextDisplayWidth,
   getOptionProgress,
   getPageWindow,
   getProfilePageOptions,
   getLogRows,
+  handleDailyPlannerEnterKeypress,
   handleProfileEnterKeypress,
   handleProfileDeleteKeypress,
+  isDailyPlannerMode,
   normalizeLogMessages,
   pauseGameClock,
   profileDeleteUnavailableMessage,
   processTuiCommand,
   resumeGameClock,
   resolveProfileDeleteKeypress,
+  shouldResetDailyPlannerPhase,
   shouldExitProfileCreationMode,
   syncPausedClock
 } = require("../src/tui");
@@ -332,6 +338,28 @@ test("createTuiTicker shows the concrete rest status between settlement ticks", 
   assert.notEqual(currentStatus, "[当前状态] 休整。");
 });
 
+test("createTuiTicker clears stale activity for evening none before rendering", () => {
+  const state = createNewState(1_700_000_000_000);
+  state.worldTimeMinutes = 18 * 60;
+  state.waitingForSchedule = false;
+  state.lockedSchedule = {
+    day: 1,
+    slots: {
+      morning: { type: "activity", id: "rest" },
+      afternoon: { type: "activity", id: "rest" },
+      evening: { type: "none", id: null }
+    }
+  };
+  state.activeActivityId = "feature-coding";
+
+  const rows = getCurrentLogRows(getGameViewModel(state), createTuiTicker(state));
+  const currentStatus = rows.find((row) => row.id === "current-status").text;
+
+  assert.equal(state.activeActivityId, null);
+  assert.match(currentStatus, /\[当前状态\] 健康休整：恢复精力，降低压力。/);
+  assert.doesNotMatch(currentStatus, /活动 写功能/);
+});
+
 test("command log messages get command and result category prefixes", () => {
   const messages = createCommandLogMessages("week project", ["本周重点已设为：项目周。"]);
   const entries = createLogEntries(messages, 0).entries;
@@ -349,6 +377,119 @@ test("getPageWindow follows the selected absolute index", () => {
 
 test("getPageWindow enforces a minimum page size", () => {
   assert.deepEqual(getPageWindow(5, 3, 1), { start: 3, end: 5, page: 1, pageCount: 2, pageSize: 3 });
+});
+
+test("isDailyPlannerMode only applies to unconfirmed schedule waiting", () => {
+  const state = createNewState(1_700_000_000_000);
+
+  assert.equal(isDailyPlannerMode(getGameViewModel(state)), true);
+
+  processCommand(state, "plan morning activity rest", { randomEvents: false });
+  processCommand(state, "plan afternoon activity rest", { randomEvents: false });
+  processCommand(state, "plan evening none", { randomEvents: false });
+  processCommand(state, "plan confirm", { randomEvents: false });
+
+  assert.equal(isDailyPlannerMode(getGameViewModel(state)), false);
+  assert.equal(isDailyPlannerMode({ schedule: { waiting: false, confirmed: false } }), false);
+  assert.equal(isDailyPlannerMode(null), false);
+});
+
+test("daily planner candidates reuse activity, learnable skill, and project options", () => {
+  const state = createNewState(1_700_000_000_000);
+
+  const activities = getDailyPlannerCandidateOptions(state, "activity");
+  const skills = getDailyPlannerCandidateOptions(state, "skill");
+  const projects = getDailyPlannerCandidateOptions(state, "project");
+
+  assert.ok(activities.some((option) => option.id === "rest"));
+  assert.ok(skills.length > 0);
+  assert.equal(skills.every((option) => option.command && option.command.startsWith("learn ")), true);
+  assert.ok(projects.length > 0);
+  assert.equal(projects.some((option) => option.id === "promote"), false);
+});
+
+test("commandForDailyPlannerSelection maps valid choices to plan commands", () => {
+  assert.equal(
+    commandForDailyPlannerSelection("activity", { id: "feature-coding", unlocked: true }, "morning"),
+    "plan morning activity feature-coding"
+  );
+  assert.equal(
+    commandForDailyPlannerSelection("skill", { id: "html-css", command: "learn html-css" }, "afternoon"),
+    "plan afternoon skill html-css"
+  );
+  assert.equal(
+    commandForDailyPlannerSelection("project", { id: "homepage" }, "evening"),
+    "plan evening project homepage"
+  );
+});
+
+test("commandForDailyPlannerSelection blocks non-scheduleable planner choices", () => {
+  assert.equal(commandForDailyPlannerSelection("activity", { id: "locked", unlocked: false, locked: true }, "morning"), null);
+  assert.equal(commandForDailyPlannerSelection("skill", { id: "html-css", command: "upgrade html-css" }, "afternoon"), null);
+  assert.equal(commandForDailyPlannerSelection("project", { id: "promote", command: "promote" }, "evening"), null);
+  assert.equal(commandForDailyPlannerSelection("activity", { id: "rest", unlocked: true }, "bad-phase"), null);
+});
+
+test("getNextDailyPlannerPhaseId advances through the schedule phases", () => {
+  assert.equal(getNextDailyPlannerPhaseId("morning"), "afternoon");
+  assert.equal(getNextDailyPlannerPhaseId("afternoon"), "evening");
+  assert.equal(getNextDailyPlannerPhaseId("evening"), "evening");
+  assert.equal(getNextDailyPlannerPhaseId("bad-phase"), "morning");
+});
+
+test("handleDailyPlannerEnterKeypress advances after scheduleable selections", () => {
+  assert.deepEqual(
+    handleDailyPlannerEnterKeypress("activity", { id: "feature-coding", unlocked: true }, "morning"),
+    {
+      command: "plan morning activity feature-coding",
+      nextPhaseId: "afternoon"
+    }
+  );
+  assert.deepEqual(
+    handleDailyPlannerEnterKeypress("skill", { id: "html-css", command: "learn html-css" }, "afternoon"),
+    {
+      command: "plan afternoon skill html-css",
+      nextPhaseId: "evening"
+    }
+  );
+  assert.deepEqual(
+    handleDailyPlannerEnterKeypress("project", { id: "homepage" }, "evening"),
+    {
+      command: "plan evening project homepage",
+      nextPhaseId: "evening"
+    }
+  );
+});
+
+test("handleDailyPlannerEnterKeypress does not advance non-scheduleable selections", () => {
+  assert.deepEqual(
+    handleDailyPlannerEnterKeypress("activity", { id: "locked", unlocked: false, locked: true }, "morning"),
+    {
+      command: null,
+      nextPhaseId: "morning"
+    }
+  );
+  assert.deepEqual(
+    handleDailyPlannerEnterKeypress("skill", { id: "html-css", command: "upgrade html-css" }, "afternoon"),
+    {
+      command: null,
+      nextPhaseId: "afternoon"
+    }
+  );
+  assert.deepEqual(
+    handleDailyPlannerEnterKeypress("project", { id: "promote", command: "promote" }, "evening"),
+    {
+      command: null,
+      nextPhaseId: "evening"
+    }
+  );
+});
+
+test("shouldResetDailyPlannerPhase resets only when entering planner or schedule day changes", () => {
+  assert.equal(shouldResetDailyPlannerPhase(false, null, true, 1), true);
+  assert.equal(shouldResetDailyPlannerPhase(true, 1, true, 1), false);
+  assert.equal(shouldResetDailyPlannerPhase(true, 1, true, 2), true);
+  assert.equal(shouldResetDailyPlannerPhase(true, 1, false, null), false);
 });
 
 test("formatOptionDetail summarizes common option fields", () => {
