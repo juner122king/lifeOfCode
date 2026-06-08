@@ -44,11 +44,73 @@ const CURRENT_RESOURCE_IDS = ["energy", "pressure", "bugs", "techDebt"];
 const MIN_LIST_PAGE_SIZE = 3;
 const DEFAULT_TERMINAL_ROWS = 24;
 const DEFAULT_TERMINAL_COLUMNS = 80;
+const TOP_BAR_HEIGHT = 6;
 const TUI_SETTLE_TICK_MS = 3000;
+const TOP_RESOURCE_SUMMARY_IDS = ["codeLines", "money", "knowledge", "tests", "docs", "architecture", "leads", "reputation", "bugs", "techDebt"];
+const GRAPHEME_SEGMENTER = typeof Intl !== "undefined" && Intl.Segmenter
+  ? new Intl.Segmenter("zh-Hans", { granularity: "grapheme" })
+  : null;
+
+function splitGraphemes(value) {
+  const text = String(value || "");
+  if (!text) return [];
+  if (!GRAPHEME_SEGMENTER) return Array.from(text);
+  return Array.from(GRAPHEME_SEGMENTER.segment(text), (part) => part.segment);
+}
+
+function isZeroWidthCodePoint(codePoint) {
+  return codePoint === 0x200d
+    || (codePoint >= 0x0300 && codePoint <= 0x036f)
+    || (codePoint >= 0xfe00 && codePoint <= 0xfe0f)
+    || (codePoint >= 0x1ab0 && codePoint <= 0x1aff)
+    || (codePoint >= 0x1dc0 && codePoint <= 0x1dff)
+    || (codePoint >= 0x20d0 && codePoint <= 0x20ff);
+}
+
+function isWideCodePoint(codePoint) {
+  return (codePoint >= 0x1100 && codePoint <= 0x115f)
+    || codePoint === 0x2329
+    || codePoint === 0x232a
+    || (codePoint >= 0x2600 && codePoint <= 0x27bf)
+    || (codePoint >= 0x2b00 && codePoint <= 0x2bff)
+    || (codePoint >= 0x2e80 && codePoint <= 0xa4cf)
+    || (codePoint >= 0xac00 && codePoint <= 0xd7a3)
+    || (codePoint >= 0xf900 && codePoint <= 0xfaff)
+    || (codePoint >= 0xfe10 && codePoint <= 0xfe19)
+    || (codePoint >= 0xfe30 && codePoint <= 0xfe6f)
+    || (codePoint >= 0xff00 && codePoint <= 0xff60)
+    || (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+    || (codePoint >= 0x1f000 && codePoint <= 0x1faff)
+    || (codePoint >= 0x20000 && codePoint <= 0x3fffd);
+}
+
+function getGraphemeWidth(grapheme) {
+  const codePoints = Array.from(grapheme || "", (char) => char.codePointAt(0)).filter((codePoint) => !isZeroWidthCodePoint(codePoint));
+  if (!codePoints.length) return 0;
+  if (codePoints.some(isWideCodePoint)) return 2;
+  return 1;
+}
+
+function getTextDisplayWidth(value) {
+  return splitGraphemes(value).reduce((width, grapheme) => width + getGraphemeWidth(grapheme), 0);
+}
 
 function trimText(value, length) {
   const text = String(value || "");
-  return text.length > length ? `${text.slice(0, Math.max(0, length - 1))}…` : text;
+  const width = Math.max(0, Math.floor(Number(length) || 0));
+  if (getTextDisplayWidth(text) <= width) return text;
+  if (width <= 0) return "";
+  if (width === 1) return "…";
+  const targetWidth = width - 1;
+  let currentWidth = 0;
+  let result = "";
+  for (const grapheme of splitGraphemes(text)) {
+    const graphemeWidth = getGraphemeWidth(grapheme);
+    if (currentWidth + graphemeWidth > targetWidth) break;
+    currentWidth += graphemeWidth;
+    result += grapheme;
+  }
+  return `${result}…`;
 }
 
 function normalizeLogMessages(messages, defaultCategory = null) {
@@ -136,9 +198,9 @@ function getCurrentLogRows(view, ticker = null) {
   const resources = view && Array.isArray(view.resources) ? view.resources : [];
   const byId = new Map(resources.map((item) => [item.id, item]));
   const weeklyFocus = view && view.weeklyFocus && view.weeklyFocus.name ? view.weeklyFocus.name : "--";
+  const nextAdvice = view && view.nextAdvice ? view.nextAdvice : "建议：--";
   return [
     { id: "current-status", kind: "status", text: tickerRows[0].text },
-    { id: "current-time", kind: "time", text: tickerRows[1].text },
     { id: "current-weekly-focus", kind: "resource", resourceId: "weeklyFocus", text: `本周重点 ${weeklyFocus}` },
     ...CURRENT_RESOURCE_IDS.map((id) => {
       const resource = byId.get(id);
@@ -152,7 +214,250 @@ function getCurrentLogRows(view, ticker = null) {
         resource,
         text: resource ? `${resource.name} ${valueText}` : `${id} --`
       };
-    })
+    }),
+    { id: "current-advice", kind: "advice", text: nextAdvice }
+  ];
+}
+
+function formatTopDate(calendar) {
+  if (!calendar) return "[Y--M--W-- --]";
+  const year = Number.isFinite(Number(calendar.year)) ? Math.floor(Number(calendar.year)) : "--";
+  const month = Number.isFinite(Number(calendar.month)) ? String(Math.floor(Number(calendar.month))).padStart(2, "0") : "--";
+  const week = Number.isFinite(Number(calendar.weekOfMonth)) ? Math.floor(Number(calendar.weekOfMonth)) : "--";
+  const weekday = calendar.weekday || "--";
+  return `[Y${year}-M${month}-W${week} ${weekday}]`;
+}
+
+function getTopRuntimeStatus(view, paused = false) {
+  if (paused) return "已暂停";
+  const schedule = view && view.schedule ? view.schedule : {};
+  if (!schedule.confirmed || schedule.waiting) return "等待排程";
+  return schedule.currentPhase ? "进行中" : "休整";
+}
+
+function formatDeadlineDistance(view) {
+  const deadline = view && view.nearestDeadline;
+  if (!deadline) return null;
+  const currentDay = Number(view && view.calendar && view.calendar.day);
+  const dueDay = Number(deadline.dueDay);
+  if (!Number.isFinite(currentDay) || !Number.isFinite(dueDay)) return null;
+  const diff = Math.floor(dueDay) - Math.floor(currentDay);
+  if (diff < 0) return "已逾期";
+  if (diff === 0) return "今天";
+  return `${diff}天`;
+}
+
+function formatTopResourceValue(value) {
+  const numeric = Math.floor(Number(value) || 0);
+  if (numeric >= 1_000_000) return `${formatTuiNumber(numeric / 1_000_000, 1)}M`;
+  if (numeric >= 1_000) return `${formatTuiNumber(numeric / 1_000, 1)}k`;
+  return String(numeric);
+}
+
+function formatTopStatusMeterLine(view, columns = DEFAULT_TERMINAL_COLUMNS) {
+  const width = Math.max(1, Math.floor(Number(columns) || DEFAULT_TERMINAL_COLUMNS));
+  const barWidth = width >= 100 ? 16 : width >= 72 ? 12 : 8;
+  const resources = view && Array.isArray(view.resources) ? view.resources : [];
+  const byId = new Map(resources.map((item) => [item.id, item]));
+  const energy = byId.get("energy") || { id: "energy", name: "精力", value: 0, max: 100, status: "--" };
+  const pressure = byId.get("pressure") || { id: "pressure", name: "压力", value: 0 };
+  const energyMax = Math.max(1, Number(energy.max) || 100);
+  const energyPercent = clampProgressPercent(Number(energy.value) / energyMax * 100);
+  const pressurePercent = clampProgressPercent(Number(pressure.value));
+  const energyBits = [
+    energy.name,
+    `${formatTopResourceValue(energy.value)}/${formatTopResourceValue(energyMax)}`,
+    energy.status ? energy.status : null,
+    renderProgressBar(energyPercent, barWidth, 0, false)
+  ].filter(Boolean);
+  const pressureBits = [
+    pressure.name,
+    formatTopResourceValue(pressure.value),
+    renderProgressBar(pressurePercent, barWidth, 0, false)
+  ].filter(Boolean);
+  return trimText(` ${energyBits.join(" ")}  ${pressureBits.join(" ")}`, width);
+}
+
+function getTopStatusColor(status) {
+  if (status === "已暂停") return THEME.status.paused;
+  if (status === "等待排程") return THEME.status.warn;
+  if (status === "进行中") return THEME.status.info;
+  if (status === "休整") return THEME.muted;
+  return THEME.status.neutral;
+}
+
+function getTopDeadlineColor(deadline) {
+  return deadline === "已逾期" ? THEME.status.danger : THEME.status.warn;
+}
+
+function getTopResourceColor(resource, id) {
+  const resourceId = resource && resource.id ? resource.id : id;
+  if (["energy", "pressure", "bugs", "techDebt"].includes(resourceId)) {
+    return toneForResource(resource || { id: resourceId, value: 0 }).color;
+  }
+  return THEME.resources[resourceId] || toneForResource(resourceId).color;
+}
+
+function getTopStatusMeterParts(view, columns = DEFAULT_TERMINAL_COLUMNS) {
+  const width = Math.max(1, Math.floor(Number(columns) || DEFAULT_TERMINAL_COLUMNS));
+  const barWidth = width >= 100 ? 16 : width >= 72 ? 12 : 8;
+  const resources = view && Array.isArray(view.resources) ? view.resources : [];
+  const byId = new Map(resources.map((item) => [item.id, item]));
+  const energy = byId.get("energy") || { id: "energy", name: "精力", value: 0, max: 100, status: "--" };
+  const pressure = byId.get("pressure") || { id: "pressure", name: "压力", value: 0 };
+  const energyMax = Math.max(1, Number(energy.max) || 100);
+  const energyPercent = clampProgressPercent(Number(energy.value) / energyMax * 100);
+  const pressurePercent = clampProgressPercent(Number(pressure.value));
+  const energyText = [
+    energy.name,
+    `${formatTopResourceValue(energy.value)}/${formatTopResourceValue(energyMax)}`,
+    energy.status ? energy.status : null,
+    renderProgressBar(energyPercent, barWidth, 0, false)
+  ].filter(Boolean).join(" ");
+  const pressureText = [
+    pressure.name,
+    formatTopResourceValue(pressure.value),
+    renderProgressBar(pressurePercent, barWidth, 0, false)
+  ].filter(Boolean).join(" ");
+  return [
+    { id: "meter-energy", resourceId: "energy", text: ` ${energyText}`, color: getTopResourceColor(energy, "energy") },
+    { id: "meter-pressure", resourceId: "pressure", text: `  ${pressureText}`, color: getTopResourceColor(pressure, "pressure") }
+  ];
+}
+
+function formatTopStatusResourcesLine(view, columns = DEFAULT_TERMINAL_COLUMNS) {
+  const width = Math.max(1, Math.floor(Number(columns) || DEFAULT_TERMINAL_COLUMNS));
+  const resources = view && Array.isArray(view.resources) ? view.resources : [];
+  const byId = new Map(resources.map((item) => [item.id, item]));
+  const summary = TOP_RESOURCE_SUMMARY_IDS.map((id) => {
+    const resource = byId.get(id);
+    const name = resource && resource.name ? resource.name : id;
+    return `${name} ${formatTopResourceValue(resource ? resource.value : 0)}`.trim();
+  }).join("  ");
+  return trimText(` ${summary}`, width);
+}
+
+function formatTopStatusLine(view, paused = false, columns = DEFAULT_TERMINAL_COLUMNS) {
+  const calendar = view && view.calendar ? view.calendar : {};
+  const currentPhase = view && view.schedule && view.schedule.currentPhase;
+  const phaseLabel = currentPhase ? currentPhase.name : "休整";
+  const timeLabel = calendar.hhmm || "--:--";
+  const weeklyFocus = view && view.weeklyFocus && view.weeklyFocus.name ? view.weeklyFocus.name : "--";
+  const width = Math.max(1, Math.floor(Number(columns) || DEFAULT_TERMINAL_COLUMNS));
+  const segments = [
+    ` ${formatTopDate(calendar)}`,
+    `${timeLabel} (${phaseLabel})`,
+    `状态: ${getTopRuntimeStatus(view, paused)}`,
+    `本周重点: ${weeklyFocus}`,
+  ];
+  const deadline = formatDeadlineDistance(view);
+  if (deadline) segments.push(`Deadline: ${deadline}`);
+  return trimText(segments.join("  "), width);
+}
+
+function getSegmentWidth(segment) {
+  return getTextDisplayWidth(segment && segment.text);
+}
+
+function trimTopStatusSegments(segments, columns = DEFAULT_TERMINAL_COLUMNS) {
+  const width = Math.max(1, Math.floor(Number(columns) || DEFAULT_TERMINAL_COLUMNS));
+  const safeSegments = segments.filter((segment) => segment && segment.text);
+  const totalWidth = safeSegments.reduce((sum, segment) => sum + getSegmentWidth(segment), 0);
+  if (totalWidth <= width) return safeSegments;
+  if (width === 1) {
+    const first = safeSegments[0] || {};
+    return [{ ...first, text: "…" }];
+  }
+
+  const targetWidth = width - 1;
+  const trimmed = [];
+  let currentWidth = 0;
+  let stopped = false;
+  for (const segment of safeSegments) {
+    if (stopped) break;
+    let text = "";
+    for (const grapheme of splitGraphemes(segment.text)) {
+      const graphemeWidth = getGraphemeWidth(grapheme);
+      if (currentWidth + graphemeWidth > targetWidth) {
+        stopped = true;
+        break;
+      }
+      currentWidth += graphemeWidth;
+      text += grapheme;
+    }
+    if (text) trimmed.push({ ...segment, text });
+  }
+
+  if (trimmed.length) {
+    const lastIndex = trimmed.length - 1;
+    trimmed[lastIndex] = { ...trimmed[lastIndex], text: `${trimmed[lastIndex].text}…` };
+    return trimmed;
+  }
+  const first = safeSegments[0] || {};
+  return [{ ...first, text: "…" }];
+}
+
+function formatTopStatusLineSegments(view, paused = false, columns = DEFAULT_TERMINAL_COLUMNS) {
+  const calendar = view && view.calendar ? view.calendar : {};
+  const currentPhase = view && view.schedule && view.schedule.currentPhase;
+  const phaseLabel = currentPhase ? currentPhase.name : "休整";
+  const timeLabel = calendar.hhmm || "--:--";
+  const weeklyFocus = view && view.weeklyFocus && view.weeklyFocus.name ? view.weeklyFocus.name : "--";
+  const runtimeStatus = getTopRuntimeStatus(view, paused);
+  const segments = [
+    { id: "date", text: ` ${formatTopDate(calendar)}`, color: THEME.title, bold: true },
+    { id: "space-date-time", text: "  ", color: THEME.muted },
+    { id: "time", text: `${timeLabel} (${phaseLabel})`, color: THEME.status.info },
+    { id: "space-time-status", text: "  ", color: THEME.muted },
+    { id: "runtime-status", text: `状态: ${runtimeStatus}`, color: getTopStatusColor(runtimeStatus), bold: runtimeStatus === "已暂停" },
+    { id: "space-status-focus", text: "  ", color: THEME.muted },
+    { id: "weekly-focus", text: `本周重点: ${weeklyFocus}`, color: THEME.status.good }
+  ];
+  const deadline = formatDeadlineDistance(view);
+  if (deadline) {
+    segments.push(
+      { id: "space-focus-deadline", text: "  ", color: THEME.muted },
+      { id: "deadline", text: `Deadline: ${deadline}`, color: getTopDeadlineColor(deadline), bold: deadline === "已逾期" }
+    );
+  }
+  return trimTopStatusSegments(segments, columns);
+}
+
+function formatTopStatusMeterLineSegments(view, columns = DEFAULT_TERMINAL_COLUMNS) {
+  return trimTopStatusSegments(getTopStatusMeterParts(view, columns), columns);
+}
+
+function formatTopStatusResourcesLineSegments(view, columns = DEFAULT_TERMINAL_COLUMNS) {
+  const resources = view && Array.isArray(view.resources) ? view.resources : [];
+  const byId = new Map(resources.map((item) => [item.id, item]));
+  const segments = TOP_RESOURCE_SUMMARY_IDS.map((id, index) => {
+    const resource = byId.get(id);
+    const name = resource && resource.name ? resource.name : id;
+    const itemText = `${name} ${formatTopResourceValue(resource ? resource.value : 0)}`;
+    return {
+      id: `resource-${id}`,
+      resourceId: id,
+      text: `${index === 0 ? " " : "  "}${itemText}`,
+      color: getTopResourceColor(resource, id),
+      bold: ["bugs", "techDebt"].includes(id) && toneForResource(resource || { id, value: 0 }).label === "critical"
+    };
+  });
+  return trimTopStatusSegments(segments, columns);
+}
+
+function formatTopStatusSegmentRows(view, paused = false, columns = DEFAULT_TERMINAL_COLUMNS) {
+  return [
+    formatTopStatusLineSegments(view, paused, columns),
+    formatTopStatusMeterLineSegments(view, columns),
+    formatTopStatusResourcesLineSegments(view, columns)
+  ];
+}
+
+function formatTopStatusRows(view, paused = false, columns = DEFAULT_TERMINAL_COLUMNS) {
+  return [
+    formatTopStatusLine(view, paused, columns),
+    formatTopStatusMeterLine(view, columns),
+    formatTopStatusResourcesLine(view, columns)
   ];
 }
 
@@ -314,12 +619,10 @@ function calculateLayoutBudget(rows, columns) {
   const terminalColumns = Math.max(40, Math.floor(Number(columns) || DEFAULT_TERMINAL_COLUMNS));
   const compact = terminalRows <= 24;
   const narrow = terminalColumns < 100;
-  const headerHeight = 5;
-  const resourceHeight = 5;
-  const tabHeight = 1;
+  const topHeight = TOP_BAR_HEIGHT;
   const footerHeight = 3;
   const logHeight = Math.max(MIN_LOG_PANEL_HEIGHT, compact ? 8 : terminalRows < 30 ? 9 : 10);
-  const reserved = headerHeight + resourceHeight + tabHeight + footerHeight + logHeight;
+  const reserved = topHeight + footerHeight + logHeight;
   const mainHeight = Math.max(5, terminalRows - reserved);
   const listHeight = narrow ? Math.max(5, Math.floor(mainHeight / 2)) : mainHeight;
   const detailHeight = narrow ? Math.max(3, mainHeight - listHeight) : mainHeight;
@@ -329,9 +632,7 @@ function calculateLayoutBudget(rows, columns) {
     terminalRows,
     terminalColumns,
     narrow,
-    headerHeight,
-    resourceHeight,
-    tabHeight,
+    topHeight,
     footerHeight,
     logHeight,
     mainHeight,
@@ -478,7 +779,6 @@ async function startTui() {
 
   const React = await import("react");
   const ink = await import("ink");
-  const Spinner = (await import("ink-spinner")).default;
   const h = React.createElement;
   const { Box, Text, render, useApp, useInput, useStdout } = ink;
   const { useEffect, useMemo, useReducer, useRef, useState } = React;
@@ -542,70 +842,6 @@ async function startTui() {
     );
   }
 
-  function Header({ view, paused, budget }) {
-    const active = view.activeActivity ? `${view.activeActivity.name} Lv.${view.activeActivity.level}` : "无";
-    const project = view.activeProject ? `${view.activeProject.name} 工时 ${view.activeProject.progressPercent}% 成功率 ${Math.round(view.activeProject.successRate * 100)}%` : "无";
-    const learning = view.activeSkillLearning ? `${view.activeSkillLearning.name} 学习 ${view.activeSkillLearning.progressPercent}%` : "无";
-    const detail = `活动 ${active}  项目 ${project}  学习 ${learning}`;
-    const width = Math.max(48, budget.terminalColumns - 6);
-    const phaseLabel = view.schedule.currentPhase ? `${view.schedule.currentPhase.name} ${view.schedule.currentPhase.timeRange}` : "休整";
-    const scheduleLabel = view.schedule.confirmed ? "日程已确认" : "等待排程";
-    const lifestyleLabel = view.lifestyle && view.lifestyle.pending
-      ? `作息 ${view.lifestyle.current.name}->${view.lifestyle.pending.name}`
-      : `作息 ${view.lifestyle ? view.lifestyle.current.name : "Health First"}`;
-    const calendarLine = budget.narrow
-      ? `${view.calendar.short} | ${phaseLabel} | ${scheduleLabel}`
-      : `${view.calendar.short}  ${phaseLabel}  ${scheduleLabel}  本周 ${view.weeklyFocus.name}  ${lifestyleLabel}  ${view.nearestDeadline ? `Deadline ${view.nearestDeadline.name} D${String(view.nearestDeadline.dueDay).padStart(3, "0")}` : "Deadline 暂无"}`;
-    const eventLine = view.activeWorldEvents.length
-      ? `事件 ${view.activeWorldEvents.map((event) => event.name).join("，")}  ${view.nearestDeadline ? `最近 ${view.nearestDeadline.name} D${String(view.nearestDeadline.dueDay).padStart(3, "0")}` : "最近 Deadline 暂无"}`
-      : `${view.nearestDeadline ? `最近 Deadline ${view.nearestDeadline.name} D${String(view.nearestDeadline.dueDay).padStart(3, "0")}` : "最近 Deadline 暂无"}`;
-    return h(Box, { borderStyle: "round", borderColor: THEME.title, paddingX: 1, flexDirection: "column", height: budget.headerHeight },
-      h(Box, { gap: 1 },
-        h(Text, { bold: true, color: THEME.title }, `《${view.title}》`),
-        h(Text, { color: THEME.muted }, `${view.profile.id}/${view.profile.name}`),
-        h(Text, { color: THEME.panels.cards }, `人物卡：${view.profile.characterCardName}`),
-        h(Text, { color: THEME.status.info }, view.role.name),
-        paused
-          ? h(Text, { color: THEME.status.paused, bold: true }, "暂停")
-          : h(Text, { color: THEME.status.good }, h(Spinner, { type: "dots" }), " 自动结算")
-      ),
-      h(Text, { color: THEME.status.info }, trimText(calendarLine, width)),
-      h(Text, { color: THEME.muted }, trimText(detail, width)),
-      h(Text, { color: THEME.muted }, trimText(`${eventLine}  ${view.nextAdvice}`, width))
-    );
-  }
-
-  function ResourceLine({ item }) {
-    const tone = toneForResource(item);
-    const valueText = item.id === "energy" && item.status ? `${item.value} ${item.status}` : String(item.value);
-    return h(Text, { color: tone.color, bold: tone.label === "critical" },
-      `${item.name.padEnd(4, " ")} ${valueText.padStart(4, " ")}`
-    );
-  }
-
-  function ResourcePanel({ view, budget }) {
-    const resourceRows = [
-      view.resources.slice(0, 4),
-      view.resources.slice(4, 8),
-      view.resources.slice(8, 13)
-    ].map((items) => items.map((item) => `${item.name} ${item.id === "energy" && item.status ? `${item.value} ${item.status}` : item.value}`).join("  "));
-    const attrs = view.attributes.map((attr) => `${attr.name} ${attr.value}${attr.breakthrough ? `(+${attr.breakthrough})` : ""}`);
-    const activityLevels = view.activityLevels.map((activity) => `${activity.active ? "*" : ""}${activity.name} Lv.${activity.level}`);
-    const width = Math.max(38, Math.floor((budget.terminalColumns - 8) / 2));
-    return h(Box, { gap: 2, height: budget.resourceHeight },
-      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", flexGrow: 1, height: budget.resourceHeight },
-        h(SectionTitle, { color: THEME.status.info }, "资源"),
-        ...resourceRows.map((line, index) => h(Text, { key: `res-${index}`, color: index === 2 ? THEME.muted : THEME.text }, trimText(line, width)))
-      ),
-      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", flexGrow: 1, height: budget.resourceHeight },
-        h(SectionTitle, { color: THEME.panels.cards }, "成长"),
-        h(Text, null, trimText(attrs.join("  "), width)),
-        h(Text, null, trimText(`目标可领取：${view.goals.claimableCount}  累计活动：${view.stats.totalActiveSeconds}s`, width)),
-        h(Text, { color: THEME.muted }, trimText(activityLevels.join("  "), width))
-      )
-    );
-  }
-
   function TabBar({ activePanel }) {
     return h(Box, { gap: 1 },
       ...PANELS.map((panel) => {
@@ -619,6 +855,44 @@ async function startTui() {
           dimColor: !active
         }, ` ${panel.key} ${panel.label} `);
       })
+    );
+  }
+
+  function TopBar({ view, paused, activePanel, budget }) {
+    const boxWidth = Math.max(20, budget.terminalColumns - 2);
+    const contentWidth = Math.max(10, boxWidth - 4);
+    const rows = formatTopStatusSegmentRows(view, paused, contentWidth);
+    return h(Box, { flexDirection: "column", height: budget.topHeight },
+      h(Box, {
+        borderStyle: "single",
+        borderColor: paused ? THEME.status.paused : THEME.title,
+        paddingX: 1,
+        flexDirection: "column",
+        overflow: "hidden",
+        height: 5,
+        width: boxWidth
+      },
+        ...rows.map((row, index) => h(Box, {
+          key: `status-row-${index}`,
+          width: contentWidth,
+          height: 1,
+          overflow: "hidden",
+          overflowX: "hidden",
+          flexShrink: 1
+        },
+          h(Text, {
+            wrap: "truncate-end",
+            color: THEME.text
+          },
+            ...row.map((segment, segmentIndex) => h(Text, {
+              key: segment.id || `status-row-${index}-segment-${segmentIndex}`,
+              color: segment.color || THEME.text,
+              bold: segment.bold
+            }, segment.text))
+          )
+        ))
+      ),
+      h(TabBar, { activePanel })
     );
   }
 
@@ -1006,9 +1280,7 @@ async function startTui() {
     });
 
     return h(Box, { flexDirection: "column", paddingX: 1 },
-      h(Header, { view, paused, budget }),
-      h(ResourcePanel, { view, budget }),
-      h(TabBar, { activePanel }),
+      h(TopBar, { view, paused, activePanel, budget }),
       activePanel === "cards" && !needsInitialProfile
         ? h(CharacterCardPanel, { view, budget })
         : h(MainPanel, { activePanel, options, selectedIndex, budget, paused }),
@@ -1035,8 +1307,12 @@ module.exports = {
   createCommandLogMessages,
   createLogEntries,
   formatOptionDetail,
+  formatTopStatusSegmentRows,
+  formatTopStatusRows,
+  formatTopStatusLine,
   getCharacterCardAttributeRows,
   getCurrentLogRows,
+  getTextDisplayWidth,
   getOptionProgress,
   getProfilePageOptions,
   getPageWindow,

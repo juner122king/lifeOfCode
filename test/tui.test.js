@@ -22,8 +22,12 @@ const {
   createCommandLogMessages,
   createLogEntries,
   formatOptionDetail,
+  formatTopStatusSegmentRows,
+  formatTopStatusRows,
+  formatTopStatusLine,
   getCharacterCardAttributeRows,
   getCurrentLogRows,
+  getTextDisplayWidth,
   getOptionProgress,
   getPageWindow,
   getProfilePageOptions,
@@ -39,6 +43,10 @@ const {
   shouldExitProfileCreationMode,
   syncPausedClock
 } = require("../src/tui");
+const {
+  THEME,
+  toneForResource
+} = require("../src/tuiTheme");
 
 function createTempSaveRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "life-of-code-tui-save-"));
@@ -120,13 +128,12 @@ test("calculateLayoutBudget returns a compact 24 row budget with a usable list",
 
   assert.equal(budget.terminalRows, 24);
   assert.equal(budget.narrow, true);
+  assert.equal(budget.topHeight, 6);
   assert.equal(budget.logHeight, 11);
   assert.ok(budget.logHeight - 3 >= 8);
   assert.equal(budget.mainHeight, 5);
   assert.ok(budget.pageSize >= 3);
-  assert.ok(
-    budget.headerHeight + budget.resourceHeight + budget.tabHeight + budget.footerHeight + budget.logHeight + budget.mainHeight > 24
-  );
+  assert.equal(budget.topHeight + budget.footerHeight + budget.logHeight + budget.mainHeight, 25);
 });
 
 test("calculateLayoutBudget falls back to 24 rows and expands taller terminals", () => {
@@ -135,6 +142,7 @@ test("calculateLayoutBudget falls back to 24 rows and expands taller terminals",
 
   assert.equal(fallback.terminalRows, 24);
   assert.equal(fallback.terminalColumns, 80);
+  assert.equal(fallback.topHeight, 6);
   assert.equal(fallback.logHeight, 11);
   assert.equal(tall.logHeight, 11);
   assert.ok(tall.mainHeight > fallback.mainHeight);
@@ -144,6 +152,122 @@ test("calculateLayoutBudget falls back to 24 rows and expands taller terminals",
 
 test("TUI settle tick runs every three seconds", () => {
   assert.equal(TUI_SETTLE_TICK_MS, 3000);
+});
+
+test("formatTopStatusRows renders the fixed top status fields", () => {
+  const state = createNewState(1_700_000_000_000);
+  state.worldTimeMinutes = 2 * 24 * 60 + 9 * 60;
+  const view = getGameViewModel(state);
+  const rows = formatTopStatusRows(view, false, 140);
+
+  assert.equal(rows.length, 3);
+  assert.match(rows[0], /\[Y1-M01-W1 周三\]/);
+  assert.match(rows[0], /09:00 \(上午\)/);
+  assert.match(rows[0], /状态: 等待排程/);
+  assert.match(rows[0], /本周重点: 均衡周/);
+  assert.doesNotMatch(rows[0], /Deadline/);
+  assert.match(rows[1], /精力/);
+  assert.match(rows[1], /压力/);
+  assert.match(rows[1], /\[[#=-]+\]/);
+  assert.match(rows[2], /代码/);
+  assert.match(rows[2], /金钱/);
+  assert.match(rows[2], /知识/);
+  assert.match(rows[2], /测试/);
+  assert.match(rows[2], /文档/);
+  assert.match(rows[2], /架构/);
+  assert.match(rows[2], /线索/);
+  assert.match(rows[2], /声望/);
+  assert.match(rows[2], /Bug/);
+  assert.match(rows[2], /技术债/);
+  assert.doesNotMatch(rows[2], /精力/);
+  assert.doesNotMatch(rows[2], /压力/);
+  assert.doesNotMatch(rows.join("\n"), /│/);
+});
+
+test("formatTopStatusSegmentRows keeps top status text while coloring fields independently", () => {
+  const state = createNewState(1_700_000_000_000);
+  state.worldTimeMinutes = 2 * 24 * 60 + 9 * 60;
+  const view = {
+    ...getGameViewModel(state),
+    nearestDeadline: { dueDay: 3 }
+  };
+  const segmentRows = formatTopStatusSegmentRows(view, false, 140);
+
+  assert.deepEqual(segmentRows.map((row) => row.map((segment) => segment.text).join("")), formatTopStatusRows(view, false, 140));
+  assert.equal(segmentRows[0].find((segment) => segment.id === "date").color, THEME.title);
+  assert.equal(segmentRows[0].find((segment) => segment.id === "time").color, THEME.status.info);
+  assert.equal(segmentRows[0].find((segment) => segment.id === "runtime-status").color, THEME.status.warn);
+  assert.equal(segmentRows[0].find((segment) => segment.id === "weekly-focus").color, THEME.status.good);
+  assert.equal(segmentRows[0].find((segment) => segment.id === "deadline").color, THEME.status.warn);
+});
+
+test("formatTopStatusSegmentRows colors each top resource with its own resource tone", () => {
+  const view = getGameViewModel(createNewState(1_700_000_000_000));
+  const resourceSegments = formatTopStatusSegmentRows(view, false, 180)[2].filter((segment) => segment.resourceId);
+  const expectedIds = ["codeLines", "money", "knowledge", "tests", "docs", "architecture", "leads", "reputation", "bugs", "techDebt"];
+
+  assert.deepEqual(resourceSegments.map((segment) => segment.resourceId), expectedIds);
+  for (const id of expectedIds) {
+    assert.equal(resourceSegments.find((segment) => segment.resourceId === id).color, toneForResource(id).color);
+  }
+  assert.equal(new Set(resourceSegments.map((segment) => segment.color)).size, expectedIds.length);
+});
+
+test("formatTopStatusSegmentRows uses risk tones for high bugs and tech debt", () => {
+  const state = createNewState(1_700_000_000_000);
+  state.resources.bugs = 40;
+  state.resources.techDebt = 80;
+  state.resources.energy = 20;
+  state.resources.pressure = 80;
+  const segmentRows = formatTopStatusSegmentRows(getGameViewModel(state), false, 180);
+  const meterSegments = segmentRows[1].filter((segment) => segment.resourceId);
+  const resourceSegments = segmentRows[2].filter((segment) => segment.resourceId);
+
+  assert.equal(meterSegments.find((segment) => segment.resourceId === "energy").color, THEME.status.warn);
+  assert.equal(meterSegments.find((segment) => segment.resourceId === "pressure").color, THEME.status.danger);
+  assert.equal(resourceSegments.find((segment) => segment.resourceId === "bugs").color, THEME.status.warn);
+  assert.equal(resourceSegments.find((segment) => segment.resourceId === "techDebt").color, THEME.status.danger);
+});
+
+test("formatTopStatusLine applies paused, waiting, running, and rest status rules", () => {
+  const waitingState = createNewState(1_700_000_000_000);
+  waitingState.worldTimeMinutes = 9 * 60;
+  assert.match(formatTopStatusLine(getGameViewModel(waitingState), false), /状态: 等待排程/);
+  assert.match(formatTopStatusLine(getGameViewModel(waitingState), true), /状态: 已暂停/);
+  assert.doesNotMatch(formatTopStatusLine(getGameViewModel(waitingState), false), /Deadline/);
+
+  const runningState = createNewState(1_700_000_000_000);
+  processCommand(runningState, "plan morning activity feature-coding", { randomEvents: false });
+  processCommand(runningState, "plan afternoon activity study", { randomEvents: false });
+  processCommand(runningState, "plan evening none", { randomEvents: false });
+  processCommand(runningState, "plan confirm", { randomEvents: false });
+  runningState.worldTimeMinutes = 9 * 60;
+  assert.match(formatTopStatusLine(getGameViewModel(runningState), false), /状态: 进行中/);
+
+  runningState.worldTimeMinutes = 13 * 60;
+  assert.match(formatTopStatusLine(getGameViewModel(runningState), false), /状态: 休整/);
+  assert.match(formatTopStatusLine(getGameViewModel(runningState), false), /13:00 \(休整\)/);
+});
+
+test("formatTopStatusRows truncates long content without manual ASCII borders", () => {
+  const state = createNewState(1_700_000_000_000);
+  const view = {
+    ...getGameViewModel(state),
+    weeklyFocus: { name: "超长周重点".repeat(20) }
+  };
+  const rows = formatTopStatusRows(view, false, 30);
+
+  assert.ok(rows.every((row) => getTextDisplayWidth(row) <= 30));
+  assert.ok(rows.some((row) => row.endsWith("…")));
+  assert.doesNotMatch(rows.join("\n"), /^\+/m);
+  assert.doesNotMatch(rows.join("\n"), /-$/m);
+  assert.doesNotMatch(rows.join("\n"), /│/);
+});
+
+test("getTextDisplayWidth counts Chinese and icons as terminal columns", () => {
+  assert.equal(getTextDisplayWidth("代码"), 4);
+  assert.equal(getTextDisplayWidth("💻 代码"), 7);
+  assert.equal(getTextDisplayWidth("⚠ Bug"), 6);
 });
 
 test("getLogRows can render ticker rows without reducing history capacity", () => {
@@ -158,19 +282,20 @@ test("getLogRows can render ticker rows without reducing history capacity", () =
   assert.equal(rows.historyRows.at(-1).text, "[系统] 已保存。");
 });
 
-test("getCurrentLogRows includes status, time, weekly focus, and key resources", () => {
+test("getCurrentLogRows includes status, advice, weekly focus, and key resources", () => {
   const state = createNewState(1_700_000_000_000);
   const view = getGameViewModel(state);
   const rows = getCurrentLogRows(view, ["[当前状态] 活动 写代码。", "[当前时间] 第 001 天 09:00。"]);
 
   assert.match(rows.find((row) => row.id === "current-status").text, /\[当前状态\]/);
-  assert.match(rows.find((row) => row.id === "current-time").text, /\[当前时间\]/);
+  assert.equal(rows.find((row) => row.id === "current-time"), undefined);
   assert.equal(rows.find((row) => row.id === "current-budget"), undefined);
   assert.match(rows.find((row) => row.id === "current-weekly-focus").text, /本周重点/);
   assert.match(rows.find((row) => row.id === "current-energy").text, /精力/);
   assert.match(rows.find((row) => row.id === "current-pressure").text, /压力/);
   assert.match(rows.find((row) => row.id === "current-bugs").text, /Bug/);
   assert.match(rows.find((row) => row.id === "current-techDebt").text, /技术债/);
+  assert.match(rows.find((row) => row.id === "current-advice").text, /建议/);
   assert.doesNotMatch(rows.map((row) => row.text).join("\n"), /今日预算/);
 });
 
