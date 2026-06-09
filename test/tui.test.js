@@ -156,8 +156,8 @@ test("calculateLayoutBudget falls back to 24 rows and expands taller terminals",
   assert.ok(tall.pageSize >= fallback.pageSize);
 });
 
-test("TUI settle tick runs every three seconds", () => {
-  assert.equal(TUI_SETTLE_TICK_MS, 3000);
+test("TUI settle tick runs every second for better real-time feedback", () => {
+  assert.equal(TUI_SETTLE_TICK_MS, 1000);
 });
 
 test("formatTopStatusRows renders the fixed top status fields", () => {
@@ -334,7 +334,7 @@ test("createTuiTicker shows the concrete rest status between settlement ticks", 
   const rows = getCurrentLogRows(getGameViewModel(state), createTuiTicker(state));
   const currentStatus = rows.find((row) => row.id === "current-status").text;
 
-  assert.match(currentStatus, /\[当前状态\] 健康休整：恢复精力，降低压力。/);
+  assert.match(currentStatus, /\[当前状态\] 健康休整：恢复精力，降低压力/);
   assert.notEqual(currentStatus, "[当前状态] 休整。");
 });
 
@@ -356,7 +356,7 @@ test("createTuiTicker clears stale activity for evening none before rendering", 
   const currentStatus = rows.find((row) => row.id === "current-status").text;
 
   assert.equal(state.activeActivityId, null);
-  assert.match(currentStatus, /\[当前状态\] 健康休整：恢复精力，降低压力。/);
+  assert.match(currentStatus, /\[当前状态\] 健康休整：恢复精力，降低压力/);
   assert.doesNotMatch(currentStatus, /活动 写功能/);
 });
 

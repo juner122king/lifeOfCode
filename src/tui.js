@@ -46,7 +46,7 @@ const MIN_LIST_PAGE_SIZE = 3;
 const DEFAULT_TERMINAL_ROWS = 24;
 const DEFAULT_TERMINAL_COLUMNS = 80;
 const TOP_BAR_HEIGHT = 6;
-const TUI_SETTLE_TICK_MS = 3000;
+const TUI_SETTLE_TICK_MS = 1000;
 const TOP_RESOURCE_SUMMARY_IDS = ["codeLines", "money", "knowledge", "tests", "docs", "architecture", "leads", "reputation", "bugs", "techDebt"];
 const DAILY_PLANNER_KINDS = ["activity", "skill", "project"];
 const DAILY_PLANNER_KIND_TO_PANEL = {
@@ -212,6 +212,42 @@ function getCurrentLogRows(view, ticker = null) {
   const byId = new Map(resources.map((item) => [item.id, item]));
   const weeklyFocus = view && view.weeklyFocus && view.weeklyFocus.name ? view.weeklyFocus.name : "--";
   const nextAdvice = view && view.nextAdvice ? view.nextAdvice : "建议：--";
+
+  // 简化版趋势指示：基于当前值判断警戒状态
+  function getTrendIndicator(id, value) {
+    const numValue = Number(value) || 0;
+
+    if (id === "energy") {
+      if (numValue <= 15) return " ↘ (危险偏低)";
+      if (numValue <= 30) return " ↘ (偏低)";
+      if (numValue >= 80) return " → (充足)";
+      return " → (正常)";
+    }
+
+    if (id === "pressure") {
+      if (numValue >= 80) return " ↗ (偏高危险)";
+      if (numValue >= 60) return " ↗ (偏高)";
+      if (numValue <= 30) return " → (正常)";
+      return " → (适中)";
+    }
+
+    if (id === "bugs") {
+      if (numValue >= 75) return " ↗ (接近危险)";
+      if (numValue >= 50) return " ↗ (偏高)";
+      if (numValue <= 20) return " → (良好)";
+      return " → (适中)";
+    }
+
+    if (id === "techDebt") {
+      if (numValue >= 75) return " ↗ (偏高危险)";
+      if (numValue >= 50) return " ↗ (偏高)";
+      if (numValue <= 20) return " → (良好)";
+      return " → (适中)";
+    }
+
+    return "";
+  }
+
   return [
     { id: "current-status", kind: "status", text: tickerRows[0].text },
     { id: "current-weekly-focus", kind: "resource", resourceId: "weeklyFocus", text: `本周重点 ${weeklyFocus}` },
@@ -220,12 +256,13 @@ function getCurrentLogRows(view, ticker = null) {
       const valueText = resource && resource.id === "energy" && resource.status
         ? `${resource.value} ${resource.status}`
         : resource && resource.value;
+      const trend = resource ? getTrendIndicator(id, resource.value) : "";
       return {
         id: `current-${id}`,
         kind: "resource",
         resourceId: id,
         resource,
-        text: resource ? `${resource.name} ${valueText}` : `${id} --`
+        text: resource ? `${resource.name} ${valueText}${trend}` : `${id} --`
       };
     }),
     { id: "current-advice", kind: "advice", text: nextAdvice }

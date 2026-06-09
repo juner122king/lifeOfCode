@@ -1341,15 +1341,68 @@ function pushMessageEvent(messages, events, category, text, severity = "info") {
   pushGameEvent(events, category, text, severity);
 }
 
+function getTodaySummary(state) {
+  // 统计今日已完成的活动（从当天 09:00 开始算起）
+  const todayStartMinutes = Math.floor(state.worldTimeMinutes / (24 * 60)) * (24 * 60) + 9 * 60;
+  const elapsedMinutes = Math.max(0, state.worldTimeMinutes - todayStartMinutes);
+
+  // 简化版：显示总活动时长（未来可以按活动类型细分）
+  const activeHours = Math.floor(elapsedMinutes / 60);
+  const activeMinutes = elapsedMinutes % 60;
+
+  if (activeHours > 0 || activeMinutes > 0) {
+    return `已工作 ${activeHours}h${activeMinutes}m`;
+  }
+  return "刚开始新的一天";
+}
+
+function getProgressPreview(state) {
+  const energy = Math.floor(state.resources.energy || 0);
+  const maxEnergy = 100;
+  const claimableGoals = content.goals.filter((g) => isGoalCompleted(state, g) && !isGoalClaimed(state, g));
+  const parts = [];
+
+  parts.push(`精力 ${energy}/${maxEnergy}`);
+
+  if (state.activeProjectId) {
+    const project = projectById(state.activeProjectId);
+    if (project) {
+      const progress = getProjectProgress(state, project);
+      parts.push(`项目进度 ${Math.floor(progress * 100)}%`);
+    }
+  }
+
+  if (claimableGoals.length > 0) {
+    parts.push(`待办：${claimableGoals.length}个目标可领取`);
+  }
+
+  return parts.join(" | ");
+}
+
+function getNextMilestone(state) {
+  const minutes = state.worldTimeMinutes % (24 * 60);
+
+  // 下个关键时间点
+  if (minutes < 9 * 60) return "09:00 开始工作";
+  if (minutes < 12 * 60) return "12:00 午间休整";
+  if (minutes < 14 * 60) return "14:00 下午工作";
+  if (minutes < 18 * 60) return "18:00 晚间时段";
+  if (minutes < 21 * 60) return "21:00 深夜休整";
+  return "次日 09:00 开始工作";
+}
+
 function createTuiTicker(state, result = null, changedResources = "") {
   syncScheduledActiveMode(state);
   const activeSeconds = result && Number(result.activeSeconds) > 0 ? Math.floor(Number(result.activeSeconds)) : 0;
   const activeName = result && result.activeName;
   if (activeSeconds > 0 && activeName) {
     const summary = changedResources || "进度推进";
+    const todaySummary = getTodaySummary(state);
+    const progressPreview = getProgressPreview(state);
     return [
-      `[当前行动] ${activeName} ${activeSeconds} 秒：${summary}。`,
-      `[当前时间] ${formatWorldCalendar(state, "short")}。`
+      `[当前行动] ${activeName} ${activeSeconds} 秒：${summary} | ${todaySummary}`,
+      `[进度预览] ${progressPreview}`,
+      `[当前时间] ${formatWorldCalendar(state, "short")} | 下次节点：${getNextMilestone(state)}`
     ];
   }
 
@@ -1359,9 +1412,12 @@ function createTuiTicker(state, result = null, changedResources = "") {
     const resourceSummary = formatRestChangedResources(restTick.deltas);
     const sideEffect = resourceSummary && restTick.sideEffectSummary ? `，${restTick.sideEffectSummary}` : "";
     const summary = `${resourceSummary || restTick.defaultSummary}${sideEffect}`;
+    const todaySummary = getTodaySummary(state);
+    const progressPreview = getProgressPreview(state);
     return [
-      `[当前行动] ${restTick.name} ${restSeconds} 秒：${summary}。`,
-      `[当前时间] ${formatWorldCalendar(state, "short")}。`
+      `[当前行动] ${restTick.name} ${restSeconds} 秒：${summary} | ${todaySummary}`,
+      `[进度预览] ${progressPreview}`,
+      `[当前时间] ${formatWorldCalendar(state, "short")} | 下次节点：${getNextMilestone(state)}`
     ];
   }
 
@@ -1382,9 +1438,12 @@ function createTuiTicker(state, result = null, changedResources = "") {
       : phase
         ? `${phase.name}休整`
         : "休整";
+  const todaySummary = getTodaySummary(state);
+  const progressPreview = getProgressPreview(state);
   return [
-    `[当前状态] ${status}。`,
-    `[当前时间] ${formatWorldCalendar(state, "short")}。`
+    `[当前状态] ${status} | ${todaySummary}`,
+    `[进度预览] ${progressPreview}`,
+    `[当前时间] ${formatWorldCalendar(state, "short")} | 下次节点：${getNextMilestone(state)}`
   ];
 }
 
@@ -2576,6 +2635,141 @@ function claimAllGoals(state) {
     formatGoalSummary(state),
     formatNextAdvice(state)
   ]);
+}
+
+function getAdviceList(state) {
+  clearCompletedSkillLearning(state);
+  const advices = [];
+
+  // 🔴 紧急级：阻断进度的问题
+  if (state.resources.energy <= 10 && state.activeActivityId && state.activeActivityId !== "rest") {
+    advices.push({
+      level: "danger",
+      emoji: "🔴",
+      text: "精力耗尽，活动已停止推进",
+      reason: `精力 ${Math.floor(state.resources.energy)}/100`,
+      action: "明天安排 rest 或切换 lifestyle"
+    });
+  }
+
+  // 🟡 重要级：高价值机会
+  const claimable = getClaimableGoals(state);
+  if (claimable.length > 0) {
+    const totalMoney = claimable.reduce((sum, g) => sum + ((g.rewards && g.rewards.money) || 0), 0);
+    const totalReputation = claimable.reduce((sum, g) => sum + ((g.rewards && g.rewards.reputation) || 0), 0);
+    const rewards = [];
+    if (totalMoney > 0) rewards.push(`+${totalMoney}金钱`);
+    if (totalReputation > 0) rewards.push(`+${totalReputation}声望`);
+    advices.push({
+      level: "warn",
+      emoji: "🟡",
+      text: `${claimable.length}个目标可领取`,
+      reason: rewards.length > 0 ? rewards.join("，") : "获得奖励",
+      action: "claim all"
+    });
+  }
+
+  if (state.waitingForSchedule) {
+    advices.push({
+      level: "warn",
+      emoji: "🟡",
+      text: "需要安排今日日程",
+      reason: "09:00 已到，等待排程",
+      action: "plan morning/afternoon/evening，然后 plan confirm"
+    });
+  }
+
+  // 🔵 提示级：风险预警
+  if (state.resources.bugs >= 70) {
+    advices.push({
+      level: "info",
+      emoji: "🔵",
+      text: "Bug 风险偏高",
+      reason: `当前 ${Math.floor(state.resources.bugs)}/100，接近危险`,
+      action: "明天安排 bug-hunting 或 code-review"
+    });
+  } else if (state.resources.bugs >= 50) {
+    advices.push({
+      level: "info",
+      emoji: "🔵",
+      text: "Bug 开始累积",
+      reason: `当前 ${Math.floor(state.resources.bugs)}/100`,
+      action: "考虑安排质量活动"
+    });
+  }
+
+  if (state.resources.techDebt >= 70) {
+    advices.push({
+      level: "info",
+      emoji: "🔵",
+      text: "技术债偏高",
+      reason: `当前 ${Math.floor(state.resources.techDebt)}/100`,
+      action: "明天安排 refactoring 或 architecture"
+    });
+  }
+
+  if (state.resources.pressure >= 70) {
+    advices.push({
+      level: "info",
+      emoji: "🔵",
+      text: "压力偏高",
+      reason: `当前 ${Math.floor(state.resources.pressure)}/100，影响精力恢复`,
+      action: "明天安排 rest 或调整 lifestyle"
+    });
+  }
+
+  if (state.resources.energy < 25 && state.activeActivityId && state.activeActivityId !== "rest") {
+    advices.push({
+      level: "info",
+      emoji: "🔵",
+      text: "精力偏低",
+      reason: `当前 ${Math.floor(state.resources.energy)}/100`,
+      action: "明天安排 rest 恢复"
+    });
+  }
+
+  // 💡 推荐级：优化建议
+  if (!state.activeActivityId && !state.activeSkillLearningId && !state.activeProjectId && !state.waitingForSchedule) {
+    const phase = getCurrentSchedulePhase(state.worldTimeMinutes);
+    if (phase) {
+      advices.push({
+        level: "hint",
+        emoji: "💡",
+        text: "当前空闲",
+        reason: `${phase.name}时段可安排活动`,
+        action: "plan 或 start 开始活动"
+      });
+    }
+  }
+
+  if (state.activeProjectId) {
+    const project = projectById(state.activeProjectId);
+    if (project) {
+      const successRate = getProjectSuccessRate(state, project);
+      if (successRate < 0.8) {
+        advices.push({
+          level: "hint",
+          emoji: "💡",
+          text: "项目成功率偏低",
+          reason: `当前 ${Math.floor(successRate * 100)}%，可提升`,
+          action: "降低 Bug 和技术债可提高成功率"
+        });
+      }
+    }
+  }
+
+  // 最多返回3条建议，优先级高的在前
+  return advices.slice(0, 3);
+}
+
+function formatAdviceList(advices) {
+  if (!advices || advices.length === 0) {
+    return "建议：查看 plan 确认日程，或用 goals 查看目标进度。";
+  }
+
+  return advices.map((advice) =>
+    `${advice.emoji} ${advice.text}：${advice.reason} → ${advice.action}`
+  ).join("\n");
 }
 
 function formatNextAdvice(state) {
@@ -3888,6 +4082,8 @@ module.exports = {
   getProjectSuccessRate,
   getSkillProgress,
   getWorldCalendar,
+  getAdviceList,
+  formatAdviceList,
   helpText,
   learnSkill,
   listContent,
