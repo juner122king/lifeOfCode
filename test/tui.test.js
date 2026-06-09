@@ -149,8 +149,14 @@ test("calculateLayoutBudget falls back to 24 rows and expands taller terminals",
   assert.equal(fallback.terminalRows, 24);
   assert.equal(fallback.terminalColumns, 80);
   assert.equal(fallback.topHeight, 6);
+
+  // LogPanel 现在占 60% 的内容高度，但有最小值限制 MIN_LOG_PANEL_HEIGHT (11)
+  // fallback: contentHeight = 24 - 6 - 3 = 15, logHeight = max(11, floor(15 * 0.60)) = max(11, 9) = 11
   assert.equal(fallback.logHeight, 11);
-  assert.equal(tall.logHeight, 11);
+
+  // tall: contentHeight = 36 - 6 - 3 = 27, logHeight = max(11, floor(27 * 0.65)) = max(11, 17) = 17
+  assert.equal(tall.logHeight, 17);
+
   assert.ok(tall.mainHeight > fallback.mainHeight);
   assert.equal(tall.narrow, false);
   assert.ok(tall.pageSize >= fallback.pageSize);
@@ -282,7 +288,7 @@ test("getLogRows can render ticker rows without reducing history capacity", () =
   const result = settleTime(state, state.lastTick + 3000, { randomEvents: false });
   const rows = getLogRows([{ id: 1, category: "system", text: "[系统] 已保存。" }], 3, result.ticker);
 
-  assert.equal(rows.tickerRows.length, 2);
+  assert.equal(rows.tickerRows.length, 4); // ticker 现在返回 4 行
   assert.equal(rows.historyRows.length, 3);
   assert.match(rows.tickerRows[0].text, /\[当前状态\]/);
   assert.equal(rows.historyRows.at(-1).text, "[系统] 已保存。");
@@ -291,17 +297,20 @@ test("getLogRows can render ticker rows without reducing history capacity", () =
 test("getCurrentLogRows includes status, advice, weekly focus, and key resources", () => {
   const state = createNewState(1_700_000_000_000);
   const view = getGameViewModel(state);
-  const rows = getCurrentLogRows(view, ["[当前状态] 活动 写代码。", "[当前时间] 第 001 天 09:00。"]);
+  const rows = getCurrentLogRows(view, ["[当前状态] 活动 写代码。", "[当前时间] 第 001 天 09:00。"], 20);
 
-  assert.match(rows.find((row) => row.id === "current-status").text, /\[当前状态\]/);
+  assert.match(rows.find((row) => row.id === "current-status")?.text, /\[当前状态\]/);
   assert.equal(rows.find((row) => row.id === "current-time"), undefined);
   assert.equal(rows.find((row) => row.id === "current-budget"), undefined);
-  assert.match(rows.find((row) => row.id === "current-weekly-focus").text, /本周重点/);
-  assert.match(rows.find((row) => row.id === "current-energy").text, /精力/);
-  assert.match(rows.find((row) => row.id === "current-pressure").text, /压力/);
-  assert.match(rows.find((row) => row.id === "current-bugs").text, /Bug/);
-  assert.match(rows.find((row) => row.id === "current-techDebt").text, /技术债/);
-  assert.match(rows.find((row) => row.id === "current-advice").text, /建议/);
+  // 本周重点已移至顶部状态栏，不再重复显示
+  assert.equal(rows.find((row) => row.id === "current-weekly-focus"), undefined);
+  // 资源在充足空间时显示为独立行
+  assert.match(rows.find((row) => row.id === "current-energy")?.text, /精力/);
+  assert.match(rows.find((row) => row.id === "current-pressure")?.text, /压力/);
+  assert.match(rows.find((row) => row.id === "current-bugs")?.text, /Bug/);
+  assert.match(rows.find((row) => row.id === "current-techDebt")?.text, /技术债/);
+  // current-advice 现在可能是 adviceList 的第一条，或者是 nextAdvice
+  assert.ok(rows.find((row) => row.id === "current-advice"));
   assert.doesNotMatch(rows.map((row) => row.text).join("\n"), /今日预算/);
 });
 
@@ -315,7 +324,7 @@ test("getCurrentLogRows displays specific rest action and output from ticker", (
 
   const result = settleTime(state, now + 60_000, { randomEvents: false });
   const rows = getCurrentLogRows(getGameViewModel(state), result.ticker);
-  const currentStatus = rows.find((row) => row.id === "current-status").text;
+  const currentStatus = rows.find((row) => row.id === "current-status")?.text;
 
   assert.match(currentStatus, /\[当前行动\] 健康休整 60 秒：/);
   assert.match(currentStatus, /精力 \+/);
@@ -332,7 +341,7 @@ test("createTuiTicker shows the concrete rest status between settlement ticks", 
   state.worldTimeMinutes = 12 * 60;
 
   const rows = getCurrentLogRows(getGameViewModel(state), createTuiTicker(state));
-  const currentStatus = rows.find((row) => row.id === "current-status").text;
+  const currentStatus = rows.find((row) => row.id === "current-status")?.text;
 
   assert.match(currentStatus, /\[当前状态\] 健康休整：恢复精力，降低压力/);
   assert.notEqual(currentStatus, "[当前状态] 休整。");
@@ -353,7 +362,7 @@ test("createTuiTicker clears stale activity for evening none before rendering", 
   state.activeActivityId = "feature-coding";
 
   const rows = getCurrentLogRows(getGameViewModel(state), createTuiTicker(state));
-  const currentStatus = rows.find((row) => row.id === "current-status").text;
+  const currentStatus = rows.find((row) => row.id === "current-status")?.text;
 
   assert.equal(state.activeActivityId, null);
   assert.match(currentStatus, /\[当前状态\] 健康休整：恢复精力，降低压力/);

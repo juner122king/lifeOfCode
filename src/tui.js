@@ -170,14 +170,11 @@ function appendLogEntries(current, entries, maxLogs = MAX_LOGS) {
 
 function normalizeTickerRows(ticker) {
   const rows = Array.isArray(ticker) ? ticker : String(ticker || "").split("\n");
-  return [0, 1].map((index) => {
-    const text = String(rows[index] || "").trim();
-    return {
-      id: `ticker-${index}`,
-      text: text || (index === 0 ? "[当前状态] 休整。" : "[当前时间] --"),
-      ticker: true
-    };
-  });
+  return rows.map((text, index) => ({
+    id: `ticker-${index}`,
+    text: String(text || "").trim() || (index === 0 ? "[当前状态] 休整。" : ""),
+    ticker: true
+  })).filter(row => row.text); // 过滤空行
 }
 
 function isEventLog(log) {
@@ -206,67 +203,159 @@ function getLogRows(logs, maxHistoryRows = MAX_LOGS, ticker = null) {
   };
 }
 
-function getCurrentLogRows(view, ticker = null) {
+function getCurrentLogRows(view, ticker = null, availableHeight = 20) {
   const tickerRows = normalizeTickerRows(ticker);
-  const resources = view && Array.isArray(view.resources) ? view.resources : [];
-  const byId = new Map(resources.map((item) => [item.id, item]));
-  const weeklyFocus = view && view.weeklyFocus && view.weeklyFocus.name ? view.weeklyFocus.name : "--";
-  const nextAdvice = view && view.nextAdvice ? view.nextAdvice : "建议：--";
+  const rows = [];
 
-  // 简化版趋势指示：基于当前值判断警戒状态
-  function getTrendIndicator(id, value) {
+  // 简化版警告指示：仅显示需要注意的状态
+  function getWarningIndicator(id, value) {
     const numValue = Number(value) || 0;
 
     if (id === "energy") {
-      if (numValue <= 15) return " ↘ (危险偏低)";
-      if (numValue <= 30) return " ↘ (偏低)";
-      if (numValue >= 80) return " → (充足)";
-      return " → (正常)";
+      if (numValue <= 15) return " ⚠ 危险";
+      if (numValue <= 30) return " ⚠";
+      return "";
     }
 
     if (id === "pressure") {
-      if (numValue >= 80) return " ↗ (偏高危险)";
-      if (numValue >= 60) return " ↗ (偏高)";
-      if (numValue <= 30) return " → (正常)";
-      return " → (适中)";
+      if (numValue >= 80) return " ⚠ 危险";
+      if (numValue >= 60) return " ⚠";
+      return "";
     }
 
     if (id === "bugs") {
-      if (numValue >= 75) return " ↗ (接近危险)";
-      if (numValue >= 50) return " ↗ (偏高)";
-      if (numValue <= 20) return " → (良好)";
-      return " → (适中)";
+      if (numValue >= 75) return " ⚠ 危险";
+      if (numValue >= 50) return " ⚠";
+      return "";
     }
 
     if (id === "techDebt") {
-      if (numValue >= 75) return " ↗ (偏高危险)";
-      if (numValue >= 50) return " ↗ (偏高)";
-      if (numValue <= 20) return " → (良好)";
-      return " → (适中)";
+      if (numValue >= 75) return " ⚠ 危险";
+      if (numValue >= 50) return " ⚠";
+      return "";
     }
 
     return "";
   }
 
-  return [
-    { id: "current-status", kind: "status", text: tickerRows[0].text },
-    { id: "current-weekly-focus", kind: "resource", resourceId: "weeklyFocus", text: `本周重点 ${weeklyFocus}` },
-    ...CURRENT_RESOURCE_IDS.map((id) => {
-      const resource = byId.get(id);
+  // 第一组：当前状态（ticker 信息）
+  if (tickerRows.length >= 3) {
+    // 特殊状态：一天结束、阶段转换、提前完成
+    tickerRows.forEach((row, index) => {
+      rows.push({
+        id: index === 0 ? "current-status" : row.id,
+        kind: "status",
+        text: row.text,
+        priority: 1
+      });
+    });
+  } else {
+    // 常规状态
+    tickerRows.forEach((row, index) => {
+      rows.push({
+        id: index === 0 ? "current-status" : row.id,
+        kind: index === 0 ? "status" : "info",
+        text: row.text,
+        priority: 2
+      });
+    });
+  }
+
+  // 分隔行（仅在空间足够时）
+  if (availableHeight >= 10 && tickerRows.length > 0) {
+    rows.push({
+      id: "separator-1",
+      kind: "separator",
+      text: "",
+      priority: 2
+    });
+  }
+
+  // 第二组：核心资源状态（紧凑显示）
+  const resources = view && Array.isArray(view.resources) ? view.resources : [];
+  const byId = new Map(resources.map((item) => [item.id, item]));
+
+  CURRENT_RESOURCE_IDS.forEach((id) => {
+    const resource = byId.get(id);
+    const value = resource ? resource.value : 0;
+    const warning = resource ? getWarningIndicator(id, value) : "";
+
+    // 只在有警告时显示，或空间充足时显示所有
+    const shouldShow = warning || availableHeight >= 12;
+
+    if (shouldShow) {
       const valueText = resource && resource.id === "energy" && resource.status
-        ? `${resource.value} ${resource.status}`
-        : resource && resource.value;
-      const trend = resource ? getTrendIndicator(id, resource.value) : "";
-      return {
+        ? `${resource.value}/${resource.max || 100} ${resource.status}`
+        : resource ? resource.value : "--";
+
+      rows.push({
         id: `current-${id}`,
         kind: "resource",
         resourceId: id,
         resource,
-        text: resource ? `${resource.name} ${valueText}${trend}` : `${id} --`
-      };
-    }),
-    { id: "current-advice", kind: "advice", text: nextAdvice }
-  ];
+        text: resource ? `${resource.name} ${valueText}${warning}` : `${id} --`,
+        priority: warning ? 2 : 3
+      });
+    }
+  });
+
+  // 紧凑模式：一行显示所有资源
+  if (availableHeight < 12) {
+    const compactResources = CURRENT_RESOURCE_IDS
+      .map((id) => {
+        const resource = byId.get(id);
+        const value = resource ? resource.value : 0;
+        const warning = resource ? getWarningIndicator(id, value) : "";
+        return resource ? `${resource.name}${value}${warning}` : null;
+      })
+      .filter(Boolean)
+      .join(" | ");
+
+    if (compactResources) {
+      rows.push({
+        id: "current-resources-compact",
+        kind: "resource",
+        text: compactResources,
+        priority: 3
+      });
+    }
+  }
+
+  // 分隔行
+  if (availableHeight >= 10) {
+    rows.push({
+      id: "separator-2",
+      kind: "separator",
+      text: "",
+      priority: 3
+    });
+  }
+
+  // 第三组：建议与关键提醒
+  const adviceList = view && Array.isArray(view.adviceList) && view.adviceList.length > 0 ? view.adviceList : null;
+  if (adviceList) {
+    adviceList.slice(0, availableHeight >= 15 ? 2 : 1).forEach((advice, index) => {
+      rows.push({
+        id: index === 0 ? "current-advice" : `advice-${index}`,
+        kind: "advice",
+        text: `${advice.emoji} ${advice.text}`,
+        priority: 4
+      });
+    });
+  } else {
+    const nextAdvice = view && view.nextAdvice ? view.nextAdvice : null;
+    if (nextAdvice && availableHeight >= 8) {
+      rows.push({
+        id: "current-advice",
+        kind: "advice",
+        text: nextAdvice,
+        priority: 4
+      });
+    }
+  }
+
+  // 根据可用高度截断
+  return rows.slice(0, Math.max(5, availableHeight - 1));
 }
 
 function formatTopDate(calendar) {
@@ -556,6 +645,18 @@ function isDailyPlannerMode(view) {
   return Boolean(schedule && schedule.waiting && !schedule.confirmed);
 }
 
+function isEarlyCompletionMode(view) {
+  return Boolean(view && view.state && view.state.earlyCompletionPending);
+}
+
+function isPhaseTransitionMode(view) {
+  return Boolean(view && view.state && view.state.phaseTransitionPending);
+}
+
+function isDayEndSummaryMode(view) {
+  return Boolean(view && view.state && view.state.dayEndSummaryPending);
+}
+
 function getDailyPlannerCandidateOptions(state, kind) {
   const normalized = normalizeDailyPlannerKind(kind);
   if (!normalized) return [];
@@ -737,9 +838,17 @@ function calculateLayoutBudget(rows, columns) {
   const narrow = terminalColumns < 100;
   const topHeight = TOP_BAR_HEIGHT;
   const footerHeight = 3;
-  const logHeight = Math.max(MIN_LOG_PANEL_HEIGHT, compact ? 8 : terminalRows < 30 ? 9 : 10);
-  const reserved = topHeight + footerHeight + logHeight;
-  const mainHeight = Math.max(5, terminalRows - reserved);
+
+  // 可用于内容的总高度
+  const contentHeight = terminalRows - topHeight - footerHeight;
+
+  // LogPanel (Ticker) 占 60-65%，作为主要信息展示区域
+  const logHeightRatio = compact ? 0.60 : 0.65;
+  const logHeight = Math.max(MIN_LOG_PANEL_HEIGHT, Math.floor(contentHeight * logHeightRatio));
+
+  // MainPanel 占剩余空间，但不少于 5 行
+  const mainHeight = Math.max(5, contentHeight - logHeight);
+
   const listHeight = narrow ? Math.max(5, Math.floor(mainHeight / 2)) : mainHeight;
   const detailHeight = narrow ? Math.max(3, mainHeight - listHeight) : mainHeight;
   const pageSize = Math.max(MIN_LIST_PAGE_SIZE, listHeight - 2);
@@ -1202,13 +1311,22 @@ async function startTui() {
   }
 
   function LogPanel({ ticker, logs, view, budget }) {
-    const visibleEventCount = Math.max(MIN_EVENT_HISTORY_ROWS, budget.logHeight - 3);
-    const currentRows = getCurrentLogRows(view, ticker);
-    const historyRows = getLogRows(logs, visibleEventCount);
+    const tickerRows = normalizeTickerRows(ticker);
+    const isSpecialState = tickerRows.length >= 3; // 特殊状态（一天结束等）
+
+    // 动态分配高度
+    const tickerMinHeight = isSpecialState ? Math.min(tickerRows.length + 5, budget.logHeight - 5) : 8;
+    const tickerHeight = Math.max(tickerMinHeight, Math.floor(budget.logHeight * 0.6));
+    const historyHeight = budget.logHeight - tickerHeight;
+
+    const availableTickerRows = tickerHeight - 2; // 减去边框和标题
+    const currentRows = getCurrentLogRows(view, ticker, availableTickerRows);
+    const historyRows = getLogRows(logs, Math.max(MIN_EVENT_HISTORY_ROWS, historyHeight - 2));
+
     const latestId = historyRows.filter((log) => !log.empty).at(-1)?.id ?? null;
     const columnWidth = Math.max(24, Math.floor((budget.terminalColumns - 8) / 2));
     return h(Box, { flexDirection: "row", gap: 1, height: budget.logHeight },
-      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: budget.logHeight, width: columnWidth },
+      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: tickerHeight, width: columnWidth },
         h(SectionTitle, { color: THEME.title }, "当前"),
         ...currentRows.map((row) => {
           const resourceTone = row.resource ? toneForResource(row.resource) : row.resourceId === "weeklyFocus" ? { color: THEME.status.info } : null;
@@ -1219,7 +1337,7 @@ async function startTui() {
           }, trimText(row.text || " ", Math.max(16, columnWidth - 4)));
         })
       ),
-      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: budget.logHeight, width: columnWidth },
+      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: historyHeight, width: columnWidth },
         h(SectionTitle, { color: THEME.title }, "事件"),
         ...historyRows.map((log) => {
           const tone = log.empty
@@ -1238,7 +1356,7 @@ async function startTui() {
 
   const MemoLogPanel = React.memo(LogPanel);
 
-  function Footer({ paused, creatingProfile, schedulePhase, dailyPlannerMode }) {
+  function Footer({ paused, creatingProfile, schedulePhase, dailyPlannerMode, view }) {
     if (creatingProfile) {
       return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
         h(KeyHint, { label: "Tab", text: "切换" }),
@@ -1260,6 +1378,30 @@ async function startTui() {
         h(KeyHint, { label: "Y", text: "确认" }),
         h(KeyHint, { label: "X", text: "清空" }),
         h(KeyHint, { label: "Space", text: paused ? "恢复" : "暂停" }),
+        h(KeyHint, { label: "Q", text: "保存退出" })
+      );
+    }
+    if (isEarlyCompletionMode(view)) {
+      return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
+        h(KeyHint, { label: "R", text: "休整" }),
+        h(KeyHint, { label: "Tab", text: "切换面板" }),
+        h(KeyHint, { label: "Space", text: paused ? "恢复" : "暂停" }),
+        h(KeyHint, { label: "Q", text: "保存退出" })
+      );
+    }
+    if (isPhaseTransitionMode(view)) {
+      return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
+        h(KeyHint, { label: "Y/Enter", text: "继续" }),
+        h(KeyHint, { label: "Tab", text: "切换面板" }),
+        h(KeyHint, { label: "Space", text: paused ? "恢复" : "暂停" }),
+        h(KeyHint, { label: "Q", text: "保存退出" })
+      );
+    }
+    if (isDayEndSummaryMode(view)) {
+      return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
+        h(KeyHint, { label: "Enter/Y", text: "确认进入明天" }),
+        h(KeyHint, { label: "R", text: "重新显示" }),
+        h(KeyHint, { label: "Tab", text: "切换面板" }),
         h(KeyHint, { label: "Q", text: "保存退出" })
       );
     }
@@ -1456,6 +1598,43 @@ async function startTui() {
           return;
         }
       }
+
+      // Early Completion mode shortcuts
+      if (isEarlyCompletionMode(view)) {
+        if (input.toLowerCase() === "r") {
+          runCommand("complete rest");
+          pendingDeleteProfileIdRef.current = null;
+          return;
+        }
+        // S key for switch - falls through to regular command processing
+        // User can type "complete switch activity rest" manually
+      }
+
+      // Phase Transition mode shortcuts
+      if (isPhaseTransitionMode(view)) {
+        if (input.toLowerCase() === "y" || key.return) {
+          runCommand("phase continue");
+          pendingDeleteProfileIdRef.current = null;
+          return;
+        }
+        // A key for adjust - falls through to regular command processing
+        // User can type "phase adjust afternoon activity rest" manually
+      }
+
+      // Day End Summary mode shortcuts
+      if (isDayEndSummaryMode(view)) {
+        if (input.toLowerCase() === "y" || key.return) {
+          runCommand("day confirm");
+          pendingDeleteProfileIdRef.current = null;
+          return;
+        }
+        if (input.toLowerCase() === "r") {
+          runCommand("day review");
+          pendingDeleteProfileIdRef.current = null;
+          return;
+        }
+      }
+
       if (key.tab) {
         const currentIndex = PANELS.findIndex((panel) => panel.id === activePanel);
         setActivePanel(PANELS[(currentIndex + 1) % PANELS.length].id);
@@ -1547,13 +1726,13 @@ async function startTui() {
 
     return h(Box, { flexDirection: "column", paddingX: 1 },
       h(TopBar, { view, paused, activePanel, budget }),
+      h(MemoLogPanel, { ticker, logs, view, budget }),
       dailyPlannerMode
         ? h(DailyPlannerPanel, { view, phaseId: schedulePhase, kind: dailyPlannerKind, options, selectedIndex, budget, paused })
         : activePanel === "cards" && !needsInitialProfile
         ? h(CharacterCardPanel, { view, budget })
         : h(MainPanel, { activePanel, options, selectedIndex, budget, paused }),
-      h(MemoLogPanel, { ticker, logs, view, budget }),
-      h(Footer, { paused, creatingProfile, schedulePhase, dailyPlannerMode })
+      h(Footer, { paused, creatingProfile, schedulePhase, dailyPlannerMode, view })
     );
   }
 

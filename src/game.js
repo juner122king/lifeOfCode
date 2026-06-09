@@ -862,6 +862,10 @@ function applyMorningTransitionIfDue(state, messages = [], events = []) {
   if (state.lastMorningTransitionDay === calendar.day) return false;
 
   state.lastMorningTransitionDay = calendar.day;
+
+  // 记录一天开始的资源快照
+  state.dayStartResources = snapshotResources(state.resources);
+
   clampState(state);
 
   if (state.pendingLifestyleStanceId) {
@@ -1393,14 +1397,79 @@ function getNextMilestone(state) {
 
 function createTuiTicker(state, result = null, changedResources = "") {
   syncScheduledActiveMode(state);
+
+  // 检测一天结束状态
+  if (state.dayEndSummaryPending) {
+    const summary = state.dayEndSummaryPending.summary;
+    const totalMinutes = summary.workTime.morning + summary.workTime.afternoon + summary.workTime.evening;
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+
+    const resourceStr = summary.resources && Object.keys(summary.resources).length > 0
+      ? formatChangedResources({}, summary.resources)
+      : "无明显变化";
+
+    return [
+      `[一天结束] D${summary.day} ${summary.weekday}`,
+      `[工作时长] ${hours}h${minutes}m | ${summary.activities.length}个活动`,
+      `[资源变化] ${resourceStr}`
+    ];
+  }
+
+  // 检测阶段转换状态
+  if (state.phaseTransitionPending) {
+    const pending = state.phaseTransitionPending;
+    const fromPhase = SCHEDULE_PHASE_BY_ID[pending.fromPhase];
+    const toPhase = SCHEDULE_PHASE_BY_ID[pending.toPhase];
+    const nextSlot = state.lockedSchedule?.slots[pending.toPhase];
+    const nextTaskName = nextSlot
+      ? nextSlot.type === "activity"
+        ? activityById(nextSlot.id)?.name
+        : nextSlot.type === "skill"
+          ? itemById(content.skills, nextSlot.id)?.name
+          : nextSlot.type === "project"
+            ? projectById(nextSlot.id)?.name
+            : "休息"
+      : "未安排";
+
+    return [
+      `[阶段转换] ${fromPhase.name} 已结束`,
+      `[本阶段总结] ${pending.summary.outputSummary}`,
+      `[下阶段] ${toPhase.name} (${formatScheduleTimeRange(toPhase)}) - 原计划：${nextTaskName}`
+    ];
+  }
+
+  // 检测提前完成状态
+  if (state.earlyCompletionPending) {
+    const pending = state.earlyCompletionPending;
+    const phase = SCHEDULE_PHASE_BY_ID[pending.phaseId];
+    const completedTaskName = pending.completedTask.type === "activity"
+      ? activityById(pending.completedTask.id)?.name
+      : pending.completedTask.type === "skill"
+        ? itemById(content.skills, pending.completedTask.id)?.name
+        : pending.completedTask.type === "project"
+          ? projectById(pending.completedTask.id)?.name
+          : "任务";
+    const remainingHours = Math.floor(pending.remainingMinutes / 60);
+    const remainingMinutes = pending.remainingMinutes % 60;
+
+    return [
+      `[提前完成] ${completedTaskName} 已完成！`,
+      `[阶段剩余] ${phase.name} 还剩 ${remainingHours}h${remainingMinutes}m`,
+      `[当前时间] ${formatWorldCalendar(state, "short")}`
+    ];
+  }
+
   const activeSeconds = result && Number(result.activeSeconds) > 0 ? Math.floor(Number(result.activeSeconds)) : 0;
   const activeName = result && result.activeName;
   if (activeSeconds > 0 && activeName) {
     const summary = changedResources || "进度推进";
     const todaySummary = getTodaySummary(state);
     const progressPreview = getProgressPreview(state);
+    const phaseStatus = formatPhaseStatus(state);
     return [
       `[当前行动] ${activeName} ${activeSeconds} 秒：${summary} | ${todaySummary}`,
+      phaseStatus,
       `[进度预览] ${progressPreview}`,
       `[当前时间] ${formatWorldCalendar(state, "short")} | 下次节点：${getNextMilestone(state)}`
     ];
@@ -1414,8 +1483,10 @@ function createTuiTicker(state, result = null, changedResources = "") {
     const summary = `${resourceSummary || restTick.defaultSummary}${sideEffect}`;
     const todaySummary = getTodaySummary(state);
     const progressPreview = getProgressPreview(state);
+    const phaseStatus = formatPhaseStatus(state);
     return [
       `[当前行动] ${restTick.name} ${restSeconds} 秒：${summary} | ${todaySummary}`,
+      phaseStatus,
       `[进度预览] ${progressPreview}`,
       `[当前时间] ${formatWorldCalendar(state, "short")} | 下次节点：${getNextMilestone(state)}`
     ];
@@ -1440,11 +1511,57 @@ function createTuiTicker(state, result = null, changedResources = "") {
         : "休整";
   const todaySummary = getTodaySummary(state);
   const progressPreview = getProgressPreview(state);
+  const phaseStatus = formatPhaseStatus(state);
   return [
     `[当前状态] ${status} | ${todaySummary}`,
+    phaseStatus,
     `[进度预览] ${progressPreview}`,
     `[当前时间] ${formatWorldCalendar(state, "short")} | 下次节点：${getNextMilestone(state)}`
   ];
+}
+
+function formatPhaseStatus(state) {
+  if (!state.lockedSchedule) return "[阶段进度] 未安排日程";
+
+  const progress = state.currentPhaseProgress;
+  if (!progress) return "[阶段进度] 非工作时段";
+
+  const phase = SCHEDULE_PHASE_BY_ID[progress.phaseId];
+  const percent = Math.floor((progress.elapsedMinutes / progress.totalMinutes) * 100);
+  const barLength = 10;
+  const filledLength = Math.floor(barLength * percent / 100);
+  const bar = "█".repeat(filledLength) + "░".repeat(barLength - filledLength);
+
+  let status = `[阶段进度] ${phase.name} ${bar} ${percent}%`;
+
+  // 显示任务完成预期
+  if (progress.taskEstimatedCompletion) {
+    const minuteOfDay = state.worldTimeMinutes % MINUTES_PER_DAY;
+    const phaseRemaining = progress.endMinute - minuteOfDay;
+    const taskRemaining = progress.taskEstimatedCompletion - state.worldTimeMinutes;
+
+    if (taskRemaining <= 0) {
+      status += ` | 任务已完成`;
+    } else if (taskRemaining <= phaseRemaining) {
+      const remainingHours = Math.floor(taskRemaining / 60);
+      const remainingMinutes = taskRemaining % 60;
+      if (remainingHours > 0) {
+        status += ` | 预计 ${remainingHours}h${remainingMinutes}m 后完成`;
+      } else {
+        status += ` | 预计 ${remainingMinutes}m 后完成`;
+      }
+    } else {
+      const overMinutes = taskRemaining - phaseRemaining;
+      const overHours = Math.floor(overMinutes / 60);
+      if (overHours > 0) {
+        status += ` | 需要额外 ${overHours}h`;
+      } else {
+        status += ` | 需要额外 ${overMinutes}m`;
+      }
+    }
+  }
+
+  return status;
 }
 
 function collectBugRiskEvents(state, beforeResources, afterResources, events) {
@@ -2147,21 +2264,135 @@ function isScheduledSlotFinished(state, phaseId, slot) {
   return false;
 }
 
+function shouldTriggerDayEndSummary(state) {
+  // 检查是否到达 21:00
+  const minuteOfDay = state.worldTimeMinutes % MINUTES_PER_DAY;
+  if (minuteOfDay !== 21 * 60) return false;
+
+  // 检查是否已经触发过今天的总结
+  const currentDay = getWorldCalendar(state.worldTimeMinutes).day;
+  if (state.lastDayEndSummaryDay === currentDay) return false;
+
+  // 只在有锁定日程的情况下触发（避免影响手动模式和测试）
+  if (!state.lockedSchedule) return false;
+
+  return true;
+}
+
+function generateDayEndSummary(state) {
+  const calendar = getWorldCalendar(state.worldTimeMinutes);
+  const schedule = state.lockedSchedule;
+
+  // 工作统计
+  const workTime = {
+    morning: 180,
+    afternoon: 240,
+    evening: schedule && schedule.slots.evening && schedule.slots.evening.type !== "none" ? 180 : 0
+  };
+
+  // 活动统计（从 schedule 中获取）
+  const activities = [];
+  if (schedule && schedule.slots) {
+    if (schedule.slots.morning && schedule.slots.morning.type === "activity") {
+      activities.push({ id: schedule.slots.morning.id, phase: "morning" });
+    }
+    if (schedule.slots.afternoon && schedule.slots.afternoon.type === "activity") {
+      activities.push({ id: schedule.slots.afternoon.id, phase: "afternoon" });
+    }
+    if (schedule.slots.evening && schedule.slots.evening.type === "activity") {
+      activities.push({ id: schedule.slots.evening.id, phase: "evening" });
+    }
+  }
+
+  // 资源变化（从 dayStartResources 对比当前资源）
+  const resources = {};
+  if (state.dayStartResources) {
+    for (const [key, value] of Object.entries(state.resources)) {
+      const start = state.dayStartResources[key] || 0;
+      const delta = value - start;
+      if (Math.abs(delta) >= 1) {
+        resources[key] = delta;
+      }
+    }
+  }
+
+  // 明日提醒
+  const tomorrowReminders = [];
+  const claimableGoals = content.goals.filter((g) =>
+    isGoalCompleted(state, g) && !isGoalClaimed(state, g)
+  );
+  if (claimableGoals.length > 0) {
+    tomorrowReminders.push(`${claimableGoals.length}个目标待领取`);
+  }
+
+  // 检查明日生效的作息
+  if (state.pendingLifestyleStanceId) {
+    const stance = LIFESTYLE_STANCES.find(s => s.id === state.pendingLifestyleStanceId);
+    if (stance) {
+      tomorrowReminders.push(`明日作息：${stance.name}`);
+    }
+  }
+
+  return {
+    day: calendar.day,
+    weekday: calendar.weekday,
+    workTime,
+    activities,
+    resources,
+    tomorrowReminders
+  };
+}
+
 function syncScheduledActiveMode(state) {
   ensureScheduleForCurrentDay(state);
   clearCompletedSkillLearning(state);
   if (state.waitingForSchedule || !state.lockedSchedule) {
     if (hasManualActiveWork(state)) return null;
     clearActiveWork(state);
+    state.currentPhaseProgress = null;
     return null;
   }
   const phase = getCurrentSchedulePhase(state.worldTimeMinutes);
   if (!phase) {
     clearActiveWork(state);
+    state.currentPhaseProgress = null;
     return null;
   }
+
+  // 计算当前阶段进度
+  const minuteOfDay = state.worldTimeMinutes % MINUTES_PER_DAY;
+  const elapsedMinutes = minuteOfDay - phase.start;
+  const totalMinutes = phase.end - phase.start;
+
   const slot = state.lockedSchedule.slots[phase.id];
+  const taskEstimatedCompletion = estimateTaskCompletion(state, phase, slot);
+
+  state.currentPhaseProgress = {
+    phaseId: phase.id,
+    startMinute: phase.start,
+    endMinute: phase.end,
+    elapsedMinutes: elapsedMinutes,
+    totalMinutes: totalMinutes,
+    taskEstimatedCompletion: taskEstimatedCompletion
+  };
+
   if (isScheduledSlotFinished(state, phase.id, slot)) {
+    // 检查是否阶段内提前完成
+    const phaseRemaining = phase.end - minuteOfDay;
+
+    // none 类型不触发提前完成提示
+    if (slot && slot.type !== "none" && phaseRemaining > 30 && !state.earlyCompletionPending) {
+      // 剩余时间超过30分钟，触发提前完成提示
+      state.earlyCompletionPending = {
+        phaseId: phase.id,
+        completedTask: slot,
+        completionMinute: state.worldTimeMinutes,
+        remainingMinutes: phaseRemaining
+      };
+      clearActiveWork(state);
+      return { phase, slot: null, earlyCompletion: true };
+    }
+
     clearActiveWork(state);
     return { phase, slot: null };
   }
@@ -2170,6 +2401,62 @@ function syncScheduledActiveMode(state) {
   if (slot.type === "skill") state.activeSkillLearningId = slot.id;
   if (slot.type === "project") state.activeProjectId = slot.id;
   return { phase, slot };
+}
+
+function shouldTriggerPhaseTransition(state, phase) {
+  // 默认关闭阶段转换暂停功能
+  if (!state.scheduleInteractionMode || !state.scheduleInteractionMode.phaseTransition) {
+    return false;
+  }
+  // 只在上午->午休、下午->晚上时触发
+  return phase.id === "morning" || phase.id === "afternoon";
+}
+
+function getNextPhaseId(phaseId) {
+  if (phaseId === "morning") return "afternoon";
+  if (phaseId === "afternoon") return "evening";
+  return null;
+}
+
+function generatePhaseSummary(state, phase, result) {
+  const worked = result && result.activeSeconds > 0;
+  const energyConsumed = worked ? Math.abs(result.deltas?.energy || 0) : 0;
+  const outputSummary = worked ? formatChangedResources({}, result.deltas || {}) : "休整";
+
+  return {
+    worked: worked,
+    energyConsumed: energyConsumed,
+    outputSummary: outputSummary
+  };
+}
+
+function estimateTaskCompletion(state, phase, slot) {
+  if (!slot || slot.type === "none") return null;
+
+  if (slot.type === "skill") {
+    const skill = itemById(content.skills, slot.id);
+    if (!skill) return null;
+    const progress = state.skillLearningProgress[slot.id];
+    if (!progress) return null;
+    const remaining = skill.learningSeconds - progress.seconds;
+    if (remaining <= 0) return null;
+    return state.worldTimeMinutes + Math.ceil(remaining / 60);
+  }
+
+  if (slot.type === "project") {
+    const project = projectById(slot.id);
+    if (!project) return null;
+    const progress = state.projectProgress[slot.id];
+    if (!progress) return null;
+    const workedMinutes = Math.floor(progress.workedSeconds / 60);
+    const requiredMinutes = project.minWorkHours * 60;
+    const remaining = requiredMinutes - workedMinutes;
+    if (remaining <= 0) return null;
+    return state.worldTimeMinutes + remaining;
+  }
+
+  // 活动无法预估完成时间
+  return null;
 }
 
 function markSchedulePhaseDone(state, phaseId) {
@@ -2359,8 +2646,39 @@ function settleTime(state, now = Date.now(), options = {}) {
     processedSeconds += segmentMinutes;
     if (scheduleContext && scheduleContext.phase) {
       const minuteOfDay = state.worldTimeMinutes % MINUTES_PER_DAY;
-      if (minuteOfDay === scheduleContext.phase.end) markSchedulePhaseDone(state, scheduleContext.phase.id);
+      if (minuteOfDay === scheduleContext.phase.end) {
+        // 检查是否触发阶段转换窗口
+        if (shouldTriggerPhaseTransition(state, scheduleContext.phase)) {
+          markSchedulePhaseDone(state, scheduleContext.phase.id);
+          const nextPhaseId = getNextPhaseId(scheduleContext.phase.id);
+          state.phaseTransitionPending = {
+            fromPhase: scheduleContext.phase.id,
+            toPhase: nextPhaseId,
+            triggerMinute: state.worldTimeMinutes,
+            summary: generatePhaseSummary(state, scheduleContext.phase, result)
+          };
+          clearActiveWork(state);
+          pushMessageEvent(messages, events, "system", `${scheduleContext.phase.name}阶段结束，请确认下阶段安排。`);
+          break; // 暂停时间推进
+        } else {
+          markSchedulePhaseDone(state, scheduleContext.phase.id);
+        }
+      }
     }
+
+    // 检查是否触发一天结束总结（在日期跨越之前）
+    if (shouldTriggerDayEndSummary(state)) {
+      state.lastDayEndSummaryDay = getWorldCalendar(state.worldTimeMinutes).day;
+      state.dayEndSummaryPending = {
+        day: getWorldCalendar(state.worldTimeMinutes).day,
+        triggerMinute: state.worldTimeMinutes,
+        summary: generateDayEndSummary(state)
+      };
+      clearActiveWork(state);
+      pushMessageEvent(messages, events, "system", "一天结束，查看今日总结。");
+      break; // 暂停时间推进
+    }
+
     const afterDay = getWorldCalendar(state.worldTimeMinutes).day;
     if (afterDay !== beforeDay) {
       if (applyWorldEffects) {
@@ -2674,8 +2992,7 @@ function getAdviceList(state) {
       level: "warn",
       emoji: "🟡",
       text: "需要安排今日日程",
-      reason: "09:00 已到，等待排程",
-      action: "plan morning/afternoon/evening，然后 plan confirm"
+      reason: "09:00 已到，等待排程"
     });
   }
 
@@ -2776,7 +3093,7 @@ function formatNextAdvice(state) {
   clearCompletedSkillLearning(state);
   const claimable = getClaimableGoals(state);
   if (claimable.length) return `建议：目标 ${claimable[0].name} 已完成，先 claim ${claimable[0].id} 领取奖励。`;
-  if (state.waitingForSchedule) return "建议：先用 plan 安排上午、下午和可选晚上，再 plan confirm。";
+  if (state.waitingForSchedule) return "建议：安排今日日程并确认。";
   if (state.activeSkillLearningId) return "建议：技能学习中，wait 或保持在线完成学习。";
   if (state.activeProjectId) return "建议：项目进行中，降低 Bug、技术债和压力可以提高交付成功率。";
   if (!state.activeActivityId) return "建议：当前阶段在休整或任务已完成，等待下个阶段。";
@@ -3345,6 +3662,9 @@ function getGameViewModel(state) {
       totalActiveSeconds: Math.floor(state.activityStats.totalActiveSeconds || 0)
     },
     nextAdvice: formatNextAdvice(state),
+    adviceList: getAdviceList(state),
+    todayActivities: getTodayActivities(state),
+    learningSkills: getLearningSkillsProgress(state),
     actions: {
       claimAll: claimableGoals.length > 0 ? "claim all" : null,
       stopActivity: state.activeActivityId || state.activeProjectId || state.activeSkillLearningId ? "stop" : null,
@@ -3352,6 +3672,43 @@ function getGameViewModel(state) {
       quit: "quit"
     }
   };
+}
+
+function getTodayActivities(state) {
+  // 获取今日完成的活动
+  const schedule = state.lockedSchedule;
+  if (!schedule || !schedule.slots) return [];
+
+  const activities = [];
+  const completedPhases = state.scheduleCompletedPhases || [];
+
+  Object.entries(schedule.slots).forEach(([phaseId, slot]) => {
+    if (slot && slot.type === "activity" && completedPhases.includes(phaseId)) {
+      const activity = activityById(slot.id);
+      if (activity) activities.push(activity.name);
+    }
+  });
+
+  return activities;
+}
+
+function getLearningSkillsProgress(state) {
+  // 获取学习中的技能进度
+  if (!state.activeSkillLearningId) return [];
+
+  const skill = itemById(content.skills, state.activeSkillLearningId);
+  if (!skill) return [];
+
+  const progress = state.skillLearningProgress[state.activeSkillLearningId];
+  if (!progress) return [];
+
+  const percent = Math.floor((progress.workedSeconds / skill.learningDurationSeconds) * 100);
+
+  return [{
+    id: skill.id,
+    name: skill.name,
+    progress: percent
+  }];
 }
 
 function canAfford(resources, cost) {
@@ -3461,6 +3818,278 @@ function buyTool(state, id) {
   pay(state.resources, tool.cost);
   state.ownedTools.push(id);
   return formatLines([`买到了 ${tool.name}。${tool.description}`, formatNextAdvice(state)]);
+}
+
+function processPhaseCommand(state, args) {
+  if (!state.phaseTransitionPending) {
+    return "当前不在阶段转换窗口。";
+  }
+
+  const [action, ...rest] = args;
+  const pending = state.phaseTransitionPending;
+  const fromPhaseName = SCHEDULE_PHASE_BY_ID[pending.fromPhase].name;
+  const toPhase = SCHEDULE_PHASE_BY_ID[pending.toPhase];
+
+  if (action === "continue") {
+    state.phaseTransitionPending = null;
+    return formatLines([
+      `继续执行原计划的 ${toPhase.name} 阶段。`,
+      formatNextAdvice(state)
+    ]);
+  }
+
+  if (action === "adjust") {
+    const [phaseId, type, id] = rest;
+    if (!phaseId || !type || !id) {
+      return "用法：phase adjust <phaseId> <type> <id>，例如：phase adjust afternoon activity rest";
+    }
+
+    // 验证阶段ID
+    const targetPhase = SCHEDULE_PHASE_BY_ID[phaseId];
+    if (!targetPhase) {
+      return `无效的阶段ID：${phaseId}，可用：morning, afternoon, evening`;
+    }
+
+    // 验证类型
+    if (!SCHEDULE_SLOT_TYPES.includes(type)) {
+      return `无效的类型：${type}，可用：activity, skill, project, none`;
+    }
+
+    // 临时解锁日程进行修改
+    if (!state.lockedSchedule) {
+      return "日程未锁定，无需调整。";
+    }
+
+    // 验证ID
+    if (type === "activity") {
+      const activity = activityById(id);
+      if (!activity) return `没有这个活动：${id}`;
+      if (!activityUnlocked(state, activity)) return `活动 ${activity.name} 尚未解锁。`;
+    } else if (type === "skill") {
+      const skill = itemById(content.skills, id);
+      if (!skill) return `没有这个技能：${id}`;
+    } else if (type === "project") {
+      const project = projectById(id);
+      if (!project) return `没有这个项目：${id}`;
+    } else if (type !== "none") {
+      return `无效的类型：${type}`;
+    }
+
+    // 修改日程槽
+    state.lockedSchedule.slots[phaseId] = { type, id: type === "none" ? null : id };
+    state.phaseTransitionPending = null;
+
+    const targetName = type === "none"
+      ? "休息"
+      : type === "activity"
+        ? activityById(id)?.name
+        : type === "skill"
+          ? itemById(content.skills, id)?.name
+          : projectById(id)?.name;
+
+    return formatLines([
+      `已调整 ${targetPhase.name}：${targetName}`,
+      formatNextAdvice(state)
+    ]);
+  }
+
+  return formatLines([
+    `${fromPhaseName}阶段已结束。`,
+    `使用 phase continue 继续原计划，或 phase adjust <phaseId> <type> <id> 调整。`
+  ]);
+}
+
+function processCompleteCommand(state, args) {
+  if (!state.earlyCompletionPending) {
+    return "当前没有提前完成的任务。";
+  }
+
+  const [action, type, id] = args;
+  const pending = state.earlyCompletionPending;
+  const phase = SCHEDULE_PHASE_BY_ID[pending.phaseId];
+  const completedTaskName = pending.completedTask.type === "activity"
+    ? activityById(pending.completedTask.id)?.name
+    : pending.completedTask.type === "skill"
+      ? itemById(content.skills, pending.completedTask.id)?.name
+      : pending.completedTask.type === "project"
+        ? projectById(pending.completedTask.id)?.name
+        : "任务";
+
+  if (action === "rest") {
+    state.earlyCompletionPending = null;
+    // 保持 clearActiveWork 状态，进入休整
+    const remainingHours = Math.floor(pending.remainingMinutes / 60);
+    const remainingMinutes = pending.remainingMinutes % 60;
+    return formatLines([
+      `${completedTaskName} 已完成，进入休整模式。`,
+      `${phase.name}阶段剩余 ${remainingHours}h${remainingMinutes}m 将恢复精力。`,
+      formatNextAdvice(state)
+    ]);
+  }
+
+  if (action === "switch") {
+    if (!type || !id) {
+      return "用法：complete switch <activity|skill|project> <id>";
+    }
+
+    // 临时切换，不修改日程
+    state.earlyCompletionPending = null;
+
+    if (type === "activity") {
+      const activity = activityById(id);
+      if (!activity) return `没有这个活动：${id}`;
+      if (!activityUnlocked(state, activity)) return `活动 ${activity.name} 尚未解锁。`;
+      state.activeActivityId = id;
+      state.activeSkillLearningId = null;
+      state.activeProjectId = null;
+      return formatLines([
+        `${completedTaskName} 已完成，切换到活动：${activity.name}。`,
+        `${phase.name}阶段剩余时间将推进该活动。`,
+        formatNextAdvice(state)
+      ]);
+    }
+
+    if (type === "skill") {
+      const skill = itemById(content.skills, id);
+      if (!skill) return `没有这个技能：${id}`;
+      const progress = ensureSkillProgress(state, id);
+      if (progress.level > 0) return `${skill.name} 已学会，无需继续学习。使用 upgrade ${id} 升级。`;
+      if (!progress.resourcesPaid && !canAfford(state.resources, skill.cost)) {
+        return formatLines([
+          `资源不足，学习 ${skill.name} 需要 ${formatResourceList(skill.cost)}。`,
+          formatShortfall(state.resources, skill.cost)
+        ]);
+      }
+      if (!progress.resourcesPaid) {
+        pay(state.resources, skill.cost);
+        progress.resourcesPaid = true;
+      }
+      state.activeSkillLearningId = id;
+      state.activeActivityId = null;
+      state.activeProjectId = null;
+      return formatLines([
+        `${completedTaskName} 已完成，切换到学习：${skill.name}。`,
+        `${phase.name}阶段剩余时间将推进学习。`,
+        formatNextAdvice(state)
+      ]);
+    }
+
+    if (type === "project") {
+      const project = projectById(id);
+      if (!project) return `没有这个项目：${id}`;
+      const missing = missingProjectRequirements(state, project);
+      if (missing.length) {
+        return `项目 ${project.name} 条件不足：${missing.join("、")}`;
+      }
+      const progress = state.projectProgress[id];
+      if (!progress || !progress.started) {
+        const requirements = project.requirements.resources || {};
+        pay(state.resources, requirements);
+        state.projectProgress[id] = {
+          started: true,
+          workedSeconds: 0,
+          investedResources: { ...requirements },
+          dueWorldMinute: ensureProjectDeadline(state, project).dueWorldMinute
+        };
+      }
+      state.activeProjectId = id;
+      state.activeActivityId = null;
+      state.activeSkillLearningId = null;
+      return formatLines([
+        `${completedTaskName} 已完成，切换到项目：${project.name}。`,
+        `${phase.name}阶段剩余时间将推进项目。`,
+        formatNextAdvice(state)
+      ]);
+    }
+
+    return "用法：complete switch <activity|skill|project> <id>";
+  }
+
+  return formatLines([
+    `${completedTaskName} 已提前完成！`,
+    `${phase.name}阶段还剩 ${Math.floor(pending.remainingMinutes / 60)}h${pending.remainingMinutes % 60}m`,
+    "选项：",
+    "  complete rest              (休整恢复精力)",
+    "  complete switch <type> <id> (切换任务)"
+  ]);
+}
+
+function processDayCommand(state, args) {
+  if (!state.dayEndSummaryPending) {
+    return "当前不在一天结束总结窗口。";
+  }
+
+  const [action] = args;
+  const pending = state.dayEndSummaryPending;
+
+  if (action === "confirm" || !action) {
+    // 确认总结，跳转到第二天 09:00
+    const currentDay = pending.day;
+    state.dayEndSummaryPending = null;
+
+    // 跳转到第二天 09:00
+    const nextDayStart = currentDay * MINUTES_PER_DAY + 9 * 60;
+    state.worldTimeMinutes = nextDayStart;
+
+    // 重置日程
+    resetScheduleForCurrentDay(state);
+
+    // 应用晨间转换
+    const messages = [];
+    const events = [];
+    applyMorningTransitionIfDue(state, messages, events);
+
+    return formatLines([
+      `D${currentDay} ${pending.summary.weekday} 已结束。`,
+      `欢迎来到 D${currentDay + 1}，请安排今日日程。`,
+      formatNextAdvice(state)
+    ]);
+  }
+
+  if (action === "review") {
+    // 重新显示总结
+    return formatDayEndSummary(pending.summary);
+  }
+
+  // 默认显示总结
+  return formatDayEndSummary(pending.summary);
+}
+
+function formatDayEndSummary(summary) {
+  const lines = [`[一天结束] D${summary.day} ${summary.weekday}`];
+
+  // 工作统计
+  const totalMinutes = summary.workTime.morning + summary.workTime.afternoon + summary.workTime.evening;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  lines.push(`[工作时长] ${hours}h${minutes}m`);
+
+  // 活动统计
+  if (summary.activities.length > 0) {
+    const activityNames = summary.activities.map(a => {
+      const activity = activityById(a.id);
+      return activity ? activity.name : a.id;
+    }).join("、");
+    lines.push(`[今日活动] ${activityNames}`);
+  }
+
+  // 资源变化
+  if (summary.resources && Object.keys(summary.resources).length > 0) {
+    const resourceStr = formatChangedResources({}, summary.resources);
+    if (resourceStr) {
+      lines.push(`[资源变化] ${resourceStr}`);
+    }
+  }
+
+  // 明日提醒
+  if (summary.tomorrowReminders.length > 0) {
+    lines.push(`[明日提醒] ${summary.tomorrowReminders.join("、")}`);
+  }
+
+  lines.push("");
+  lines.push("输入 day confirm 或按 Enter 确认，进入明天。");
+
+  return lines.join("\n");
 }
 
 function missingProjectRequirements(state, project, options = {}) {
@@ -3859,6 +4488,15 @@ function processCommand(state, input, options = {}) {
       break;
     case "claim":
       messages.push(claimGoal(state, arg));
+      break;
+    case "complete":
+      messages.push(processCompleteCommand(state, args));
+      break;
+    case "phase":
+      messages.push(processPhaseCommand(state, args));
+      break;
+    case "day":
+      messages.push(processDayCommand(state, args));
       break;
     case "profiles":
       messages.push(formatProfiles(listProfiles({ saveRoot: options.saveRoot, currentProfileId: state.profileId, now })));
