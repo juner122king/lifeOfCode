@@ -15,9 +15,12 @@ const {
   processCommand,
   replaceStateContents,
   saveProfile,
-  SCHEDULE_PHASES,
   settleTime
 } = require("./game");
+const {
+  RESOURCE_NAMES,
+  SCHEDULE_PHASES
+} = require("./core/constants");
 const {
   THEME,
   renderProgressBar,
@@ -25,21 +28,17 @@ const {
   toneForResource,
   toneForStatus
 } = require("./tuiTheme");
-
-const RESOURCE_NAMES = {
-  codeLines: "代码",
-  money: "金钱",
-  energy: "精力",
-  bugs: "Bug",
-  techDebt: "技术债",
-  pressure: "压力",
-  reputation: "声望",
-  knowledge: "知识",
-  tests: "测试",
-  docs: "文档",
-  architecture: "架构",
-  leads: "线索"
-};
+const {
+  getTextDisplayWidth,
+  trimText
+} = require("./tui/text");
+const {
+  DEFAULT_TERMINAL_COLUMNS,
+  DEFAULT_TERMINAL_ROWS,
+  MIN_EVENT_HISTORY_ROWS,
+  calculateLayoutBudget,
+  getPageWindow
+} = require("./tui/layout");
 
 const PANELS = [
   { id: "profiles", label: "档案", key: "F" },
@@ -53,14 +52,8 @@ const PANELS = [
 ];
 
 const MAX_LOGS = 80;
-const MIN_EVENT_HISTORY_ROWS = 8;
-const MIN_LOG_PANEL_HEIGHT = MIN_EVENT_HISTORY_ROWS + 3;
 const EVENT_LOG_CATEGORIES = new Set(["project", "skill", "career", "warning", "focus", "world", "random", "system"]);
 const CURRENT_RESOURCE_IDS = ["energy", "pressure", "bugs", "techDebt"];
-const MIN_LIST_PAGE_SIZE = 3;
-const DEFAULT_TERMINAL_ROWS = 24;
-const DEFAULT_TERMINAL_COLUMNS = 80;
-const TOP_BAR_HEIGHT = 6;
 const TUI_SETTLE_TICK_MS = 1000;
 const TOP_RESOURCE_SUMMARY_IDS = ["codeLines", "money", "knowledge", "tests", "docs", "architecture", "leads", "reputation", "bugs", "techDebt"];
 const DAILY_PLANNER_KINDS = ["activity", "skill", "project"];
@@ -75,71 +68,6 @@ const DAILY_PLANNER_KIND_LABELS = {
   project: "项目"
 };
 const SCHEDULE_PHASE_IDS = SCHEDULE_PHASES.map((phase) => phase.id);
-const GRAPHEME_SEGMENTER = typeof Intl !== "undefined" && Intl.Segmenter
-  ? new Intl.Segmenter("zh-Hans", { granularity: "grapheme" })
-  : null;
-
-function splitGraphemes(value) {
-  const text = String(value || "");
-  if (!text) return [];
-  if (!GRAPHEME_SEGMENTER) return Array.from(text);
-  return Array.from(GRAPHEME_SEGMENTER.segment(text), (part) => part.segment);
-}
-
-function isZeroWidthCodePoint(codePoint) {
-  return codePoint === 0x200d
-    || (codePoint >= 0x0300 && codePoint <= 0x036f)
-    || (codePoint >= 0xfe00 && codePoint <= 0xfe0f)
-    || (codePoint >= 0x1ab0 && codePoint <= 0x1aff)
-    || (codePoint >= 0x1dc0 && codePoint <= 0x1dff)
-    || (codePoint >= 0x20d0 && codePoint <= 0x20ff);
-}
-
-function isWideCodePoint(codePoint) {
-  return (codePoint >= 0x1100 && codePoint <= 0x115f)
-    || codePoint === 0x2329
-    || codePoint === 0x232a
-    || (codePoint >= 0x2600 && codePoint <= 0x27bf)
-    || (codePoint >= 0x2b00 && codePoint <= 0x2bff)
-    || (codePoint >= 0x2e80 && codePoint <= 0xa4cf)
-    || (codePoint >= 0xac00 && codePoint <= 0xd7a3)
-    || (codePoint >= 0xf900 && codePoint <= 0xfaff)
-    || (codePoint >= 0xfe10 && codePoint <= 0xfe19)
-    || (codePoint >= 0xfe30 && codePoint <= 0xfe6f)
-    || (codePoint >= 0xff00 && codePoint <= 0xff60)
-    || (codePoint >= 0xffe0 && codePoint <= 0xffe6)
-    || (codePoint >= 0x1f000 && codePoint <= 0x1faff)
-    || (codePoint >= 0x20000 && codePoint <= 0x3fffd);
-}
-
-function getGraphemeWidth(grapheme) {
-  const codePoints = Array.from(grapheme || "", (char) => char.codePointAt(0)).filter((codePoint) => !isZeroWidthCodePoint(codePoint));
-  if (!codePoints.length) return 0;
-  if (codePoints.some(isWideCodePoint)) return 2;
-  return 1;
-}
-
-function getTextDisplayWidth(value) {
-  return splitGraphemes(value).reduce((width, grapheme) => width + getGraphemeWidth(grapheme), 0);
-}
-
-function trimText(value, length) {
-  const text = String(value || "");
-  const width = Math.max(0, Math.floor(Number(length) || 0));
-  if (getTextDisplayWidth(text) <= width) return text;
-  if (width <= 0) return "";
-  if (width === 1) return "…";
-  const targetWidth = width - 1;
-  let currentWidth = 0;
-  let result = "";
-  for (const grapheme of splitGraphemes(text)) {
-    const graphemeWidth = getGraphemeWidth(grapheme);
-    if (currentWidth + graphemeWidth > targetWidth) break;
-    currentWidth += graphemeWidth;
-    result += grapheme;
-  }
-  return `${result}…`;
-}
 
 function normalizeLogMessages(messages, defaultCategory = null) {
   return messages.filter(Boolean).flatMap((message) => {
@@ -923,54 +851,6 @@ function handleProfileDeleteKeypress(state, option, pendingProfileId, options = 
     messages: [`> ${action.command}`, ...result.messages],
     changed: true,
     exit: result.exit
-  };
-}
-
-function getPageWindow(optionsLength, selectedIndex, pageSize) {
-  const length = Math.max(0, Math.floor(Number(optionsLength) || 0));
-  const size = Math.max(MIN_LIST_PAGE_SIZE, Math.floor(Number(pageSize) || MIN_LIST_PAGE_SIZE));
-  if (length === 0) return { start: 0, end: 0, page: 0, pageCount: 0, pageSize: size };
-  const safeSelected = Math.max(0, Math.min(length - 1, Math.floor(Number(selectedIndex) || 0)));
-  const pageCount = Math.max(1, Math.ceil(length / size));
-  const page = Math.min(pageCount - 1, Math.floor(safeSelected / size));
-  const start = page * size;
-  const end = Math.min(length, start + size);
-  return { start, end, page, pageCount, pageSize: size };
-}
-
-function calculateLayoutBudget(rows, columns) {
-  const terminalRows = Math.max(12, Math.floor(Number(rows) || DEFAULT_TERMINAL_ROWS));
-  const terminalColumns = Math.max(40, Math.floor(Number(columns) || DEFAULT_TERMINAL_COLUMNS));
-  const compact = terminalRows <= 24;
-  const narrow = terminalColumns < 100;
-  const topHeight = TOP_BAR_HEIGHT;
-  const footerHeight = 3;
-
-  // 可用于内容的总高度
-  const contentHeight = terminalRows - topHeight - footerHeight;
-
-  // LogPanel (Ticker) 占 60-65%，作为主要信息展示区域
-  const logHeightRatio = compact ? 0.60 : 0.65;
-  const logHeight = Math.max(MIN_LOG_PANEL_HEIGHT, Math.floor(contentHeight * logHeightRatio));
-
-  // MainPanel 占剩余空间，但不少于 5 行
-  const mainHeight = Math.max(5, contentHeight - logHeight);
-
-  const listHeight = narrow ? Math.max(5, Math.floor(mainHeight / 2)) : mainHeight;
-  const detailHeight = narrow ? Math.max(3, mainHeight - listHeight) : mainHeight;
-  const pageSize = Math.max(MIN_LIST_PAGE_SIZE, listHeight - 2);
-
-  return {
-    terminalRows,
-    terminalColumns,
-    narrow,
-    topHeight,
-    footerHeight,
-    logHeight,
-    mainHeight,
-    listHeight,
-    detailHeight,
-    pageSize
   };
 }
 

@@ -2,57 +2,36 @@ const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
 const content = require("./content");
+const {
+  ATTRIBUTE_IDS,
+  ATTRIBUTE_NAMES,
+  DEFAULT_ATTRIBUTES,
+  DEFAULT_PROFILE_ID,
+  DEFAULT_PROFILE_NAME,
+  ENERGY_MAX,
+  EVENT_LABELS,
+  GAME_MINUTES_PER_HOUR,
+  MINUTES_PER_DAY,
+  OFFLINE_CAP_SECONDS,
+  RESOURCE_NAMES,
+  RESOURCE_ORDER,
+  RISK_RESOURCE_IDS,
+  SAVE_PATH,
+  SAVE_VERSION,
+  SCHEDULE_PHASE_BY_ID,
+  SCHEDULE_PHASES,
+  SCHEDULE_SLOT_TYPES,
+  WORLD_START_MINUTES
+} = require("./core/constants");
+const { getEnergyStatus } = require("./core/energy");
+const { clamp, formatNumber, formatRateNumber } = require("./core/math");
+const {
+  formatWorldCalendar,
+  getWorldCalendar,
+  normalizeWorldTimeMinutes
+} = require("./core/time");
 
-const DEFAULT_PROFILE_ID = "default";
-const DEFAULT_PROFILE_NAME = "默认档案";
-const SAVE_PATH = path.join(process.cwd(), ".save", "code-life.json");
-const PROFILE_DIR = path.join(process.cwd(), ".save", "profiles");
-const OFFLINE_CAP_SECONDS = 8 * 60 * 60;
-const ATTRIBUTE_IDS = ["logic", "focus", "learning", "communication", "resilience", "creativity"];
-const ATTRIBUTE_NAMES = {
-  logic: "逻辑",
-  focus: "专注",
-  learning: "学习",
-  communication: "沟通",
-  resilience: "抗压",
-  creativity: "创造"
-};
-const DEFAULT_ATTRIBUTES = {
-  logic: 22,
-  focus: 24,
-  learning: 28,
-  communication: 18,
-  resilience: 20,
-  creativity: 16
-};
-const RESOURCE_NAMES = {
-  codeLines: "代码",
-  money: "金钱",
-  energy: "精力",
-  bugs: "Bug",
-  techDebt: "技术债",
-  pressure: "压力",
-  reputation: "声望",
-  knowledge: "知识",
-  tests: "测试",
-  docs: "文档",
-  architecture: "架构",
-  leads: "线索"
-};
-const RESOURCE_ORDER = ["codeLines", "money", "knowledge", "tests", "docs", "architecture", "leads", "energy", "pressure", "bugs", "techDebt", "reputation"];
-const RISK_RESOURCE_IDS = new Set(["bugs", "techDebt", "pressure"]);
 const QUALITY_ACTIVITY_IDS = new Set(["bug-hunting", "refactoring", "testing", "code-review", "incident-response"]);
-const EVENT_LABELS = {
-  command: "命令",
-  project: "项目",
-  skill: "技能",
-  career: "职业",
-  warning: "警告",
-  focus: "周重点",
-  world: "世界大势",
-  random: "随机事件",
-  system: "系统"
-};
 const BUG_RISK_THRESHOLDS = [25, 50, 75];
 const MULTIPLIER_NAMES = {
   code: "代码产出",
@@ -66,18 +45,6 @@ const SKILL_EXP_THRESHOLDS = { 1: 120, 2: 320, 3: 700, 4: 1250 };
 const SKILL_UPGRADE_MIN_KNOWLEDGE = { 2: 120, 3: 280, 4: 520, 5: 900 };
 const SKILL_UPGRADE_KNOWLEDGE_MULTIPLIERS = { 2: 2, 3: 4, 4: 7, 5: 11 };
 const SKILL_UPGRADE_RESOURCE_MULTIPLIERS = { 2: 1, 3: 2, 4: 4, 5: 7 };
-const WORLD_START_MINUTES = 9 * 60;
-const MINUTES_PER_DAY = 24 * 60;
-const GAME_MINUTES_PER_HOUR = 60;
-const SAVE_VERSION = 2;
-const ENERGY_MAX = 100;
-const ENERGY_STATUS_DEFS = [
-  { id: "depleted", name: "枯竭", min: 0, max: 0, productivityMultiplier: 0, riskMultiplier: 1.75 },
-  { id: "overdrawn", name: "透支", min: 1, max: 29, productivityMultiplier: 0.55, riskMultiplier: 1.75 },
-  { id: "tired", name: "疲惫", min: 30, max: 59, productivityMultiplier: 0.8, riskMultiplier: 1.25 },
-  { id: "stable", name: "平稳", min: 60, max: 89, productivityMultiplier: 1, riskMultiplier: 1 },
-  { id: "full", name: "充沛", min: 90, max: 100, productivityMultiplier: 1.1, riskMultiplier: 0.9 }
-];
 const ACTIVITY_ENERGY_COST_PER_HOUR = {
   study: 8.4,
   documentation: 8.4,
@@ -102,19 +69,6 @@ const REST_RECOVERY_PER_HOUR = {
   rest_night: 8
 };
 const SIDE_HUSTLE_ENERGY_COST_PER_HOUR = 8;
-const SCHEDULE_PHASES = [
-  { id: "morning", name: "上午", start: 9 * 60, end: 12 * 60, required: true },
-  { id: "afternoon", name: "下午", start: 14 * 60, end: 18 * 60, required: true },
-  { id: "evening", name: "晚上", start: 18 * 60, end: 21 * 60, required: false, overtime: true }
-];
-const SCHEDULE_PHASE_BY_ID = Object.fromEntries(SCHEDULE_PHASES.map((phase) => [phase.id, phase]));
-const SCHEDULE_SLOT_TYPES = ["activity", "skill", "project", "none"];
-const DAYS_PER_WEEK = 7;
-const WEEKS_PER_MONTH = 4;
-const MONTHS_PER_YEAR = 12;
-const DAYS_PER_MONTH = DAYS_PER_WEEK * WEEKS_PER_MONTH;
-const DAYS_PER_YEAR = DAYS_PER_MONTH * MONTHS_PER_YEAR;
-const WEEKDAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 const WEEKLY_FOCUS_CONFIG = {
   learning: { name: "学习周", learning: 1.3, project: 0.8, skill: 1.3, activity: 1 },
   project: { name: "项目周", learning: 0.8, project: 1.3, skill: 0.8, activity: 1 },
@@ -435,11 +389,6 @@ function normalizeState(raw, now = Date.now()) {
   return normalized;
 }
 
-function normalizeWorldTimeMinutes(value) {
-  const minutes = Number(value);
-  return Number.isFinite(minutes) && minutes >= 0 ? Math.floor(minutes) : WORLD_START_MINUTES;
-}
-
 function normalizeWeeklyFocus(value) {
   return WEEKLY_FOCUS_CONFIG[value] ? value : "balanced";
 }
@@ -570,45 +519,6 @@ function getNormalizedSkillLevel(skillProgress, id) {
   return clamp(Math.floor(Number(skillProgress && skillProgress[id] && skillProgress[id].level) || 0), 0, 5);
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function getWorldCalendar(worldTimeMinutes = WORLD_START_MINUTES) {
-  const totalMinutes = normalizeWorldTimeMinutes(worldTimeMinutes);
-  const dayIndex = Math.floor(totalMinutes / MINUTES_PER_DAY);
-  const minuteOfDay = totalMinutes % MINUTES_PER_DAY;
-  const year = Math.floor(dayIndex / DAYS_PER_YEAR) + 1;
-  const dayOfYear = dayIndex % DAYS_PER_YEAR + 1;
-  const month = Math.floor((dayOfYear - 1) / DAYS_PER_MONTH) + 1;
-  const dayOfMonth = (dayOfYear - 1) % DAYS_PER_MONTH + 1;
-  const weekOfMonth = Math.floor((dayOfMonth - 1) / DAYS_PER_WEEK) + 1;
-  const weekdayIndex = (dayOfMonth - 1) % DAYS_PER_WEEK;
-  const hour = Math.floor(minuteOfDay / 60);
-  const minute = minuteOfDay % 60;
-  const hhmm = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-  return {
-    totalMinutes,
-    dayIndex,
-    day: dayIndex + 1,
-    year,
-    month,
-    weekOfMonth,
-    weekdayIndex,
-    weekday: WEEKDAY_NAMES[weekdayIndex],
-    hour,
-    minute,
-    hhmm,
-    full: `第${year}年 ${month}月 第${weekOfMonth}周 ${WEEKDAY_NAMES[weekdayIndex]} 第${dayIndex + 1}天 ${hhmm}`,
-    short: `Y${year} M${String(month).padStart(2, "0")} W${weekOfMonth} ${WEEKDAY_NAMES[weekdayIndex]} D${String(dayIndex + 1).padStart(3, "0")} ${hhmm}`
-  };
-}
-
-function formatWorldCalendar(state, style = "full") {
-  const calendar = getWorldCalendar(state.worldTimeMinutes);
-  return style === "short" ? calendar.short : calendar.full;
-}
-
 function getWeeklyFocus(state) {
   const id = normalizeWeeklyFocus(state.weeklyFocus);
   return { id, ...WEEKLY_FOCUS_CONFIG[id] };
@@ -626,24 +536,6 @@ function setWeeklyFocus(state, id) {
 
 function getEffectiveMaxEnergy(state) {
   return ENERGY_MAX;
-}
-
-function getEnergyStatus(valueOrState) {
-  let value = Number(valueOrState);
-  if (typeof valueOrState === "object" && valueOrState !== null) {
-    const resourceEntries = Array.isArray(valueOrState.resources) ? valueOrState.resources : [];
-    const energyEntry = resourceEntries.find((entry) => entry && entry.id === "energy");
-    const candidates = [
-      valueOrState.resources && valueOrState.resources.energy,
-      energyEntry && energyEntry.value,
-      valueOrState.value,
-      valueOrState.energy
-    ];
-    value = candidates.map((candidate) => Number(candidate)).find((candidate) => Number.isFinite(candidate));
-  }
-  if (!Number.isFinite(value)) value = 0;
-  const energy = clamp(value, 0, ENERGY_MAX);
-  return ENERGY_STATUS_DEFS.find((status) => energy >= status.min && energy <= status.max) || ENERGY_STATUS_DEFS[0];
 }
 
 function formatEnergyStatus(state) {
@@ -1166,10 +1058,6 @@ function activityUnlocked(state, activity) {
   return requirementsMet(state, activity.requirements || {});
 }
 
-function formatNumber(value) {
-  return Math.floor(value).toString();
-}
-
 function formatLines(lines) {
   return lines.filter((line) => line && line.trim()).join("\n");
 }
@@ -1184,11 +1072,6 @@ function formatResourceList(values = {}) {
 function roundRate(value) {
   const rounded = Math.round((Number(value) || 0) * 100) / 100;
   return Object.is(rounded, -0) ? 0 : rounded;
-}
-
-function formatRateNumber(value) {
-  const rounded = roundRate(value);
-  return Number.isInteger(rounded) ? rounded.toString() : rounded.toString();
 }
 
 function formatResourceRateEntries(entries = []) {
@@ -2572,12 +2455,12 @@ function settleTime(state, now = Date.now(), options = {}) {
       state.lastSchedulePromptDay = currentDay;
       pushMessageEvent(messages, events, "system", "09:00 到了，请先用 plan 安排并确认今日日程。");
     }
-    return { seconds: 0, messages, events, ticker: createTuiTicker(state) };
+    return { seconds: 0, messages, events, ticker: createTuiTicker(state), deltas: {}, activeSeconds: 0 };
   }
 
   syncScheduledActiveMode(state);
   if (seconds <= 0) {
-    return { seconds: 0, messages, events, ticker: createTuiTicker(state) };
+    return { seconds: 0, messages, events, ticker: createTuiTicker(state), deltas: {}, activeSeconds: 0 };
   }
 
   const beforeResources = snapshotResources(state.resources);
@@ -2744,7 +2627,7 @@ function settleTime(state, now = Date.now(), options = {}) {
   clampState(state);
   clearCompletedSkillLearning(state);
   syncScheduledActiveMode(state);
-  return { seconds: processedSeconds, messages, events, ticker: createTuiTicker(state, result, changedResources) };
+  return { seconds: processedSeconds, messages, events, ticker: createTuiTicker(state, result, changedResources), deltas: result.deltas, activeSeconds: result.activeSeconds };
 }
 
 function startActivity(state, id) {
