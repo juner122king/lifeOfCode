@@ -2327,7 +2327,7 @@ function generateDayEndSummary(state) {
 
   // 检查明日生效的作息
   if (state.pendingLifestyleStanceId) {
-    const stance = LIFESTYLE_STANCES.find(s => s.id === state.pendingLifestyleStanceId);
+    const stance = getLifestyleStance(state.pendingLifestyleStanceId);
     if (stance) {
       tomorrowReminders.push(`明日作息：${stance.name}`);
     }
