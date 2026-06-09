@@ -3524,6 +3524,38 @@ function getManagementOptions(state, type) {
   return [];
 }
 
+function getCurrentOutputRate(state, activity, project, skill, currentPhase) {
+  // 计算当前活动的每小时资源产出率
+  if (!activity && !project && !skill) return null;
+
+  const overtime = currentPhase && currentPhase.overtime;
+  const rate = {};
+
+  if (activity) {
+    // 活动产出率
+    const estimate = estimateActivityPerHour(state, activity, { overtime });
+    Object.assign(rate, estimate.deltas);
+  } else if (project) {
+    // 项目产出率：只显示精力消耗
+    const energyCostPerHour = getProjectEnergyCostPerHour(project) * (overtime ? 1.25 : 1);
+    rate.energy = -energyCostPerHour;
+  } else if (skill) {
+    // 技能学习产出率：只显示精力消耗
+    const energyCostPerHour = SKILL_ENERGY_COST_PER_HOUR * (overtime ? 1.25 : 1);
+    rate.energy = -energyCostPerHour;
+  }
+
+  // 过滤掉接近0的值
+  const filtered = {};
+  for (const [key, value] of Object.entries(rate)) {
+    if (Math.abs(value) >= 0.01) {
+      filtered[key] = value;
+    }
+  }
+
+  return Object.keys(filtered).length > 0 ? filtered : null;
+}
+
 function getGameViewModel(state) {
   syncScheduledActiveMode(state);
   clearCompletedSkillLearning(state);
@@ -3665,6 +3697,7 @@ function getGameViewModel(state) {
     adviceList: getAdviceList(state),
     todayActivities: getTodayActivities(state),
     learningSkills: getLearningSkillsProgress(state),
+    currentOutputRate: getCurrentOutputRate(state, active, activeProject, activeSkill, currentPhase),
     actions: {
       claimAll: claimableGoals.length > 0 ? "claim all" : null,
       stopActivity: state.activeActivityId || state.activeProjectId || state.activeSkillLearningId ? "stop" : null,

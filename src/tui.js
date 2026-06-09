@@ -26,6 +26,21 @@ const {
   toneForStatus
 } = require("./tuiTheme");
 
+const RESOURCE_NAMES = {
+  codeLines: "代码",
+  money: "金钱",
+  energy: "精力",
+  bugs: "Bug",
+  techDebt: "技术债",
+  pressure: "压力",
+  reputation: "声望",
+  knowledge: "知识",
+  tests: "测试",
+  docs: "文档",
+  architecture: "架构",
+  leads: "线索"
+};
+
 const PANELS = [
   { id: "profiles", label: "档案", key: "F" },
   { id: "cards", label: "人物卡", key: "C" },
@@ -238,6 +253,48 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20) {
     return "";
   }
 
+  // 格式化产出率信息
+  function formatOutputRate(view) {
+    if (!view) return null;
+
+    // 获取当前活动
+    const activity = view.activeActivity;
+    const project = view.activeProject;
+    const skill = view.activeSkillLearning;
+
+    if (!activity && !project && !skill) return null;
+
+    // 使用 view 中的 currentOutputRate
+    const rate = view.currentOutputRate;
+    if (!rate || Object.keys(rate).length === 0) return null;
+
+    const gains = [];
+    const costs = [];
+
+    // 区分收益和消耗
+    for (const [key, value] of Object.entries(rate)) {
+      const numValue = Number(value) || 0;
+      if (Math.abs(numValue) < 0.01) continue;
+
+      const resourceName = RESOURCE_NAMES[key] || key;
+      const formatted = Math.abs(numValue) >= 1
+        ? Math.floor(Math.abs(numValue)).toString()
+        : numValue.toFixed(1);
+
+      if (numValue > 0) {
+        gains.push(`${resourceName}+${formatted}`);
+      } else {
+        costs.push(`${resourceName}${formatted}`);
+      }
+    }
+
+    const parts = [];
+    if (gains.length > 0) parts.push(`产出/h: ${gains.join(" ")}`);
+    if (costs.length > 0) parts.push(`消耗: ${costs.join(" ")}`);
+
+    return parts.length > 0 ? parts.join(" | ") : null;
+  }
+
   // 第一组：当前状态（ticker 信息）
   if (tickerRows.length >= 3) {
     // 特殊状态：一天结束、阶段转换、提前完成
@@ -261,8 +318,19 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20) {
     });
   }
 
+  // 添加产出率信息（紧接状态后）
+  const outputRate = formatOutputRate(view);
+  if (outputRate && availableHeight >= 8) {
+    rows.push({
+      id: "current-output-rate",
+      kind: "rate",
+      text: outputRate,
+      priority: 2
+    });
+  }
+
   // 分隔行（仅在空间足够时）
-  if (availableHeight >= 10 && tickerRows.length > 0) {
+  if (availableHeight >= 10 && (tickerRows.length > 0 || outputRate)) {
     rows.push({
       id: "separator-1",
       kind: "separator",
