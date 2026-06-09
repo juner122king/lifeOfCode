@@ -218,7 +218,7 @@ function getLogRows(logs, maxHistoryRows = MAX_LOGS, ticker = null) {
   };
 }
 
-function getCurrentLogRows(view, ticker = null, availableHeight = 20) {
+function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDeltas = null) {
   const tickerRows = normalizeTickerRows(ticker);
   const rows = [];
 
@@ -253,7 +253,37 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20) {
     return "";
   }
 
-  // 格式化产出率信息
+  // 格式化实际产出（每秒）
+  function formatActualOutput(deltas) {
+    if (!deltas || Object.keys(deltas).length === 0) return null;
+
+    const gains = [];
+    const costs = [];
+
+    for (const [key, value] of Object.entries(deltas)) {
+      const numValue = Number(value) || 0;
+      if (Math.abs(numValue) < 0.01) continue;
+
+      const resourceName = RESOURCE_NAMES[key] || key;
+      const formatted = Math.abs(numValue) >= 1
+        ? Math.floor(Math.abs(numValue)).toString()
+        : numValue.toFixed(1);
+
+      if (numValue > 0) {
+        gains.push(`${resourceName}+${formatted}`);
+      } else {
+        costs.push(`${resourceName}${formatted}`);
+      }
+    }
+
+    const parts = [];
+    if (gains.length > 0) parts.push(gains.join(" "));
+    if (costs.length > 0) parts.push(costs.join(" "));
+
+    return parts.length > 0 ? `实际/秒: ${parts.join(" ")}` : null;
+  }
+
+  // 格式化产出率信息（每小时）
   function formatOutputRate(view) {
     if (!view) return null;
 
@@ -318,7 +348,18 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20) {
     });
   }
 
-  // 添加产出率信息（紧接状态后）
+  // 添加实际产出（每秒实际变化）
+  const actualOutput = formatActualOutput(actualDeltas);
+  if (actualOutput && availableHeight >= 7) {
+    rows.push({
+      id: "current-actual-output",
+      kind: "rate",
+      text: actualOutput,
+      priority: 2
+    });
+  }
+
+  // 添加产出率信息（理论每小时）
   const outputRate = formatOutputRate(view);
   if (outputRate && availableHeight >= 8) {
     rows.push({
@@ -1379,7 +1420,9 @@ async function startTui() {
   }
 
   function LogPanel({ ticker, logs, view, budget }) {
-    const tickerRows = normalizeTickerRows(ticker);
+    const tickerData = ticker && ticker.ticker ? ticker.ticker : ticker;
+    const actualDeltas = ticker && ticker.actualDeltas ? ticker.actualDeltas : null;
+    const tickerRows = normalizeTickerRows(tickerData);
     const isSpecialState = tickerRows.length >= 3; // 特殊状态（一天结束等）
 
     // 动态分配高度
@@ -1388,7 +1431,7 @@ async function startTui() {
     const historyHeight = budget.logHeight - tickerHeight;
 
     const availableTickerRows = tickerHeight - 2; // 减去边框和标题
-    const currentRows = getCurrentLogRows(view, ticker, availableTickerRows);
+    const currentRows = getCurrentLogRows(view, tickerData, availableTickerRows, actualDeltas);
     const historyRows = getLogRows(logs, Math.max(MIN_EVENT_HISTORY_ROWS, historyHeight - 2));
 
     const latestId = historyRows.filter((log) => !log.empty).at(-1)?.id ?? null;
@@ -1498,7 +1541,7 @@ async function startTui() {
     const dailyPlannerModeRef = useRef(false);
     const dailyPlannerDayRef = useRef(null);
     const [logs, setLogs] = useState([]);
-    const [ticker, setTicker] = useState(() => createTuiTicker(stateRef.current));
+    const [ticker, setTicker] = useState(() => ({ ticker: createTuiTicker(stateRef.current), actualDeltas: null }));
     const [revision, refresh] = useReducer((value) => value + 1, 0);
     const nextLogIdRef = useRef(0);
     const { exit } = useApp();
@@ -1541,7 +1584,7 @@ async function startTui() {
       }
       const offline = settleTime(stateRef.current, Date.now(), { randomEvents: true });
       saveProfile(stateRef.current);
-      setTicker(offline.ticker || createTuiTicker(stateRef.current));
+      setTicker({ ticker: offline.ticker || createTuiTicker(stateRef.current), actualDeltas: null });
       if (offline.seconds > 0 || (offline.events && offline.events.length)) {
         addLogs([{ category: "system", severity: "info", text: `离线结算 ${offline.seconds} 秒。` }, ...(offline.events || [])]);
       }
@@ -1555,7 +1598,9 @@ async function startTui() {
         if (paused) return;
         const now = Date.now();
         const result = settleTime(stateRef.current, now, { randomEvents: true });
-        setTicker(result.ticker || createTuiTicker(stateRef.current));
+        // 保存实际产出数据供getCurrentLogRows使用
+        const actualDeltas = result && result.activeSeconds > 0 ? result.deltas : null;
+        setTicker({ ticker: result.ticker || createTuiTicker(stateRef.current), actualDeltas });
         if (result.events && result.events.length) addLogs(result.events);
         if (shouldSaveSettleResult(result)) saveProfile(stateRef.current);
         updateDailyPlannerAutoPanel();
