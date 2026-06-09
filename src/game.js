@@ -295,6 +295,7 @@ function createNewState(now = Date.now(), options = {}) {
     lockedSchedule: null,
     scheduleCompletedPhases: [],
     waitingForSchedule: true,
+    lastSchedulePromptDay: null,
     weeklyFocus: "balanced",
     lifestyleStanceId: "health",
     pendingLifestyleStanceId: null,
@@ -2566,7 +2567,11 @@ function settleTime(state, now = Date.now(), options = {}) {
     state.waitingForSchedule = true;
     clearActiveWork(state);
     state.lastTick = now;
-    pushMessageEvent(messages, events, "system", "09:00 到了，请先用 plan 安排并确认今日日程。");
+    const currentDay = getWorldCalendar(state.worldTimeMinutes).day;
+    if (state.lastSchedulePromptDay !== currentDay) {
+      state.lastSchedulePromptDay = currentDay;
+      pushMessageEvent(messages, events, "system", "09:00 到了，请先用 plan 安排并确认今日日程。");
+    }
     return { seconds: 0, messages, events, ticker: createTuiTicker(state) };
   }
 
@@ -2586,7 +2591,11 @@ function settleTime(state, now = Date.now(), options = {}) {
     if (isSchedulePauseMinute(state) && !hasManualActiveWork(state)) {
       state.waitingForSchedule = true;
       clearActiveWork(state);
-      pushMessageEvent(messages, events, "system", "09:00 到了，请先用 plan 安排并确认今日日程。");
+      const currentDay = getWorldCalendar(state.worldTimeMinutes).day;
+      if (state.lastSchedulePromptDay !== currentDay) {
+        state.lastSchedulePromptDay = currentDay;
+        pushMessageEvent(messages, events, "system", "09:00 到了，请先用 plan 安排并确认今日日程。");
+      }
       break;
     }
     const currentCalendar = getWorldCalendar(state.worldTimeMinutes);
@@ -2691,7 +2700,11 @@ function settleTime(state, now = Date.now(), options = {}) {
     const calendar = getWorldCalendar(state.worldTimeMinutes);
     if (calendar.hour === 9 && calendar.minute === 0 && !hasManualActiveWork(state)) {
       resetScheduleForCurrentDay(state);
-      pushMessageEvent(messages, events, "system", "新的一天 09:00 到了，请先用 plan 安排并确认今日日程。");
+      const currentDay = calendar.day;
+      if (state.lastSchedulePromptDay !== currentDay) {
+        state.lastSchedulePromptDay = currentDay;
+        pushMessageEvent(messages, events, "system", "新的一天 09:00 到了，请先用 plan 安排并确认今日日程。");
+      }
       break;
     }
   }
