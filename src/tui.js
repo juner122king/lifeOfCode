@@ -218,7 +218,7 @@ function getLogRows(logs, maxHistoryRows = MAX_LOGS, ticker = null) {
   };
 }
 
-function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDeltas = null, accumulatedDeltas = null) {
+function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDeltas = null) {
   const tickerRows = normalizeTickerRows(ticker);
   const rows = [];
 
@@ -253,8 +253,8 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
     return "";
   }
 
-  // 格式化累积产出（给人积累快感）
-  function formatAccumulatedOutput(deltas) {
+  // 格式化实际产出（每秒实际变化，不累加）
+  function formatActualOutput(deltas) {
     if (!deltas || Object.keys(deltas).length === 0) return null;
 
     const parts = [];
@@ -264,10 +264,12 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
 
     for (const [key, value] of sorted) {
       const numValue = Number(value) || 0;
-      if (Math.abs(numValue) < 0.1) continue;
+      if (Math.abs(numValue) < 0.01) continue;
 
       const resourceName = RESOURCE_NAMES[key] || key;
-      const formatted = Math.floor(Math.abs(numValue));
+      const formatted = Math.abs(numValue) >= 1
+        ? Math.floor(Math.abs(numValue)).toString()
+        : numValue.toFixed(1);
 
       if (numValue > 0) {
         parts.push(`${resourceName}+${formatted}`);
@@ -276,7 +278,7 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
       }
     }
 
-    return parts.length > 0 ? `本次已产出: ${parts.join(" ")}` : null;
+    return parts.length > 0 ? `本次变化: ${parts.join(" ")}` : null;
   }
 
   // 格式化产出率信息（每小时）
@@ -344,13 +346,13 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
     });
   }
 
-  // 添加累积产出（给人积累快感）
-  const accumulatedOutput = formatAccumulatedOutput(accumulatedDeltas);
-  if (accumulatedOutput && availableHeight >= 7) {
+  // 添加实际产出（每秒实际变化，不累加）
+  const actualOutput = formatActualOutput(actualDeltas);
+  if (actualOutput && availableHeight >= 7) {
     rows.push({
-      id: "current-accumulated-output",
-      kind: "accumulated",
-      text: accumulatedOutput,
+      id: "current-actual-output",
+      kind: "actual",
+      text: actualOutput,
       priority: 2
     });
   }
@@ -1418,7 +1420,6 @@ async function startTui() {
   function LogPanel({ ticker, logs, view, budget }) {
     const tickerData = ticker && ticker.ticker ? ticker.ticker : ticker;
     const actualDeltas = ticker && ticker.actualDeltas ? ticker.actualDeltas : null;
-    const accumulatedDeltas = ticker && ticker.accumulatedDeltas ? ticker.accumulatedDeltas : null;
     const tickerRows = normalizeTickerRows(tickerData);
     const isSpecialState = tickerRows.length >= 3; // 特殊状态（一天结束等）
 
@@ -1428,7 +1429,7 @@ async function startTui() {
     const historyHeight = budget.logHeight - tickerHeight;
 
     const availableTickerRows = tickerHeight - 2; // 减去边框和标题
-    const currentRows = getCurrentLogRows(view, tickerData, availableTickerRows, actualDeltas, accumulatedDeltas);
+    const currentRows = getCurrentLogRows(view, tickerData, availableTickerRows, actualDeltas);
     const historyRows = getLogRows(logs, Math.max(MIN_EVENT_HISTORY_ROWS, historyHeight - 2));
 
     const latestId = historyRows.filter((log) => !log.empty).at(-1)?.id ?? null;
@@ -1541,8 +1542,6 @@ async function startTui() {
     const [ticker, setTicker] = useState(() => ({ ticker: createTuiTicker(stateRef.current), actualDeltas: null }));
     const [revision, refresh] = useReducer((value) => value + 1, 0);
     const nextLogIdRef = useRef(0);
-    const accumulatedDeltasRef = useRef({});
-    const lastActiveIdRef = useRef(null);
     const { exit } = useApp();
     const { stdout } = useStdout();
 
@@ -1583,7 +1582,7 @@ async function startTui() {
       }
       const offline = settleTime(stateRef.current, Date.now(), { randomEvents: true });
       saveProfile(stateRef.current);
-      setTicker({ ticker: offline.ticker || createTuiTicker(stateRef.current), actualDeltas: null, accumulatedDeltas: null });
+      setTicker({ ticker: offline.ticker || createTuiTicker(stateRef.current), actualDeltas: null });
       if (offline.seconds > 0 || (offline.events && offline.events.length)) {
         addLogs([{ category: "system", severity: "info", text: `离线结算 ${offline.seconds} 秒。` }, ...(offline.events || [])]);
       }
@@ -1598,37 +1597,12 @@ async function startTui() {
         const now = Date.now();
         const result = settleTime(stateRef.current, now, { randomEvents: true });
 
-        // 获取当前活动ID
-        const currentActiveId = stateRef.current.activeActivityId ||
-                                stateRef.current.activeProjectId ||
-                                stateRef.current.activeSkillLearningId;
-
-        // 如果活动切换，重置累积计数器
-        if (currentActiveId !== lastActiveIdRef.current) {
-          accumulatedDeltasRef.current = {};
-          lastActiveIdRef.current = currentActiveId;
-        }
-
-        // 累积本次的资源变化
-        if (result && result.deltas && result.activeSeconds > 0) {
-          for (const [key, value] of Object.entries(result.deltas)) {
-            const numValue = Number(value) || 0;
-            if (Math.abs(numValue) >= 0.01) {
-              accumulatedDeltasRef.current[key] = (accumulatedDeltasRef.current[key] || 0) + numValue;
-            }
-          }
-        }
-
-        // 保存实际产出数据和累积数据供getCurrentLogRows使用
+        // 保存实际产出数据供getCurrentLogRows使用
         const actualDeltas = result && result.activeSeconds > 0 ? result.deltas : null;
-        const accumulatedDeltas = Object.keys(accumulatedDeltasRef.current).length > 0
-          ? { ...accumulatedDeltasRef.current }
-          : null;
 
         setTicker({
           ticker: result.ticker || createTuiTicker(stateRef.current),
-          actualDeltas,
-          accumulatedDeltas
+          actualDeltas
         });
         if (result.events && result.events.length) addLogs(result.events);
         if (shouldSaveSettleResult(result)) saveProfile(stateRef.current);
