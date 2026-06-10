@@ -134,12 +134,15 @@ test("calculateLayoutBudget returns a compact 24 row budget with a usable list",
 
   assert.equal(budget.terminalRows, 24);
   assert.equal(budget.narrow, true);
-  assert.equal(budget.topHeight, 6);
-  assert.equal(budget.logHeight, 11);
-  assert.ok(budget.logHeight - 3 >= 8);
-  assert.equal(budget.mainHeight, 5);
+  assert.equal(budget.topHeight, 4);
+  assert.equal(budget.logHeight, 9);
+  assert.equal(budget.mainHeight, 8);
+  assert.equal(budget.listHeight, 5);
+  assert.equal(budget.detailHeight, 3);
+  assert.equal(budget.logDirection, "column");
+  assert.equal(budget.currentLogHeight + budget.eventLogHeight, budget.logHeight);
   assert.ok(budget.pageSize >= 3);
-  assert.equal(budget.topHeight + budget.footerHeight + budget.logHeight + budget.mainHeight, 25);
+  assert.equal(budget.topHeight + budget.footerHeight + budget.logHeight + budget.mainHeight, 24);
 });
 
 test("calculateLayoutBudget falls back to 24 rows and expands taller terminals", () => {
@@ -148,14 +151,15 @@ test("calculateLayoutBudget falls back to 24 rows and expands taller terminals",
 
   assert.equal(fallback.terminalRows, 24);
   assert.equal(fallback.terminalColumns, 80);
-  assert.equal(fallback.topHeight, 6);
+  assert.equal(fallback.topHeight, 4);
+  assert.equal(fallback.logHeight, 9);
+  assert.equal(fallback.logDirection, "column");
 
-  // LogPanel 现在占 60% 的内容高度，但有最小值限制 MIN_LOG_PANEL_HEIGHT (11)
-  // fallback: contentHeight = 24 - 6 - 3 = 15, logHeight = max(11, floor(15 * 0.60)) = max(11, 9) = 11
-  assert.equal(fallback.logHeight, 11);
-
-  // tall: contentHeight = 36 - 6 - 3 = 27, logHeight = max(11, floor(27 * 0.65)) = max(11, 17) = 17
-  assert.equal(tall.logHeight, 17);
+  assert.equal(tall.topHeight, 4);
+  assert.equal(tall.logHeight, 13);
+  assert.equal(tall.mainHeight, 16);
+  assert.equal(tall.logDirection, "row");
+  assert.equal(tall.currentLogWidth < tall.eventLogWidth, true);
 
   assert.ok(tall.mainHeight > fallback.mainHeight);
   assert.equal(tall.narrow, false);
@@ -312,6 +316,28 @@ test("getCurrentLogRows includes status, advice, weekly focus, and key resources
   // current-advice 现在可能是 adviceList 的第一条，或者是 nextAdvice
   assert.ok(rows.find((row) => row.id === "current-advice"));
   assert.doesNotMatch(rows.map((row) => row.text).join("\n"), /今日预算/);
+});
+
+test("getCurrentLogRows prioritizes compact action details in short panels", () => {
+  const state = createNewState(1_700_000_000_000);
+  processCommand(state, "plan morning activity feature-coding", { randomEvents: false });
+  processCommand(state, "plan afternoon activity study", { randomEvents: false });
+  processCommand(state, "plan evening none", { randomEvents: false });
+  processCommand(state, "plan confirm", { randomEvents: false });
+  state.worldTimeMinutes = 9 * 60;
+
+  const rows = getCurrentLogRows(
+    getGameViewModel(state),
+    ["[当前状态] 活动 写功能。"],
+    5,
+    { codeLines: 2, bugs: 0.05, energy: -0.1 }
+  );
+
+  assert.equal(rows.length <= 5, true);
+  assert.match(rows.find((row) => row.id === "current-status")?.text, /活动 写功能/);
+  assert.match(rows.find((row) => row.id === "current-actual-output")?.text, /本次变化/);
+  assert.match(rows.find((row) => row.id === "current-output-rate")?.text, /产出\/h/);
+  assert.match(rows.find((row) => row.id === "current-resources-compact")?.text, /精力/);
 });
 
 test("getCurrentLogRows displays specific rest action and output from ticker", () => {

@@ -277,7 +277,7 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
 
   // 添加实际产出（每秒实际变化，不累加）
   const actualOutput = formatActualOutput(actualDeltas);
-  if (actualOutput && availableHeight >= 7) {
+  if (actualOutput && availableHeight >= 4) {
     rows.push({
       id: "current-actual-output",
       kind: "actual",
@@ -288,7 +288,7 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
 
   // 添加产出率信息（理论每小时）
   const outputRate = formatOutputRate(view);
-  if (outputRate && availableHeight >= 8) {
+  if (outputRate && availableHeight >= 5) {
     rows.push({
       id: "current-output-rate",
       kind: "rate",
@@ -298,7 +298,7 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
   }
 
   // 分隔行（仅在空间足够时）
-  if (availableHeight >= 10 && (tickerRows.length > 0 || outputRate)) {
+  if (availableHeight >= 8 && (tickerRows.length > 0 || outputRate)) {
     rows.push({
       id: "separator-1",
       kind: "separator",
@@ -317,7 +317,7 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
     const warning = resource ? getWarningIndicator(id, value) : "";
 
     // 只在有警告时显示，或空间充足时显示所有
-    const shouldShow = warning || availableHeight >= 12;
+    const shouldShow = warning || availableHeight >= 9;
 
     if (shouldShow) {
       const valueText = resource && resource.id === "energy" && resource.status
@@ -336,7 +336,7 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
   });
 
   // 紧凑模式：一行显示所有资源
-  if (availableHeight < 12) {
+  if (availableHeight < 9) {
     const compactResources = CURRENT_RESOURCE_IDS
       .map((id) => {
         const resource = byId.get(id);
@@ -358,7 +358,7 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
   }
 
   // 分隔行
-  if (availableHeight >= 10) {
+  if (availableHeight >= 8) {
     rows.push({
       id: "separator-2",
       kind: "separator",
@@ -380,7 +380,7 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
     });
   } else {
     const nextAdvice = view && view.nextAdvice ? view.nextAdvice : null;
-    if (nextAdvice && availableHeight >= 8) {
+    if (nextAdvice && availableHeight >= 6) {
       rows.push({
         id: "current-advice",
         kind: "advice",
@@ -391,7 +391,7 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
   }
 
   // 根据可用高度截断
-  return rows.slice(0, Math.max(5, availableHeight - 1));
+  return rows.slice(0, Math.max(1, Math.floor(Number(availableHeight) || 1)));
 }
 
 function formatTopDate(calendar) {
@@ -1074,38 +1074,28 @@ async function startTui() {
 
   function TopBar({ view, paused, activePanel, budget }) {
     const boxWidth = Math.max(20, budget.terminalColumns - 2);
-    const contentWidth = Math.max(10, boxWidth - 4);
+    const contentWidth = Math.max(10, boxWidth);
     const rows = formatTopStatusSegmentRows(view, paused, contentWidth);
-    return h(Box, { flexDirection: "column", height: budget.topHeight },
-      h(Box, {
-        borderStyle: "single",
-        borderColor: paused ? THEME.status.paused : THEME.title,
-        paddingX: 1,
-        flexDirection: "column",
+    return h(Box, { flexDirection: "column", height: budget.topHeight, width: boxWidth },
+      ...rows.map((row, index) => h(Box, {
+        key: `status-row-${index}`,
+        width: contentWidth,
+        height: 1,
         overflow: "hidden",
-        height: 5,
-        width: boxWidth
+        overflowX: "hidden",
+        flexShrink: 1
       },
-        ...rows.map((row, index) => h(Box, {
-          key: `status-row-${index}`,
-          width: contentWidth,
-          height: 1,
-          overflow: "hidden",
-          overflowX: "hidden",
-          flexShrink: 1
+        h(Text, {
+          wrap: "truncate-end",
+          color: paused && index === 0 ? THEME.status.paused : THEME.text
         },
-          h(Text, {
-            wrap: "truncate-end",
-            color: THEME.text
-          },
-            ...row.map((segment, segmentIndex) => h(Text, {
-              key: segment.id || `status-row-${index}-segment-${segmentIndex}`,
-              color: segment.color || THEME.text,
-              bold: segment.bold
-            }, segment.text))
-          )
-        ))
-      ),
+          ...row.map((segment, segmentIndex) => h(Text, {
+            key: segment.id || `status-row-${index}-segment-${segmentIndex}`,
+            color: segment.color || THEME.text,
+            bold: segment.bold
+          }, segment.text))
+        )
+      )),
       h(TabBar, { activePanel })
     );
   }
@@ -1195,9 +1185,12 @@ async function startTui() {
     const slotWidth = budget.narrow ? mainWidth : 36;
     const listWidth = budget.narrow ? mainWidth : Math.max(28, Math.floor((mainWidth - slotWidth - 3) * 0.45));
     const detailWidth = budget.narrow ? mainWidth : Math.max(30, mainWidth - slotWidth - listWidth - 3);
+    const plannerSlotHeight = budget.narrow ? Math.min(4, Math.max(3, Math.floor(budget.mainHeight * 0.35))) : budget.mainHeight;
+    const plannerDetailHeight = budget.narrow ? Math.max(3, Math.min(4, budget.mainHeight - plannerSlotHeight - 2)) : budget.detailHeight;
+    const plannerListHeight = budget.narrow ? Math.max(2, budget.mainHeight - plannerSlotHeight - plannerDetailHeight) : budget.mainHeight;
     const contentWidth = Math.max(16, slotWidth - 4);
     const slots = view && view.schedule && Array.isArray(view.schedule.slots) ? view.schedule.slots : [];
-    const slotPanel = h(Box, { borderStyle: "round", borderColor: accent, paddingX: 1, flexDirection: "column", height: budget.narrow ? undefined : budget.mainHeight, width: budget.narrow ? undefined : slotWidth },
+    const slotPanel = h(Box, { borderStyle: "round", borderColor: accent, paddingX: 1, flexDirection: "column", height: plannerSlotHeight, width: budget.narrow ? undefined : slotWidth },
       h(SectionTitle, { color: accent }, "今日日程草稿"),
       ...slots.map((slot, index) => {
         const selected = slot.id === phaseId;
@@ -1211,7 +1204,7 @@ async function startTui() {
         );
       })
     );
-    const listPanel = h(Box, { borderStyle: "round", borderColor: listAccent, paddingX: 1, flexDirection: "column", height: budget.narrow ? budget.listHeight : budget.mainHeight, width: budget.narrow ? undefined : listWidth },
+    const listPanel = h(Box, { borderStyle: "round", borderColor: listAccent, paddingX: 1, flexDirection: "column", height: plannerListHeight, width: budget.narrow ? undefined : listWidth },
       h(Text, { color: THEME.muted }, `${DAILY_PLANNER_KIND_LABELS[normalizedKind]}  第 ${page.pageCount ? page.page + 1 : 0}/${page.pageCount} 页  ${options.length} 项`),
       ...visibleOptions.map((option, offset) => {
         const absoluteIndex = page.start + offset;
@@ -1226,7 +1219,7 @@ async function startTui() {
         );
       })
     );
-    const detailPanel = h(DetailPanel, { activePanel, option: selectedOption, height: budget.detailHeight, width: detailWidth, paused });
+    const detailPanel = h(DetailPanel, { activePanel, option: selectedOption, height: plannerDetailHeight, width: detailWidth, paused });
     if (budget.narrow) {
       return h(Box, { flexDirection: "column", gap: 0, height: budget.mainHeight },
         slotPanel,
@@ -1302,34 +1295,29 @@ async function startTui() {
   function LogPanel({ ticker, logs, view, budget }) {
     const tickerData = ticker && ticker.ticker ? ticker.ticker : ticker;
     const actualDeltas = ticker && ticker.actualDeltas ? ticker.actualDeltas : null;
-    const tickerRows = normalizeTickerRows(tickerData);
-    const isSpecialState = tickerRows.length >= 3; // 特殊状态（一天结束等）
-
-    // 动态分配高度
-    const tickerMinHeight = isSpecialState ? Math.min(tickerRows.length + 5, budget.logHeight - 5) : 8;
-    const tickerHeight = Math.max(tickerMinHeight, Math.floor(budget.logHeight * 0.6));
-    const historyHeight = budget.logHeight - tickerHeight;
-
-    const availableTickerRows = tickerHeight - 2; // 减去边框和标题
+    const tickerHeight = budget.currentLogHeight || Math.max(4, Math.ceil(budget.logHeight * 0.5));
+    const historyHeight = budget.eventLogHeight || Math.max(3, budget.logHeight - tickerHeight);
+    const availableTickerRows = Math.max(1, tickerHeight - 2);
     const currentRows = getCurrentLogRows(view, tickerData, availableTickerRows, actualDeltas);
-    const historyRows = getLogRows(logs, Math.max(MIN_EVENT_HISTORY_ROWS, historyHeight - 2));
+    const historyCapacity = budget.narrow ? Math.max(1, historyHeight - 2) : Math.max(MIN_EVENT_HISTORY_ROWS, historyHeight - 2);
+    const historyRows = getLogRows(logs, historyCapacity);
 
     const latestId = historyRows.filter((log) => !log.empty).at(-1)?.id ?? null;
-    const columnWidth = Math.max(24, Math.floor((budget.terminalColumns - 8) / 2));
-    return h(Box, { flexDirection: "row", gap: 1, height: budget.logHeight },
-      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: tickerHeight, width: columnWidth },
-        h(SectionTitle, { color: THEME.title }, "当前"),
+    const currentWidth = budget.currentLogWidth || Math.max(24, Math.floor((budget.terminalColumns - 8) / 2));
+    const eventWidth = budget.eventLogWidth || currentWidth;
+    const currentPanel = h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: tickerHeight, width: budget.narrow ? undefined : currentWidth },
+        h(SectionTitle, { color: THEME.title }, "当前行动"),
         ...currentRows.map((row) => {
           const resourceTone = row.resource ? toneForResource(row.resource) : row.resourceId === "weeklyFocus" ? { color: THEME.status.info } : null;
           return h(Text, {
             key: row.id,
             color: resourceTone ? resourceTone.color : row.kind === "status" ? THEME.status.info : THEME.muted,
             bold: row.kind === "status" || (resourceTone && resourceTone.label === "critical")
-          }, trimText(row.text || " ", Math.max(16, columnWidth - 4)));
+          }, trimText(row.text || " ", Math.max(16, (budget.narrow ? budget.terminalColumns - 6 : currentWidth - 4))));
         })
-      ),
-      h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: historyHeight, width: columnWidth },
-        h(SectionTitle, { color: THEME.title }, "事件"),
+      );
+    const eventPanel = h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: historyHeight, width: budget.narrow ? undefined : eventWidth },
+        h(SectionTitle, { color: THEME.title }, "事件流"),
         ...historyRows.map((log) => {
           const tone = log.empty
             ? { color: THEME.muted, bold: false, dim: true }
@@ -1339,73 +1327,83 @@ async function startTui() {
             color: tone.color,
             bold: tone.bold,
             dimColor: tone.dim
-          }, trimText(log.text || " ", Math.max(16, columnWidth - 4)));
+          }, trimText(log.text || " ", Math.max(16, (budget.narrow ? budget.terminalColumns - 6 : eventWidth - 4))));
         })
-      )
+      );
+    return h(Box, { flexDirection: budget.logDirection || (budget.narrow ? "column" : "row"), gap: budget.narrow ? 0 : 1, height: budget.logHeight },
+      currentPanel,
+      eventPanel
     );
   }
 
   const MemoLogPanel = React.memo(LogPanel);
 
   function Footer({ paused, creatingProfile, schedulePhase, dailyPlannerMode, view }) {
-    if (creatingProfile) {
+    function renderHints(hints) {
       return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
-        h(KeyHint, { label: "Tab", text: "切换" }),
-        h(KeyHint, { label: "↑/↓", text: "选择" }),
-        h(KeyHint, { label: "PgUp/PgDn", text: "翻页" }),
-        h(KeyHint, { label: "Enter", text: "选择人物卡" }),
-        h(KeyHint, { label: "Esc", text: "取消" }),
-        h(KeyHint, { label: "Space", text: paused ? "恢复" : "暂停" }),
-        h(KeyHint, { label: "Q", text: "保存退出" })
+        ...hints.map((hint) => h(KeyHint, { key: hint.label, label: hint.label, text: hint.text }))
       );
+    }
+
+    const pauseText = paused ? "恢复" : "暂停";
+
+    if (creatingProfile) {
+      return renderHints([
+        { label: "Tab", text: "切换" },
+        { label: "↑/↓", text: "选择" },
+        { label: "Enter", text: "选择人物卡" },
+        { label: "Esc", text: "取消" },
+        { label: "Space", text: pauseText },
+        { label: "Q", text: "保存退出" }
+      ]);
     }
     if (dailyPlannerMode) {
-      return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
-        h(KeyHint, { label: "1/2/3", text: "阶段" }),
-        h(KeyHint, { label: "A/S/P", text: "类型" }),
-        h(KeyHint, { label: "↑/↓", text: "选择" }),
-        h(KeyHint, { label: "Enter", text: "安排" }),
-        h(KeyHint, { label: "0", text: "放松" }),
-        h(KeyHint, { label: "Y", text: "确认" }),
-        h(KeyHint, { label: "X", text: "清空" }),
-        h(KeyHint, { label: "Space", text: paused ? "恢复" : "暂停" }),
-        h(KeyHint, { label: "Q", text: "保存退出" })
-      );
+      return renderHints([
+        { label: "1/2/3", text: "阶段" },
+        { label: "A/S/P", text: "类型" },
+        { label: "↑/↓", text: "选择" },
+        { label: "Enter", text: "安排" },
+        { label: "0", text: "放松" },
+        { label: "Y", text: "确认" },
+        { label: "X", text: "清空" },
+        { label: "Space", text: pauseText },
+        { label: "Q", text: "保存退出" }
+      ]);
     }
     if (isEarlyCompletionMode(view)) {
-      return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
-        h(KeyHint, { label: "R", text: "休整" }),
-        h(KeyHint, { label: "Tab", text: "切换面板" }),
-        h(KeyHint, { label: "Space", text: paused ? "恢复" : "暂停" }),
-        h(KeyHint, { label: "Q", text: "保存退出" })
-      );
+      return renderHints([
+        { label: "R", text: "休整" },
+        { label: "Tab", text: "面板" },
+        { label: "Space", text: pauseText },
+        { label: "Q", text: "保存退出" }
+      ]);
     }
     if (isPhaseTransitionMode(view)) {
-      return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
-        h(KeyHint, { label: "Y/Enter", text: "继续" }),
-        h(KeyHint, { label: "Tab", text: "切换面板" }),
-        h(KeyHint, { label: "Space", text: paused ? "恢复" : "暂停" }),
-        h(KeyHint, { label: "Q", text: "保存退出" })
-      );
+      return renderHints([
+        { label: "Y/Enter", text: "继续" },
+        { label: "Tab", text: "面板" },
+        { label: "Space", text: pauseText },
+        { label: "Q", text: "保存退出" }
+      ]);
     }
     if (isDayEndSummaryMode(view)) {
-      return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
-        h(KeyHint, { label: "Enter/Y", text: "确认进入明天" }),
-        h(KeyHint, { label: "R", text: "重新显示" }),
-        h(KeyHint, { label: "Tab", text: "切换面板" }),
-        h(KeyHint, { label: "Q", text: "保存退出" })
-      );
+      return renderHints([
+        { label: "Enter/Y", text: "明天" },
+        { label: "R", text: "重看" },
+        { label: "Tab", text: "面板" },
+        { label: "Q", text: "保存退出" }
+      ]);
     }
-    return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, gap: 1, flexWrap: "wrap" },
-      h(KeyHint, { label: "Tab", text: "切换" }),
-      h(KeyHint, { label: "↑/↓", text: "选择" }),
-      h(KeyHint, { label: "PgUp/PgDn", text: "翻页" }),
-      h(KeyHint, { label: "Enter", text: "执行/加载" }),
-      h(KeyHint, { label: "1/2/3", text: `阶段 ${schedulePhase}` }),
-      h(KeyHint, { label: "D D", text: "删除档案" }),
-      h(KeyHint, { label: "Space", text: paused ? "恢复" : "暂停" }),
-      h(KeyHint, { label: "Q", text: "保存退出" })
-    );
+    return renderHints([
+      { label: "Tab", text: "面板" },
+      { label: "↑/↓", text: "选择" },
+      { label: "Pg", text: "翻页" },
+      { label: "Enter", text: "执行" },
+      { label: "1/2/3", text: `阶段 ${schedulePhase}` },
+      { label: "D D", text: "删除" },
+      { label: "Space", text: pauseText },
+      { label: "Q", text: "保存退出" }
+    ]);
   }
 
   function App() {

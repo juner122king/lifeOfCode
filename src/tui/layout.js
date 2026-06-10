@@ -1,9 +1,9 @@
 const MIN_EVENT_HISTORY_ROWS = 8;
-const MIN_LOG_PANEL_HEIGHT = MIN_EVENT_HISTORY_ROWS + 3;
+const MIN_LOG_PANEL_HEIGHT = 8;
 const MIN_LIST_PAGE_SIZE = 3;
 const DEFAULT_TERMINAL_ROWS = 24;
 const DEFAULT_TERMINAL_COLUMNS = 80;
-const TOP_BAR_HEIGHT = 6;
+const TOP_BAR_HEIGHT = 4;
 
 function getPageWindow(optionsLength, selectedIndex, pageSize) {
   const length = Math.max(0, Math.floor(Number(optionsLength) || 0));
@@ -25,12 +25,17 @@ function calculateLayoutBudget(rows, columns) {
   const topHeight = TOP_BAR_HEIGHT;
   const footerHeight = 3;
   const contentHeight = terminalRows - topHeight - footerHeight;
-  const logHeightRatio = compact ? 0.60 : 0.65;
+  const logHeightRatio = narrow ? (compact ? 0.53 : 0.48) : 0.45;
   const logHeight = Math.max(MIN_LOG_PANEL_HEIGHT, Math.floor(contentHeight * logHeightRatio));
-  const mainHeight = Math.max(5, contentHeight - logHeight);
-  const listHeight = narrow ? Math.max(5, Math.floor(mainHeight / 2)) : mainHeight;
+  const mainHeight = Math.max(6, contentHeight - logHeight);
+  const listHeight = narrow ? Math.max(5, mainHeight - 3) : mainHeight;
   const detailHeight = narrow ? Math.max(3, mainHeight - listHeight) : mainHeight;
   const pageSize = Math.max(MIN_LIST_PAGE_SIZE, listHeight - 2);
+  const logDirection = narrow ? "column" : "row";
+  const currentLogHeight = narrow ? Math.max(4, Math.ceil(logHeight * 0.5)) : logHeight;
+  const eventLogHeight = narrow ? Math.max(3, logHeight - currentLogHeight) : logHeight;
+  const currentLogWidth = narrow ? terminalColumns - 2 : Math.max(30, Math.floor((terminalColumns - 5) * 0.42));
+  const eventLogWidth = narrow ? terminalColumns - 2 : Math.max(36, terminalColumns - currentLogWidth - 5);
 
   return {
     terminalRows,
@@ -42,7 +47,12 @@ function calculateLayoutBudget(rows, columns) {
     mainHeight,
     listHeight,
     detailHeight,
-    pageSize
+    pageSize,
+    logDirection,
+    currentLogHeight,
+    eventLogHeight,
+    currentLogWidth,
+    eventLogWidth
   };
 }
 
