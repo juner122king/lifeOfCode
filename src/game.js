@@ -4123,6 +4123,36 @@ function resolveProfilePath(profileId = DEFAULT_PROFILE_ID, saveRoot) {
   return path.join(getSaveRoot(saveRoot), "profiles", `${id}.json`);
 }
 
+function resolveLastProfilePath(saveRoot) {
+  return path.join(getSaveRoot(saveRoot), "last-profile.json");
+}
+
+function readLastProfileId(options = {}) {
+  const metadataPath = resolveLastProfilePath(options.saveRoot);
+  if (!fs.existsSync(metadataPath)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+    return normalizeProfileId(raw && raw.profileId) || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastProfileId(profileIdOrState, options = {}) {
+  const rawId = typeof profileIdOrState === "object" && profileIdOrState !== null
+    ? profileIdOrState.profileId
+    : profileIdOrState;
+  const id = normalizeProfileId(rawId);
+  if (!id) throw new Error(`非法档案 ID：${rawId}`);
+  const metadataPath = resolveLastProfilePath(options.saveRoot);
+  fs.mkdirSync(path.dirname(metadataPath), { recursive: true });
+  fs.writeFileSync(metadataPath, JSON.stringify({
+    profileId: id,
+    updatedAt: new Date(options.now ?? Date.now()).toISOString()
+  }, null, 2));
+  return id;
+}
+
 function applyProfileMetadata(state, profileId, profileName, now = Date.now()) {
   const id = normalizeProfileId(profileId) || DEFAULT_PROFILE_ID;
   const timestamp = new Date(now).toISOString();
@@ -4221,6 +4251,15 @@ function saveProfile(state, options = {}) {
 
 function loadProfile(profileId = DEFAULT_PROFILE_ID, now = Date.now(), options = {}) {
   return readProfileState(profileId, now, options.saveRoot);
+}
+
+function loadLastProfile(now = Date.now(), options = {}) {
+  const id = readLastProfileId(options) || DEFAULT_PROFILE_ID;
+  try {
+    return loadProfile(id, now, options);
+  } catch {
+    return loadProfile(DEFAULT_PROFILE_ID, now, options);
+  }
 }
 
 function createProfile(profileId, profileName, now = Date.now(), options = {}) {
@@ -4461,6 +4500,7 @@ function processCommand(state, input, options = {}) {
     case "quit":
     case "exit":
       saveProfile(state, { saveRoot: options.saveRoot, now });
+      writeLastProfileId(state, { saveRoot: options.saveRoot, now });
       messages.push(`已保存档案 ${state.profileId}，下次继续写。`);
       return { messages, exit: true };
     case "code":
@@ -4554,6 +4594,7 @@ function startCliSession(state) {
     closed = true;
     if (liveTicker) clearInterval(liveTicker);
     saveProfile(state);
+    writeLastProfileId(state);
   });
 }
 
@@ -4585,7 +4626,7 @@ function startCli() {
     return;
   }
 
-  startCliSession(loadProfile(DEFAULT_PROFILE_ID));
+  startCliSession(loadLastProfile());
 }
 
 if (require.main === module) {
@@ -4656,6 +4697,7 @@ module.exports = {
   listContent,
   listProfiles,
   loadGame,
+  loadLastProfile,
   loadProfile,
   normalizeState,
   processCommand,
@@ -4663,6 +4705,8 @@ module.exports = {
   promote,
   qualityPenalty,
   replaceStateContents,
+  readLastProfileId,
+  resolveLastProfilePath,
   resolveProfilePath,
   saveGame,
   saveProfile,
@@ -4670,5 +4714,6 @@ module.exports = {
   startActivity,
   stopActivity,
   submitProject,
-  upgradeSkill
+  upgradeSkill,
+  writeLastProfileId
 };

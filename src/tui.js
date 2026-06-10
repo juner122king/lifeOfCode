@@ -11,11 +11,12 @@ const {
   getManagementOptions,
   getProfileOptions,
   getScheduleOptions,
-  loadProfile,
+  loadLastProfile,
   processCommand,
   replaceStateContents,
   saveProfile,
-  settleTime
+  settleTime,
+  writeLastProfileId
 } = require("./game");
 const {
   RESOURCE_NAMES,
@@ -979,9 +980,10 @@ async function startTui() {
       }
       return;
     }
-    const state = loadProfile();
+    const state = loadLastProfile();
     const offline = settleTime(state, Date.now(), { randomEvents: true });
     saveProfile(state);
+    writeLastProfileId(state);
     console.log("《代码人生》TUI 需要 TTY 环境。已完成离线结算并保存。");
     console.log(`当前档案：${state.profileId} - ${state.profileName}`);
     if (offline.seconds > 0) console.log(`离线结算 ${offline.seconds} 秒。`);
@@ -1408,7 +1410,7 @@ async function startTui() {
 
   function App() {
     const needsInitialProfile = !defaultProfileExists();
-    const stateRef = useRef(needsInitialProfile ? createNewState() : loadProfile());
+    const stateRef = useRef(needsInitialProfile ? createNewState() : loadLastProfile());
     const [activePanel, setActivePanel] = useState(needsInitialProfile ? "cards" : "activities");
     const [selected, setSelected] = useState({});
     const [paused, setPaused] = useState(false);
@@ -1515,6 +1517,7 @@ async function startTui() {
         if (!needsInitialProfile) {
           if (paused) syncPausedClock(stateRef.current, Date.now());
           saveProfile(stateRef.current);
+          writeLastProfileId(stateRef.current);
         }
         exit();
         return;

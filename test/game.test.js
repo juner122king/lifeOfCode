@@ -41,15 +41,19 @@ const {
   getWorldCalendar,
   learnSkill,
   listProfiles,
+  loadLastProfile,
   normalizeState,
   processCommand,
   promote,
+  readLastProfileId,
+  resolveLastProfilePath,
   settleTime,
   startActivity,
   stopActivity,
   submitProject,
   loadProfile,
-  upgradeSkill
+  upgradeSkill,
+  writeLastProfileId
 } = require("../src/game");
 
 function unlockSkill(state, id, level = 1, exp = 0) {
@@ -512,6 +516,56 @@ test("角色档案创建、读取和状态隔离", () => {
   assert.equal(loadProfile("beta", 1_700_000_040_000, { saveRoot }).resources.money, 654);
   assert.equal(loadProfile("alpha", 1_700_000_040_000, { saveRoot }).characterCardId, "product-minded-dev");
   assert.deepEqual(listProfiles({ saveRoot }).map((item) => item.id), ["default", "alpha", "beta"]);
+});
+
+test("最后游玩档案元数据可加载非 default，缺失或损坏时回退 default", () => {
+  const saveRoot = createTempSaveRoot();
+  createProfile("default", "默认档案", 1_700_000_000_000, { saveRoot, characterCardId: "academy-prodigy" });
+  const alpha = createProfile("alpha", "前端角色", 1_700_000_010_000, { saveRoot, characterCardId: "product-minded-dev" });
+  alpha.resources.money = 321;
+  processCommand(alpha, "save", { saveRoot, now: 1_700_000_020_000 });
+
+  assert.equal(loadLastProfile(1_700_000_030_000, { saveRoot }).profileId, "default");
+
+  assert.equal(writeLastProfileId("alpha", { saveRoot, now: 1_700_000_040_000 }), "alpha");
+  assert.equal(readLastProfileId({ saveRoot }), "alpha");
+  const loadedAlpha = loadLastProfile(1_700_000_050_000, { saveRoot });
+  assert.equal(loadedAlpha.profileId, "alpha");
+  assert.equal(loadedAlpha.resources.money, 321);
+
+  fs.writeFileSync(resolveLastProfilePath(saveRoot), "{bad json");
+  assert.equal(readLastProfileId({ saveRoot }), null);
+  assert.equal(loadLastProfile(1_700_000_060_000, { saveRoot }).profileId, "default");
+
+  fs.writeFileSync(resolveLastProfilePath(saveRoot), JSON.stringify({ profileId: "missing" }));
+  assert.equal(readLastProfileId({ saveRoot }), "missing");
+  assert.equal(loadLastProfile(1_700_000_070_000, { saveRoot }).profileId, "default");
+});
+
+test("最后游玩档案只在退出时更新，不随切换、创建或保存更新", () => {
+  const saveRoot = createTempSaveRoot();
+  const state = createProfile("default", "默认档案", 1_700_000_000_000, { saveRoot, characterCardId: "academy-prodigy" });
+  writeLastProfileId("default", { saveRoot, now: 1_700_000_001_000 });
+
+  let message = processCommand(state, "profile new dev --card indie-hacker 开发者档案", { saveRoot, now: 1_700_000_010_000 }).messages.join("\n");
+  assert.match(message, /已创建并切换到档案：dev - 开发者档案/);
+  assert.equal(state.profileId, "dev");
+  assert.equal(readLastProfileId({ saveRoot }), "default");
+
+  processCommand(state, "save", { saveRoot, now: 1_700_000_020_000 });
+  assert.equal(readLastProfileId({ saveRoot }), "default");
+
+  message = processCommand(state, "profile load default", { saveRoot, now: 1_700_000_030_000 }).messages.join("\n");
+  assert.match(message, /已切换到档案：default - 默认档案/);
+  assert.equal(readLastProfileId({ saveRoot }), "default");
+
+  message = processCommand(state, "profile load dev", { saveRoot, now: 1_700_000_040_000 }).messages.join("\n");
+  assert.match(message, /已切换到档案：dev - 开发者档案/);
+  assert.equal(readLastProfileId({ saveRoot }), "default");
+
+  const result = processCommand(state, "quit", { saveRoot, now: 1_700_000_050_000 });
+  assert.equal(result.exit, true);
+  assert.equal(readLastProfileId({ saveRoot }), "dev");
 });
 
 test("profile 命令可创建、切换、重命名和保存当前档案", () => {

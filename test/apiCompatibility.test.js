@@ -1,4 +1,7 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 const game = require("../src/game");
 const tui = require("../src/tui");
@@ -72,6 +75,7 @@ const GAME_EXPORTS = [
   "listContent",
   "listProfiles",
   "loadGame",
+  "loadLastProfile",
   "loadProfile",
   "normalizeState",
   "processCommand",
@@ -79,6 +83,8 @@ const GAME_EXPORTS = [
   "promote",
   "qualityPenalty",
   "replaceStateContents",
+  "readLastProfileId",
+  "resolveLastProfilePath",
   "resolveProfilePath",
   "saveGame",
   "saveProfile",
@@ -86,7 +92,8 @@ const GAME_EXPORTS = [
   "startActivity",
   "stopActivity",
   "submitProject",
-  "upgradeSkill"
+  "upgradeSkill",
+  "writeLastProfileId"
 ];
 
 const TUI_EXPORTS = [
@@ -135,6 +142,10 @@ function expectSettleShape(result) {
   assert.equal(typeof result.activeSeconds, "number");
 }
 
+function createTempSaveRoot() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "life-of-code-api-"));
+}
+
 test("game and tui facade exports stay compatible", () => {
   assert.deepEqual(Object.keys(game).sort(), GAME_EXPORTS.sort());
   assert.deepEqual(Object.keys(tui).sort(), TUI_EXPORTS.sort());
@@ -145,6 +156,18 @@ test("core constants are the single source for schedule and resources", () => {
   assert.deepEqual(game.getGameViewModel(game.createNewState()).resources.map((item) => item.id), RESOURCE_ORDER);
   assert.equal(RESOURCE_NAMES.codeLines, "代码");
   assert.equal(RESOURCE_NAMES.techDebt, "技术债");
+});
+
+test("last-profile metadata is separate from save version", () => {
+  const saveRoot = createTempSaveRoot();
+  game.writeLastProfileId("default", { saveRoot, now: 1_700_000_000_000 });
+
+  const raw = JSON.parse(fs.readFileSync(game.resolveLastProfilePath(saveRoot), "utf8"));
+
+  assert.equal(raw.profileId, "default");
+  assert.equal(raw.updatedAt, "2023-11-14T22:13:20.000Z");
+  assert.equal(Object.hasOwn(raw, "saveVersion"), false);
+  assert.equal(game.SAVE_VERSION, 2);
 });
 
 test("settleTime always returns the TUI result shape", () => {
