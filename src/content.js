@@ -1068,6 +1068,295 @@ const randomEvents = [
   }
 ];
 
+const ambientEvents = [
+  {
+    id: "feature-clean-slice",
+    name: "切片清爽",
+    tags: ["activity", "feature-coding", "work"],
+    weight: 4,
+    messages: [
+      "你把一个模糊需求切成了更小的提交点，主线推进变得顺手。",
+      "接口、状态和展示被拆开处理，键盘节奏开始稳定。"
+    ],
+    effects: { resources: { codeLines: 4 }, activityExp: 6, attributeExp: { focus: 2 } }
+  },
+  {
+    id: "feature-edge-note",
+    name: "边界备忘",
+    tags: ["activity", "feature-coding", "work"],
+    weight: 3,
+    messages: [
+      "一个边界条件突然露头，你先记下它，避免后面回滚。",
+      "实现途中发现验收条件少了一句，你把它补进清单。"
+    ],
+    effects: { resources: { docs: 2, techDebt: -1 }, activityExp: 4, attributeExp: { logic: 2 } }
+  },
+  {
+    id: "feature-fast-path",
+    name: "顺手快线",
+    tags: ["activity", "feature-coding", "work"],
+    weight: 2,
+    messages: [
+      "一段样板逻辑被你抽成小工具，后面的实现少了几步。",
+      "你找到更直接的数据路径，功能推进比预期轻了一点。"
+    ],
+    effects: { resources: { codeLines: 6, techDebt: 1 }, activityExp: 5, attributeExp: { creativity: 2 } }
+  },
+  {
+    id: "bug-repro-caught",
+    name: "复现抓手",
+    tags: ["activity", "bug-hunting", "quality"],
+    weight: 4,
+    messages: [
+      "你终于找到稳定复现路径，缺陷从雾里走了出来。",
+      "日志和用户截图对上了，排查范围被压到一个小角落。"
+    ],
+    effects: { resources: { bugs: -2, tests: 2 }, activityExp: 6, attributeExp: { logic: 2 } }
+  },
+  {
+    id: "bug-false-lead",
+    name: "假线索",
+    tags: ["activity", "bug-hunting", "quality"],
+    weight: 2,
+    messages: [
+      "一个看似靠谱的方向被排除，虽然绕路，但地图更清楚了。",
+      "你踩到错误假设，好在测试把它及时拦了下来。"
+    ],
+    effects: { resources: { pressure: 1, tests: 1 }, activityExp: 3, attributeExp: { resilience: 2 } }
+  },
+  {
+    id: "refactor-boundary-click",
+    name: "边界咬合",
+    tags: ["activity", "refactoring", "quality"],
+    weight: 4,
+    messages: [
+      "两个职责终于分开，原本黏住的模块松了一口气。",
+      "你删掉一段重复分支，结构比刚才更像能维护的东西。"
+    ],
+    effects: { resources: { techDebt: -2, architecture: 2 }, activityExp: 6, attributeExp: { logic: 2 } }
+  },
+  {
+    id: "refactor-name-tax",
+    name: "命名税",
+    tags: ["activity", "refactoring", "quality"],
+    weight: 2,
+    messages: [
+      "你在命名上卡了一会儿，最后换来更少的解释成本。",
+      "一个变量名改了三次，阅读路径终于不再打结。"
+    ],
+    effects: { resources: { docs: 1, pressure: 1 }, activityExp: 4, attributeExp: { focus: 2 } }
+  },
+  {
+    id: "study-concept-lock",
+    name: "概念锁定",
+    tags: ["activity", "study", "skill", "learning"],
+    weight: 4,
+    messages: [
+      "你把抽象概念和示例代码对上了，知识点终于落地。",
+      "笔记里多了一句自己的解释，下次不用从零搜索。"
+    ],
+    effects: { resources: { knowledge: 4 }, activityExp: 5, attributeExp: { learning: 3 } }
+  },
+  {
+    id: "study-rabbit-hole",
+    name: "兔子洞",
+    tags: ["activity", "study", "skill", "learning"],
+    weight: 2,
+    messages: [
+      "你顺着一个概念挖深了点，时间变薄，但理解更厚。",
+      "文档链接一路展开，你及时把重点收回到当前主题。"
+    ],
+    effects: { resources: { knowledge: 3, pressure: 1 }, activityExp: 3, attributeExp: { learning: 2 } }
+  },
+  {
+    id: "testing-red-green",
+    name: "红绿节奏",
+    tags: ["activity", "testing", "quality"],
+    weight: 4,
+    messages: [
+      "一个测试先红后绿，信心被一点点垫起来。",
+      "你补上断言，行为边界比刚才更清楚。"
+    ],
+    effects: { resources: { tests: 3, bugs: -1 }, activityExp: 6, attributeExp: { focus: 2 } }
+  },
+  {
+    id: "testing-flaky-shadow",
+    name: "不稳阴影",
+    tags: ["activity", "testing", "quality"],
+    weight: 2,
+    messages: [
+      "偶发失败闪了一下，你闻到异步边界的味道。",
+      "一条不稳定用例提醒你，确定性还没有完全站稳。"
+    ],
+    effects: { resources: { tests: 2, pressure: 1, bugs: 1 }, activityExp: 4, attributeExp: { resilience: 2 } }
+  },
+  {
+    id: "docs-future-self",
+    name: "写给未来",
+    tags: ["activity", "documentation", "work"],
+    weight: 4,
+    messages: [
+      "你把今天的判断写给未来的自己，维护成本少了一点。",
+      "一段说明补上之后，交接不再全靠口口相传。"
+    ],
+    effects: { resources: { docs: 4, techDebt: -1 }, activityExp: 6, attributeExp: { communication: 2 } }
+  },
+  {
+    id: "docs-screenshot-proof",
+    name: "截图证据",
+    tags: ["activity", "documentation", "work"],
+    weight: 2,
+    messages: [
+      "你顺手截下关键状态，验收沟通多了一张证据牌。",
+      "文档里多了前后对比，别人不用再猜你的意图。"
+    ],
+    effects: { resources: { docs: 3, reputation: 1 }, activityExp: 3, attributeExp: { communication: 2 } }
+  },
+  {
+    id: "freelance-clear-reply",
+    name: "清晰回复",
+    tags: ["activity", "freelancing", "project", "delivery"],
+    weight: 4,
+    messages: [
+      "你把交付边界讲清楚，对方没有继续追加隐形需求。",
+      "一封回复稳住了客户预期，后续沟通少了很多噪音。"
+    ],
+    effects: { resources: { money: 6, leads: 1, pressure: -1 }, activityExp: 5, attributeExp: { communication: 3 } }
+  },
+  {
+    id: "freelance-small-rework",
+    name: "小返工",
+    tags: ["activity", "freelancing", "project", "delivery"],
+    weight: 2,
+    messages: [
+      "客户补了一句真实想法，你返工了一小块，但方向更准了。",
+      "一个截图反馈让你重排优先级，交付路线稍微弯了一下。"
+    ],
+    effects: { resources: { money: 3, pressure: 2, docs: 1 }, activityExp: 4, attributeExp: { resilience: 2 } }
+  },
+  {
+    id: "architecture-whiteboard",
+    name: "白板成形",
+    tags: ["activity", "architecture", "quality"],
+    weight: 4,
+    messages: [
+      "白板上的箭头少了几条，系统边界反而更清楚。",
+      "你把核心链路画出来，后续实现有了落脚点。"
+    ],
+    effects: { resources: { architecture: 3, docs: 2 }, activityExp: 6, attributeExp: { logic: 3 } }
+  },
+  {
+    id: "review-sharp-question",
+    name: "尖锐问题",
+    tags: ["activity", "code-review", "quality"],
+    weight: 4,
+    messages: [
+      "你在评审里问到关键假设，隐患提前暴露。",
+      "一条评论没有炫技，却刚好拦住了未来的返工。"
+    ],
+    effects: { resources: { tests: 2, docs: 1, bugs: -1 }, activityExp: 5, attributeExp: { communication: 2, logic: 2 } }
+  },
+  {
+    id: "incident-calm-hands",
+    name: "冷静止血",
+    tags: ["activity", "incident-response", "quality"],
+    weight: 4,
+    messages: [
+      "你先止血再复盘，局面没有继续扩大。",
+      "告警还在闪，但处理顺序终于排清楚了。"
+    ],
+    effects: { resources: { bugs: -2, pressure: 2, reputation: 1 }, activityExp: 6, attributeExp: { resilience: 3 } }
+  },
+  {
+    id: "skill-example-click",
+    name: "例子对上",
+    tags: ["skill", "learning", "work"],
+    weight: 4,
+    messages: [
+      "教程里的例子和你手头问题对上了，学习不再悬空。",
+      "你把陌生 API 跑通了一遍，脑内地图亮了一块。"
+    ],
+    effects: { resources: { knowledge: 4 }, attributeExp: { learning: 3 } }
+  },
+  {
+    id: "skill-note-bridge",
+    name: "笔记桥梁",
+    tags: ["skill", "learning", "work"],
+    weight: 3,
+    messages: [
+      "你把两个概念连成一张小图，之后回看会轻松很多。",
+      "笔记从摘抄变成解释，理解开始长出自己的骨架。"
+    ],
+    effects: { resources: { knowledge: 3, docs: 2 }, attributeExp: { learning: 2, creativity: 1 } }
+  },
+  {
+    id: "project-acceptance-thread",
+    name: "验收线索",
+    tags: ["project", "delivery", "work"],
+    weight: 4,
+    messages: [
+      "你提前确认验收口径，交付目标清楚了一截。",
+      "需求方补充了真实使用场景，项目不再只是一串功能点。"
+    ],
+    effects: { resources: { docs: 3, leads: 1, pressure: -1 }, attributeExp: { communication: 3 } }
+  },
+  {
+    id: "project-risk-note",
+    name: "风险便签",
+    tags: ["project", "delivery", "quality"],
+    weight: 3,
+    messages: [
+      "你把一个交付风险写成便签，避免它在最后一天爆炸。",
+      "一个小问题暂时不修，但你给它挂上了清晰标记。"
+    ],
+    effects: { resources: { docs: 2, techDebt: -1 }, attributeExp: { focus: 2 } }
+  },
+  {
+    id: "rest-breath-reset",
+    name: "呼吸重置",
+    tags: ["rest", "recovery", "general"],
+    weight: 4,
+    messages: [
+      "你离开屏幕做了几次深呼吸，脑内噪声降了下来。",
+      "短暂断开工作上下文之后，问题看起来没那么凶了。"
+    ],
+    effects: { resources: { energy: 5, pressure: -2 }, attributeExp: { resilience: 2 } }
+  },
+  {
+    id: "rest-water-break",
+    name: "补水回神",
+    tags: ["rest", "recovery", "general"],
+    weight: 3,
+    messages: [
+      "你起身倒水，顺手把肩颈从工位上赎回来一点。",
+      "短休没有解决所有事，但让下一轮行动更像行动。"
+    ],
+    effects: { resources: { energy: 4, pressure: -1 }, attributeExp: { focus: 1 } }
+  },
+  {
+    id: "general-slack-silence",
+    name: "消息安静",
+    tags: ["general", "work"],
+    weight: 3,
+    messages: [
+      "聊天窗口难得安静，你把注意力重新拢回主线。",
+      "没有新的插队消息，今天的节奏稍微站稳了一点。"
+    ],
+    effects: { resources: { pressure: -1 }, attributeExp: { focus: 2 } }
+  },
+  {
+    id: "general-tiny-win",
+    name: "微小胜利",
+    tags: ["general", "work"],
+    weight: 3,
+    messages: [
+      "一个小问题被你顺手解决，进度条虽然没跳很多，但心里亮了一下。",
+      "你清掉一个不起眼的阻塞点，后面的路顺了一点。"
+    ],
+    effects: { resources: { knowledge: 2 }, attributeExp: { resilience: 1, focus: 1 } }
+  }
+];
+
 const phaseEvents = {
   morning: [
     {
@@ -1160,5 +1449,6 @@ module.exports = {
   projects,
   goals,
   randomEvents,
+  ambientEvents,
   phaseEvents
 };

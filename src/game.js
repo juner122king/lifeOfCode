@@ -33,6 +33,8 @@ const {
 
 const QUALITY_ACTIVITY_IDS = new Set(["bug-hunting", "refactoring", "testing", "code-review", "incident-response"]);
 const BUG_RISK_THRESHOLDS = [25, 50, 75];
+const AMBIENT_EVENT_INTERVAL_MINUTES = 8;
+const AMBIENT_EVENT_MAX_PER_SETTLE = 4;
 const MULTIPLIER_NAMES = {
   code: "代码产出",
   money: "金钱获取",
@@ -895,6 +897,21 @@ function addActivityExp(state, id, amount) {
   return gained;
 }
 
+function applyActivityExpDelta(state, id, amount) {
+  if (!activityById(id) || !amount) return { applied: 0, levelUps: 0 };
+  const before = Math.floor(Number(state.activityExp[id]) || 0);
+  if (amount > 0) {
+    const gained = Math.floor(Number(amount) || 0);
+    const levelUps = addActivityExp(state, id, amount);
+    return {
+      applied: gained,
+      levelUps
+    };
+  }
+  state.activityExp[id] = Math.max(0, before + Math.floor(Number(amount) || 0));
+  return { applied: state.activityExp[id] - before, levelUps: 0 };
+}
+
 function getActivityProgress(state, id) {
   const level = getActivityLevel(state, id);
   return {
@@ -1311,6 +1328,125 @@ function pushSkillLearningLogEvents(state, skill, beforeSeconds, currentProgress
     const text = typeof log === "string" ? log : chooseTextVariant(log.texts || [log.text], rng);
     if (text) pushGameEvent(events, "skill", `学习日志：${skill.name}。${text}`);
   }
+}
+
+function getAmbientModeTags(mode) {
+  if (!mode || mode.type === "idle") return ["general", "rest", "recovery"];
+  if (mode.type === "activity") {
+    const id = mode.item && mode.item.id;
+    return ["general", "work", "activity", id].filter(Boolean);
+  }
+  if (mode.type === "skill") return ["general", "work", "skill", "learning"];
+  if (mode.type === "project") return ["general", "work", "project", "delivery"];
+  return ["general", "work"];
+}
+
+function ambientEventMatchesMode(event, tags) {
+  const eventTags = Array.isArray(event && event.tags) ? event.tags : [];
+  return eventTags.some((tag) => tags.includes(tag));
+}
+
+function chooseAmbientEvent(state, mode, rng = Math.random) {
+  const pool = Array.isArray(content.ambientEvents) ? content.ambientEvents : [];
+  const tags = getAmbientModeTags(mode);
+  const matches = pool.filter((event) => ambientEventMatchesMode(event, tags));
+  const candidates = matches.length ? matches : pool;
+  const weighted = candidates
+    .map((event) => ({ event, weight: Math.max(1, Math.floor(Number(event && event.weight) || 1)) }))
+    .filter((entry) => entry.event);
+  const totalWeight = weighted.reduce((sum, entry) => sum + entry.weight, 0);
+  if (!totalWeight) return null;
+  let roll = rng() * totalWeight;
+  for (const entry of weighted) {
+    roll -= entry.weight;
+    if (roll < 0) return entry.event;
+  }
+  return weighted.at(-1).event;
+}
+
+function formatAmbientResourceName(key) {
+  const labels = {
+    energy: "状态",
+    pressure: "紧绷",
+    bugs: "缺陷",
+    techDebt: "债务"
+  };
+  return labels[key] || RESOURCE_NAMES[key] || key;
+}
+
+function formatSignedDelta(label, value) {
+  const rounded = Math.round(Number(value) || 0);
+  if (!rounded) return "";
+  return `${label} ${rounded > 0 ? "+" : ""}${rounded}`;
+}
+
+function formatAmbientSummary(summary = {}) {
+  return [
+    ...Object.entries(summary.resources || {})
+      .map(([key, value]) => formatSignedDelta(formatAmbientResourceName(key), value)),
+    ...Object.entries(summary.attributeExp || {})
+      .map(([key, value]) => formatSignedDelta(`${ATTRIBUTE_NAMES[key] || key}经验`, value)),
+    summary.activityExp
+      ? formatSignedDelta(`${summary.activityName || "活动"}熟练度`, summary.activityExp)
+      : ""
+  ].filter(Boolean).join("，");
+}
+
+function applyAmbientEvent(state, event, mode, options = {}) {
+  const effects = event && event.effects ? event.effects : {};
+  const summary = { resources: {}, attributeExp: {}, activityExp: 0, activityName: "" };
+  for (const [key, rawDelta] of Object.entries(effects.resources || {})) {
+    if (!RESOURCE_ORDER.includes(key)) continue;
+    const applied = applyResourceDelta(state, key, Math.floor(Number(rawDelta) || 0));
+    if (applied) summary.resources[key] = (summary.resources[key] || 0) + applied;
+  }
+  if (mode && mode.type === "activity" && mode.item && effects.activityExp) {
+    const applied = applyActivityExpDelta(state, mode.item.id, Math.floor(Number(effects.activityExp) || 0));
+    summary.activityExp = applied.applied;
+    summary.activityName = mode.item.name;
+    if (applied.levelUps > 0) {
+      pushGameEvent(options.events, "skill", `${mode.item.name}提升到 Lv.${getActivityLevel(state, mode.item.id)}。`, "good");
+    }
+  }
+  for (const [attr, rawAmount] of Object.entries(effects.attributeExp || {})) {
+    if (!ATTRIBUTE_IDS.includes(attr)) continue;
+    const amount = Math.floor(Number(rawAmount) || 0);
+    if (amount > 0) {
+      addAttributeExp(state, attr, amount, { events: options.events });
+      summary.attributeExp[attr] = (summary.attributeExp[attr] || 0) + amount;
+    } else if (amount < 0) {
+      const before = Math.floor(Number(state.attributeExp[attr]) || 0);
+      state.attributeExp[attr] = Math.max(0, before + amount);
+      const applied = state.attributeExp[attr] - before;
+      if (applied) summary.attributeExp[attr] = (summary.attributeExp[attr] || 0) + applied;
+    }
+  }
+  clampState(state);
+  return summary;
+}
+
+function formatAmbientEvent(event, message, summary) {
+  const summaryText = formatAmbientSummary(summary);
+  return `工作插曲：${event && event.name ? `${event.name}。` : ""}${message}${summaryText ? ` 变化：${summaryText}。` : ""}`;
+}
+
+function maybeApplyAmbientEvents(state, mode, processedSeconds, events, options = {}) {
+  if (options.randomEvents === false || processedSeconds <= 0) return 0;
+  const rng = options.rng || Math.random;
+  const expected = processedSeconds / (AMBIENT_EVENT_INTERVAL_MINUTES * 60);
+  let count = Math.floor(expected);
+  if (count < AMBIENT_EVENT_MAX_PER_SETTLE && rng() < expected - count) count += 1;
+  count = Math.min(AMBIENT_EVENT_MAX_PER_SETTLE, Math.max(0, count));
+  let appliedCount = 0;
+  for (let index = 0; index < count; index += 1) {
+    const event = chooseAmbientEvent(state, mode, rng);
+    if (!event) continue;
+    const message = chooseNarrativeText(event, rng);
+    const summary = applyAmbientEvent(state, event, mode, { events });
+    pushGameEvent(events, "random", formatAmbientEvent(event, message, summary), event.severity || "info");
+    appliedCount += 1;
+  }
+  return appliedCount;
 }
 
 function formatProjectFeedback(project, success, rng = Math.random) {
@@ -2728,6 +2864,7 @@ function settleTime(state, now = Date.now(), options = {}) {
   const result = { deltas: {}, levelUps: 0, lowEnergy: false, overtime: false, activityName: null, activeName: null, activeSeconds: 0, restTick: null };
   let remainingMinutes = seconds;
   let processedSeconds = 0;
+  let ambientMode = null;
   if (applyWorldEffects) applyWorldEventTriggers(state, getWorldCalendar(state.worldTimeMinutes).day, getWorldCalendar(state.worldTimeMinutes).day, messages, events);
 
   while (remainingMinutes > 0) {
@@ -2749,6 +2886,7 @@ function settleTime(state, now = Date.now(), options = {}) {
     const segmentMinutes = Math.min(60, remainingMinutes, minutesToNextDay, minutesToNextBoundary);
     const beforeDay = currentCalendar.day;
     const mode = getActiveMode(state);
+    ambientMode = mode;
     const hasActiveWork = state.lockedSchedule ? Boolean(scheduleContext && scheduleContext.slot) && mode.type !== "idle" : mode.type !== "idle";
     const overtime = Boolean(scheduleContext && scheduleContext.phase && scheduleContext.phase.overtime && hasActiveWork);
     if (hasActiveWork) {
@@ -2888,6 +3026,7 @@ function settleTime(state, now = Date.now(), options = {}) {
       collectBugRiskEvents(state, beforeRandom, snapshotResources(state.resources), events);
     }
   }
+  maybeApplyAmbientEvents(state, ambientMode || getActiveMode(state), processedSeconds, events, options);
 
   state.lastTick = seconds < elapsedSeconds ? now : lastTick + processedSeconds * 1000;
   clampState(state);

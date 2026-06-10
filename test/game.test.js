@@ -1481,6 +1481,8 @@ test("新增程序员技术包内容通过现有选项接口展示", () => {
   assert.ok(goals.some((item) => item.id === "ship-rag-assistant"));
   assert.ok(content.randomEvents.some((item) => item.id === "dependency-hell"));
   assert.ok(content.randomEvents.some((item) => item.id === "friday-scope-change"));
+  assert.ok(content.ambientEvents.some((item) => item.id === "feature-clean-slice"));
+  assert.ok(content.ambientEvents.some((item) => item.id === "project-acceptance-thread"));
 });
 
 test("随机事件返回随机分类事件并附带资源变化摘要", () => {
@@ -1509,6 +1511,53 @@ test("随机事件支持 messages 叙事变体并保留旧 message 兼容", () =
   assert.ok(Array.isArray(requirementChange.messages));
   assert.match(eventLog, new RegExp(requirementChange.messages[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.equal(legacyOnly.message, "旧消息仍可显示。");
+});
+
+test("挂机 ambient 事件会进入日志并轻量影响资源、活动经验和属性经验", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  state.worldTimeMinutes = 10 * 60;
+  state.resources.energy = 100;
+  startActivity(state, "feature-coding");
+  const rngValues = [0.99, 0, 0];
+  const rng = () => rngValues.shift() ?? 0;
+
+  const result = settleTime(state, now + 8 * 60_000, { randomEvents: true, rng });
+  const eventLog = formatGameEvents(result.events).join("\n");
+
+  assert.match(eventLog, /\[随机事件\] 工作插曲：切片清爽/);
+  assert.match(eventLog, /变化：代码 \+4，专注经验 \+2，写功能熟练度 \+6/);
+  assert.ok(state.resources.codeLines >= 4);
+  assert.ok(state.activityExp["feature-coding"] >= 6);
+  assert.ok(state.attributeExp.focus >= 2);
+});
+
+test("randomEvents false 会关闭挂机 ambient 事件", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  state.worldTimeMinutes = 10 * 60;
+  startActivity(state, "feature-coding");
+
+  const result = settleTime(state, now + 8 * 60_000, { randomEvents: false, rng: () => 0 });
+
+  assert.doesNotMatch(formatGameEvents(result.events).join("\n"), /工作插曲/);
+});
+
+test("挂机 ambient 事件最多保留四条且遵守资源上下限", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  state.worldTimeMinutes = 10 * 60;
+  state.resources.energy = 100;
+  state.resources.pressure = 0;
+  startActivity(state, "feature-coding");
+
+  const result = settleTime(state, now + 24 * 60 * 60_000, { randomEvents: true, rng: () => 0.99 });
+  const eventLog = formatGameEvents(result.events).join("\n");
+  const ambientCount = (eventLog.match(/工作插曲/g) || []).length;
+
+  assert.equal(ambientCount, 4);
+  assert.ok(state.resources.energy <= getEffectiveMaxEnergy(state));
+  assert.ok(state.resources.pressure >= 0);
 });
 
 test("活动阶段叙事跨阈值触发且同日同阶段不重复", () => {

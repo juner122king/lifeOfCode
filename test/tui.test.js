@@ -630,12 +630,26 @@ test("getInfoWindowRows shows narrative events while keeping hidden detail filte
   const text = rows.map((row) => row.text).join("\n");
 
   assert.match(text, /\[情报\] 09:30 活动片段：写功能/);
+  assert.doesNotMatch(text, /\[情报\] 活动片段：写功能/);
   assert.match(text, /\[学习\] 09:30 学习日志：HTML\/CSS/);
   assert.match(text, /\[交付\] 09:30 项目 个人主页 交付成功/);
   assert.match(text, /\[系统\] 已保存。/);
   assert.doesNotMatch(text, /\[系统\] 09:30/);
   assert.match(text, /客户反馈：/);
   assert.doesNotMatch(text, /\[当前时间\]|\[阶段进度\]|\[进度预览\]|> plan morning|建议|精力|压力|Bug|技术债/);
+});
+
+test("getInfoWindowRows shows ambient work events with game time", () => {
+  const state = createNewState(1_700_000_000_000);
+  const logs = createLogEntries([
+    { category: "random", text: "[随机事件] 工作插曲：切片清爽。你把一个模糊需求切成了更小的提交点。 变化：代码 +4，专注经验 +2，写功能熟练度 +6。" }
+  ], 0, null, { gameTimeLabel: "10:08" }).entries;
+
+  const rows = getInfoWindowRows(getGameViewModel(state), ["[当前状态] 活动 写功能。"], logs, 6);
+  const text = rows.map((row) => row.text).join("\n");
+
+  assert.match(text, /\[情报\] 10:08 工作插曲：切片清爽/);
+  assert.doesNotMatch(text, /\[情报\] 工作插曲：切片清爽/);
 });
 
 test("getCurrentLogRows displays specific rest action and output from ticker", () => {
