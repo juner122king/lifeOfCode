@@ -1131,20 +1131,78 @@ function formatResourceRateEntries(entries = []) {
   return formatted.length ? formatted.join("，") : "无";
 }
 
-function formatActivityRateSummary(state, activity, options = {}) {
+function getActivityRateSections(state, activity, options = {}) {
   const estimate = estimateActivityPerHour(state, activity, options);
   const entries = Object.entries(estimate.deltas || {});
   const gains = entries.filter(([key, value]) => value > 0 && !RISK_RESOURCE_IDS.has(key));
   const improvements = entries.filter(([key, value]) => value < 0 && RISK_RESOURCE_IDS.has(key));
   const riskCosts = entries.filter(([key, value]) => value > 0 && RISK_RESOURCE_IDS.has(key));
   const energyCost = entries.filter(([key, value]) => key === "energy" && value < 0);
+  return {
+    gains: gains.length ? formatResourceRateEntries(gains) : "",
+    improvements: improvements.length ? formatResourceRateEntries(improvements) : "",
+    risks: riskCosts.length ? formatResourceRateEntries(riskCosts) : "",
+    energy: energyCost.length ? formatResourceRateEntries(energyCost) : "",
+    lowEnergy: estimate.lowEnergy ? "精力不足：只能推进部分时间" : ""
+  };
+}
+
+function formatActivityRateSummary(state, activity, options = {}) {
+  const rateSections = getActivityRateSections(state, activity, options);
   const sections = [];
-  if (gains.length) sections.push(`收益/游戏小时：${formatResourceRateEntries(gains)}`);
-  if (improvements.length) sections.push(`改善/游戏小时：${formatResourceRateEntries(improvements)}`);
-  if (riskCosts.length) sections.push(`风险/游戏小时：${formatResourceRateEntries(riskCosts)}`);
-  if (energyCost.length) sections.push(`精力消耗/游戏小时：${formatResourceRateEntries(energyCost)}`);
-  if (estimate.lowEnergy) sections.push("精力不足：只能推进部分时间");
+  if (rateSections.gains) sections.push(`收益/游戏小时：${rateSections.gains}`);
+  if (rateSections.improvements) sections.push(`改善/游戏小时：${rateSections.improvements}`);
+  if (rateSections.risks) sections.push(`风险/游戏小时：${rateSections.risks}`);
+  if (rateSections.energy) sections.push(`精力消耗/游戏小时：${rateSections.energy}`);
+  if (rateSections.lowEnergy) sections.push(rateSections.lowEnergy);
   return sections.length ? sections.join("；") : "当前无可见变化";
+}
+
+function getActivityRoleSummary(activity) {
+  const roles = {
+    "feature-coding": "核心产出",
+    "bug-hunting": "质量治理",
+    refactoring: "结构治理",
+    study: "学习积累",
+    testing: "质量验证",
+    documentation: "知识沉淀",
+    freelancing: "商业变现",
+    "open-source": "影响力经营",
+    architecture: "架构建设",
+    "code-review": "评审把关",
+    "performance-tuning": "性能攻坚",
+    "prompt-engineering": "AI 协作",
+    "incident-response": "事故止血",
+    rest: "恢复节奏"
+  };
+  return roles[activity && activity.id] || "行动推进";
+}
+
+function getActivityUseCase(activity) {
+  const useCases = {
+    "feature-coding": "适合推进项目素材和主要产出。",
+    "bug-hunting": "适合质量风险升温时压低缺陷。",
+    refactoring: "适合维护成本变高时收束结构。",
+    study: "适合缺知识、缺技能前置时积累基础。",
+    testing: "适合交付前加固验证回路。",
+    documentation: "适合降低交接成本并沉淀上下文。",
+    freelancing: "适合需要现金流或客户线索时使用。",
+    "open-source": "适合长期积累声望和外部影响力。",
+    architecture: "适合复杂项目开工前打地基。",
+    "code-review": "适合在合并前发现隐性问题。",
+    "performance-tuning": "适合性能指标拖累交付时使用。",
+    "prompt-engineering": "适合把模糊需求整理成可执行上下文。",
+    "incident-response": "适合线上局面失控时先止血。",
+    rest: "适合状态下滑时恢复行动节奏。"
+  };
+  return useCases[activity && activity.id] || "适合在当前阶段推进这类行动。";
+}
+
+function formatActivityAttributeGrowth(activity) {
+  const entries = Object.entries((activity && activity.attributeExpPerHour) || {})
+    .filter(([, value]) => Number(value) > 0)
+    .map(([attr, value]) => `${ATTRIBUTE_NAMES[attr] || attr} +${formatNumber(value)}/h`);
+  return entries.length ? entries.join("，") : "";
 }
 
 function formatProjectResourceList(values = {}) {
@@ -3551,13 +3609,21 @@ function getActivityOptions(state) {
     const progress = getActivityProgress(state, activity.id);
     const unlocked = activityUnlocked(state, activity);
     const active = state.activeActivityId === activity.id;
+    const rateSections = getActivityRateSections(state, activity);
+    const output = formatActivityRateSummary(state, activity);
     return {
       id: activity.id,
       name: activity.name,
+      detailKind: "activity",
       description: activity.description,
       tier: activity.tier,
       primaryAttribute: activity.primaryAttribute,
       primaryAttributeName: ATTRIBUTE_NAMES[activity.primaryAttribute] || activity.primaryAttribute,
+      roleSummary: getActivityRoleSummary(activity),
+      attributeGrowthSummary: formatActivityAttributeGrowth(activity),
+      growthSummary: `Lv.${progress.level} ${formatNumber(progress.exp)}/${formatNumber(progress.next)}  ${formatActivityAttributeGrowth(activity)}`,
+      rateSections,
+      useCase: getActivityUseCase(activity),
       active,
       unlocked,
       locked: !unlocked,
@@ -3570,7 +3636,7 @@ function getActivityOptions(state) {
       progressActive: active,
       progressText: `${formatNumber(progress.exp)}/${formatNumber(progress.next)}`,
       requirements: formatActivityRequirements(activity.requirements),
-      output: formatActivityRateSummary(state, activity),
+      output,
       command: unlocked ? `start ${activity.id}` : null
     };
   });
@@ -3952,7 +4018,10 @@ function getGameViewModel(state) {
     activeActivity: active ? {
       id: active.id,
       name: active.name,
-      level: getActivityLevel(state, active.id)
+      level: getActivityLevel(state, active.id),
+      attributeExpIds: Object.entries(active.attributeExpPerHour || {})
+        .filter(([, value]) => Number(value) > 0)
+        .map(([id]) => id)
     } : null,
     activeProject: activeProject ? {
       id: activeProject.id,

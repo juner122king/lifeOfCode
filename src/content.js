@@ -160,7 +160,7 @@ const activities = [
     activityExpPerHour: 45,
     outputsPerHour: { codeLines: 32 },
     risksPerHour: { bugs: 1.61, techDebt: 1.04, pressure: 0.35 },
-    attributeExpPerHour: { focus: 6, logic: 3 },
+    attributeExpPerHour: { focus: 9, logic: 5 },
     narrativeStages: [
       { seconds: 60, texts: ["你先把需求拆成几个可提交的小块，编辑器里的 TODO 开始排队。"] },
       { seconds: 180, texts: ["核心逻辑逐渐成型，你停下来补了一次边界条件，避免后面返工。"] },
@@ -177,7 +177,7 @@ const activities = [
     activityExpPerHour: 36,
     outputsPerHour: { tests: 3 },
     mitigationPerHour: { bugs: 3.64 },
-    attributeExpPerHour: { logic: 6, resilience: 3 },
+    attributeExpPerHour: { logic: 9, resilience: 5 },
     narrativeStages: [
       { seconds: 60, texts: ["你从复现路径开始追踪，终于抓到那个只在特定状态下出现的异常。"] },
       { seconds: 240, texts: ["日志、断点和测试用例对上了，问题范围被压缩到一小段代码里。"] }
@@ -193,7 +193,7 @@ const activities = [
     activityExpPerHour: 36,
     outputsPerHour: { architecture: 1.5 },
     mitigationPerHour: { techDebt: 3.19 },
-    attributeExpPerHour: { logic: 6, focus: 3 }
+    attributeExpPerHour: { logic: 9, focus: 5 }
   }),
   activity({
     id: "study",
@@ -205,7 +205,7 @@ const activities = [
     activityExpPerHour: 40,
     outputsPerHour: { knowledge: 14 },
     risksPerHour: { pressure: 0.2 },
-    attributeExpPerHour: { learning: 9 },
+    attributeExpPerHour: { learning: 14 },
     narrativeStages: [
       { seconds: 60, texts: ["你把概念图和示例代码放在一起看，抽象名词终于开始落地。"] },
       { seconds: 300, texts: ["笔记里多了一条自己的解释，下次再遇到同类问题不会只靠搜索。"] }
@@ -222,7 +222,7 @@ const activities = [
     activityExpPerHour: 40,
     outputsPerHour: { tests: 8.5 },
     mitigationPerHour: { bugs: 1.14 },
-    attributeExpPerHour: { focus: 6, logic: 3 }
+    attributeExpPerHour: { focus: 9, logic: 5 }
   }),
   activity({
     id: "documentation",
@@ -235,7 +235,7 @@ const activities = [
     activityExpPerHour: 42,
     outputsPerHour: { docs: 10 },
     mitigationPerHour: { techDebt: 0.91 },
-    attributeExpPerHour: { communication: 9 }
+    attributeExpPerHour: { learning: 9, communication: 5 }
   }),
   activity({
     id: "freelancing",
@@ -248,7 +248,7 @@ const activities = [
     activityExpPerHour: 42,
     outputsPerHour: { money: 14, leads: 3.2, reputation: 0.08 },
     risksPerHour: { bugs: 1.15, techDebt: 1.15, pressure: 1.6 },
-    attributeExpPerHour: { communication: 6, resilience: 3 }
+    attributeExpPerHour: { communication: 9, resilience: 5 }
   }),
   activity({
     id: "open-source",
@@ -261,7 +261,7 @@ const activities = [
     activityExpPerHour: 42,
     outputsPerHour: { reputation: 0.8, codeLines: 8, docs: 2 },
     risksPerHour: { pressure: 0.7 },
-    attributeExpPerHour: { communication: 6, creativity: 3 }
+    attributeExpPerHour: { communication: 9, creativity: 5 }
   }),
   activity({
     id: "architecture",
@@ -274,7 +274,7 @@ const activities = [
     activityExpPerHour: 42,
     outputsPerHour: { architecture: 11, docs: 4 },
     mitigationPerHour: { techDebt: 2.28 },
-    attributeExpPerHour: { logic: 9, creativity: 3 }
+    attributeExpPerHour: { logic: 9, learning: 5, creativity: 5 }
   }),
   activity({
     id: "code-review",
@@ -288,7 +288,7 @@ const activities = [
     outputsPerHour: { docs: 3 },
     mitigationPerHour: { bugs: 3.64, techDebt: 2.28 },
     risksPerHour: { pressure: 0.7 },
-    attributeExpPerHour: { communication: 6, logic: 3 }
+    attributeExpPerHour: { logic: 5, communication: 5, learning: 5 }
   }),
   activity({
     id: "performance-tuning",
@@ -302,7 +302,7 @@ const activities = [
     outputsPerHour: { codeLines: 12, architecture: 6, money: 1.5 },
     mitigationPerHour: { techDebt: 1.37 },
     risksPerHour: { bugs: 0.69, pressure: 1.2 },
-    attributeExpPerHour: { logic: 9, resilience: 3 }
+    attributeExpPerHour: { logic: 9, focus: 5, resilience: 5 }
   }),
   activity({
     id: "prompt-engineering",
@@ -315,7 +315,7 @@ const activities = [
     activityExpPerHour: 40,
     outputsPerHour: { knowledge: 8, docs: 6, leads: 1.5, codeLines: 4 },
     risksPerHour: { techDebt: 1.04, pressure: 0.9 },
-    attributeExpPerHour: { creativity: 6, learning: 3 }
+    attributeExpPerHour: { creativity: 9, learning: 9 }
   }),
   activity({
     id: "incident-response",
@@ -329,7 +329,7 @@ const activities = [
     outputsPerHour: { tests: 2, reputation: 0.2 },
     mitigationPerHour: { bugs: 5.46 },
     risksPerHour: { pressure: 3.8, techDebt: 0.92 },
-    attributeExpPerHour: { resilience: 9, logic: 3 }
+    attributeExpPerHour: { resilience: 9, logic: 5, focus: 5 }
   }),
   activity({
     id: "rest",

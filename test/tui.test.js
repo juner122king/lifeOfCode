@@ -12,7 +12,8 @@ const {
   getProfileOptions,
   loadProfile,
   processCommand,
-  settleTime
+  settleTime,
+  startActivity
 } = require("../src/game");
 const {
   MAX_LOGS,
@@ -870,6 +871,43 @@ test("formatOptionDetail summarizes common option fields", () => {
   assert.equal(details.some((entry) => entry.label === "命令" || entry.value === "learn react"), false);
 });
 
+test("formatOptionDetail uses RPG status card order for activity options", () => {
+  const details = formatOptionDetail({
+    detailKind: "activity",
+    name: "写功能",
+    roleSummary: "核心产出",
+    description: "把需求拆成可提交的功能切片。",
+    level: 3,
+    growthSummary: "Lv.3 342/440  专注 +9/h，逻辑 +5/h",
+    primaryAttributeName: "专注",
+    attributeGrowthSummary: "专注 +9/h，逻辑 +5/h",
+    requirements: "专注 Lv.2",
+    rateSections: {
+      gains: "代码 +35.55",
+      improvements: "Bug -1.2",
+      risks: "技术债 +0.94，压力 +0.32",
+      energy: "精力 -11.2",
+      lowEnergy: ""
+    },
+    useCase: "适合推进项目素材和主要产出。",
+    command: "start feature-coding"
+  });
+
+  assert.deepEqual(details, [
+    { label: "定位", value: "核心产出" },
+    { label: "描述", value: "把需求拆成可提交的功能切片。" },
+    { label: "成长", value: "Lv.3 342/440  专注 +9/h，逻辑 +5/h" },
+    { label: "解锁", value: "专注 Lv.2" },
+    { label: "收益", value: "每小时 代码 +35.55" },
+    { label: "改善", value: "每小时 Bug -1.2" },
+    { label: "风险", value: "每小时 技术债 +0.94，压力 +0.32" },
+    { label: "精力", value: "每小时 精力 -11.2" },
+    { label: "适用", value: "适合推进项目素材和主要产出。" }
+  ]);
+  assert.equal(details.some((entry) => entry.label === "命令" || entry.value === "start feature-coding"), false);
+  assert.equal(details.some((entry) => ["等级", "主属性", "属性成长"].includes(entry.label)), false);
+});
+
 test("getOptionProgress freezes animated progress while paused", () => {
   const option = {
     progressLabel: "学习进度",
@@ -1051,7 +1089,7 @@ test("getCharacterCardAttributeRows pairs initial card attributes with current g
   assert.equal(learning.growthPercent, 12);
   assert.equal(learning.growthText, "+12.6");
   assert.equal(learning.expText, "57/470");
-  assert.deepEqual(learning.expMeter, { id: "exp", label: "经验", percent: 12, color: "exp" });
+  assert.deepEqual(learning.expMeter, { id: "exp", label: "经验", percent: 12, color: "exp", width: 18, animated: false });
   assert.equal(learning.meters, undefined);
   assert.equal(learning.progressText, "成长+加成 +12.6");
   assert.doesNotMatch(learning.progressText, /初始 72/);
@@ -1069,6 +1107,33 @@ test("getCharacterCardAttributeRows clamps progress to current base attribute", 
   assert.equal(rows.find((row) => row.id === "focus").progressPercent, 2);
   assert.equal(rows.find((row) => row.id === "resilience").currentValue, 72);
   assert.equal(rows.find((row) => row.id === "resilience").progressPercent, 72);
+});
+
+test("getCharacterCardAttributeRows animates only attributes trained by the active activity", () => {
+  const state = createNewState(1_700_000_000_000, { characterCardId: "academy-prodigy" });
+  startActivity(state, "feature-coding");
+  const view = getGameViewModel(state);
+
+  const rows = getCharacterCardAttributeRows(view);
+
+  assert.equal(rows.find((row) => row.id === "focus").expMeter.animated, true);
+  assert.equal(rows.find((row) => row.id === "logic").expMeter.animated, true);
+  assert.equal(rows.find((row) => row.id === "learning").expMeter.animated, false);
+  assert.equal(rows.find((row) => row.id === "focus").expMeter.width, 18);
+});
+
+test("getCharacterCardAttributeRows follows updated documentation attribute growth", () => {
+  const state = createNewState(1_700_000_000_000, { characterCardId: "academy-prodigy" });
+  state.activityLevels.study = 2;
+  startActivity(state, "documentation");
+  const view = getGameViewModel(state);
+
+  const rows = getCharacterCardAttributeRows(view);
+
+  assert.deepEqual(view.activeActivity.attributeExpIds, ["learning", "communication"]);
+  assert.equal(rows.find((row) => row.id === "learning").expMeter.animated, true);
+  assert.equal(rows.find((row) => row.id === "communication").expMeter.animated, true);
+  assert.equal(rows.find((row) => row.id === "logic").expMeter.animated, false);
 });
 
 test("getCharacterCardAttributeRows keeps current attributes for legacy profiles", () => {
@@ -1092,7 +1157,7 @@ test("getCharacterCardAttributeRows keeps current attributes for legacy profiles
   assert.equal(logic.growthPercent, 43);
   assert.equal(logic.growthText, "+43");
   assert.equal(logic.expText, "12/265");
-  assert.deepEqual(logic.expMeter, { id: "exp", label: "经验", percent: 4, color: "exp" });
+  assert.deepEqual(logic.expMeter, { id: "exp", label: "经验", percent: 4, color: "exp", width: 18, animated: false });
   assert.equal(logic.meters, undefined);
   assert.equal(logic.progressText, "成长+加成 +43");
   assert.doesNotMatch(logic.progressText, /初始 未记录/);

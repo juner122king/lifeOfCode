@@ -1090,8 +1090,25 @@ function handleProfileDeleteKeypress(state, option, pendingProfileId, options = 
   };
 }
 
+function formatActivityOptionDetail(option) {
+  const rateSections = option && option.rateSections ? option.rateSections : {};
+  return [
+    option.roleSummary && { label: "定位", value: option.roleSummary },
+    option.description && { label: "描述", value: option.description },
+    option.growthSummary && { label: "成长", value: option.growthSummary },
+    option.requirements && { label: "解锁", value: option.requirements },
+    rateSections.gains && { label: "收益", value: `每小时 ${rateSections.gains}` },
+    rateSections.improvements && { label: "改善", value: `每小时 ${rateSections.improvements}` },
+    rateSections.risks && { label: "风险", value: `每小时 ${rateSections.risks}` },
+    rateSections.energy && { label: "精力", value: `每小时 ${rateSections.energy}` },
+    rateSections.lowEnergy && { label: "限制", value: rateSections.lowEnergy },
+    option.useCase && { label: "适用", value: option.useCase }
+  ].filter((entry) => entry && String(entry.value || "").trim());
+}
+
 function formatOptionDetail(option) {
   if (!option) return [];
+  if (option.detailKind === "activity") return formatActivityOptionDetail(option);
   return [
     option.description && { label: "描述", value: option.description },
     Number.isFinite(option.level) && { label: "等级", value: `${option.levelName || `Lv.${option.level}`}${Number.isFinite(option.exp) && Number.isFinite(option.nextExp) && option.nextExp > 0 ? ` ${option.exp}/${option.nextExp}` : ""}` },
@@ -1167,6 +1184,11 @@ function getCharacterCardAttributeRows(view) {
     ((view && view.characterCard && view.characterCard.initialAttributes) || [])
       .map((attr) => [attr.id, attr])
   );
+  const activeAttributeExpIds = new Set(
+    (view && view.activeActivity && Array.isArray(view.activeActivity.attributeExpIds))
+      ? view.activeActivity.attributeExpIds
+      : []
+  );
 
   return ((view && view.attributes) || []).map((attr) => {
     const currentValue = Math.floor(Number(attr.value) || 0);
@@ -1198,7 +1220,7 @@ function getCharacterCardAttributeRows(view) {
       growthPercent,
       growthText: `+${formatTuiNumber(growthValue)}`,
       expText: upgradeRequired > 0 ? `${exp}/${upgradeRequired}` : "满级",
-      expMeter: { id: "exp", label: "经验", percent: upgradePercent, color: "exp" },
+      expMeter: { id: "exp", label: "经验", percent: upgradePercent, color: "exp", width: 18, animated: upgradeRequired > 0 && activeAttributeExpIds.has(attr.id) },
       progressText: `成长+加成 +${formatTuiNumber(growthValue)}`
     };
   });
@@ -1478,7 +1500,8 @@ async function startTui() {
     const mainWidth = Math.max(48, budget.terminalColumns - 6);
     const summaryWidth = budget.narrow ? mainWidth : Math.max(28, Math.floor(mainWidth * 0.36));
     const detailWidth = budget.narrow ? mainWidth : Math.max(34, mainWidth - summaryWidth - 3);
-    const attrBarWidth = Math.min(14, Math.max(6, detailWidth - 36));
+    const attrBarWidth = Math.min(14, Math.max(6, Math.floor((detailWidth - 27) * 0.36)));
+    const expBarWidth = Math.min(18, Math.max(8, detailWidth - attrBarWidth - 27));
     const maxAttributeRows = Math.max(1, budget.mainHeight - (budget.narrow ? 8 : 4));
     const summaryRows = [
       { color: THEME.muted, text: card.description },
@@ -1504,18 +1527,17 @@ async function startTui() {
       h(Box, { gap: 1 },
         h(SectionTitle, { color: THEME.status.good }, "属性详情")
       ),
-      ...attributeRows.slice(0, maxAttributeRows).map((row) => h(Box, { key: row.id, gap: 1 },
+      ...attributeRows.slice(0, maxAttributeRows).map((row) => h(Box, { key: row.id, gap: 1, height: 1, overflow: "hidden", overflowX: "hidden" },
         h(Text, { color: THEME.text, bold: true }, trimText(row.label, 7).padEnd(7, " ")),
         h(AttributeProgress, { row, width: attrBarWidth }),
         h(Text, { color: THEME.status.good }, row.growthText),
-        h(MiniProgress, {
-          label: row.expMeter.label,
+        h(Text, { color: THEME.muted }, row.expMeter.label),
+        h(Progress, {
           percent: row.expMeter.percent,
-          color: THEME.status.warn,
-          width: 6,
-          text: row.expText,
-          showPercent: true
-        })
+          width: Math.min(row.expMeter.width || 18, expBarWidth),
+          animated: row.expMeter.animated
+        }),
+        h(Text, { color: THEME.muted }, trimText(row.expText, Math.max(4, detailWidth - attrBarWidth - expBarWidth - 27)))
       ))
     );
 

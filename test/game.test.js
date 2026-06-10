@@ -1148,11 +1148,31 @@ test("activity options 按游戏小时展示收益、风险、改善和精力", 
     featureCoding.output,
     "收益/游戏小时：代码 +35.55；风险/游戏小时：Bug +1.45，技术债 +0.94，压力 +0.32；精力消耗/游戏小时：精力 -11.2"
   );
+  assert.equal(featureCoding.detailKind, "activity");
+  assert.equal(featureCoding.roleSummary, "核心产出");
+  assert.equal(featureCoding.growthSummary, "Lv.1 0/200  专注 +9/h，逻辑 +5/h");
+  assert.equal(featureCoding.attributeGrowthSummary, "专注 +9/h，逻辑 +5/h");
+  assert.deepEqual(featureCoding.rateSections, {
+    gains: "代码 +35.55",
+    improvements: "",
+    risks: "Bug +1.45，技术债 +0.94，压力 +0.32",
+    energy: "精力 -11.2",
+    lowEnergy: ""
+  });
+  assert.match(featureCoding.useCase, /推进项目素材/);
   assert.equal(
     bugHunting.output,
     "收益/游戏小时：测试 +1.33；精力消耗/游戏小时：精力 -11.2"
   );
   assert.equal(rest.output, "当前无可见变化");
+  assert.equal(rest.roleSummary, "恢复节奏");
+  assert.deepEqual(rest.rateSections, {
+    gains: "",
+    improvements: "",
+    risks: "",
+    energy: "",
+    lowEnergy: ""
+  });
 });
 
 test("activity energy costs and quality mitigation match balance targets", () => {
@@ -1386,21 +1406,21 @@ test("architecture outproduces refactoring and unlocks at refactoring Lv4 plus s
   assert.deepEqual(architecture.requirements, { skills: ["sql"], activityLevels: { refactoring: 4 } });
 });
 
-test("activity attribute growth is tripled and global exp resource is absent", () => {
+test("activity attribute growth follows skill-route balance and global exp resource is absent", () => {
   const expected = {
-    "feature-coding": { focus: 6, logic: 3 },
-    "bug-hunting": { logic: 6, resilience: 3 },
-    refactoring: { logic: 6, focus: 3 },
-    study: { learning: 9 },
-    testing: { focus: 6, logic: 3 },
-    documentation: { communication: 9 },
-    freelancing: { communication: 6, resilience: 3 },
-    "open-source": { communication: 6, creativity: 3 },
-    architecture: { logic: 9, creativity: 3 },
-    "code-review": { communication: 6, logic: 3 },
-    "performance-tuning": { logic: 9, resilience: 3 },
-    "prompt-engineering": { creativity: 6, learning: 3 },
-    "incident-response": { resilience: 9, logic: 3 },
+    "feature-coding": { focus: 9, logic: 5 },
+    "bug-hunting": { logic: 9, resilience: 5 },
+    refactoring: { logic: 9, focus: 5 },
+    study: { learning: 14 },
+    testing: { focus: 9, logic: 5 },
+    documentation: { learning: 9, communication: 5 },
+    freelancing: { communication: 9, resilience: 5 },
+    "open-source": { communication: 9, creativity: 5 },
+    architecture: { logic: 9, learning: 5, creativity: 5 },
+    "code-review": { logic: 5, communication: 5, learning: 5 },
+    "performance-tuning": { logic: 9, focus: 5, resilience: 5 },
+    "prompt-engineering": { creativity: 9, learning: 9 },
+    "incident-response": { resilience: 9, logic: 5, focus: 5 },
     rest: { resilience: 6 }
   };
 
@@ -2199,6 +2219,16 @@ test("view model 提供结构化资源、属性、目标摘要和可执行动作
   assert.equal(view.actions.claimAll, "claim all");
   assert.equal(view.actions.save, "save");
   assert.equal(view.activityLevels.find((item) => item.id === "feature-coding").level, 1);
+});
+
+test("view model exposes active activity attribute experience sources", () => {
+  const state = createNewState();
+  startActivity(state, "feature-coding");
+
+  const view = getGameViewModel(state);
+
+  assert.equal(view.activeActivity.id, "feature-coding");
+  assert.deepEqual(view.activeActivity.attributeExpIds, ["focus", "logic"]);
 });
 
 test("view model 展示当前人物卡信息", () => {
