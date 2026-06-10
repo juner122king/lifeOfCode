@@ -35,7 +35,6 @@ const {
 const {
   DEFAULT_TERMINAL_COLUMNS,
   DEFAULT_TERMINAL_ROWS,
-  MIN_EVENT_HISTORY_ROWS,
   calculateLayoutBudget,
   getPageWindow
 } = require("./tui/layout");
@@ -299,6 +298,80 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
 
   // 根据可用高度截断
   return rows.slice(0, Math.max(1, Math.floor(Number(availableHeight) || 1)));
+}
+
+function selectInfoCurrentRows(rows, limit) {
+  const safeLimit = Math.max(0, Math.floor(Number(limit) || 0));
+  if (safeLimit <= 0) return [];
+  const candidates = rows.filter((row) => row && row.kind !== "separator" && String(row.text || "").trim());
+  const selected = [];
+  const selectedIds = new Set();
+  const addMatches = (predicate) => {
+    for (const row of candidates) {
+      if (selected.length >= safeLimit) return;
+      if (selectedIds.has(row.id) || !predicate(row)) continue;
+      selected.push(row);
+      selectedIds.add(row.id);
+    }
+  };
+
+  addMatches((row) => row.kind === "status");
+  addMatches((row) => row.kind === "resource" && (row.priority <= 2 || String(row.text || "").includes("⚠")));
+  addMatches((row) => row.kind === "advice");
+  addMatches((row) => row.kind === "resource");
+  addMatches(() => true);
+  return selected;
+}
+
+function getInfoWindowRows(view, ticker = null, logs = [], availableHeight = 12) {
+  const capacity = Math.max(1, Math.floor(Number(availableHeight) || 1));
+  const currentBase = capacity <= 6
+    ? 3
+    : capacity <= 12
+      ? Math.max(3, Math.floor(capacity * 0.4))
+      : 6;
+  const visibleEventCount = Array.isArray(logs) ? logs.filter((log) => isEventLog(log) && !log.empty).length : 0;
+  const reserveEventRows = capacity >= 2 ? 1 : 0;
+  const reserveSeparator = capacity >= 4 ? 1 : 0;
+  const currentPool = selectInfoCurrentRows(getCurrentLogRows(view, ticker, Math.max(20, capacity)), capacity);
+  const eventPool = getLogRows(logs, Math.max(MAX_LOGS, capacity))
+    .filter((row) => !row.empty);
+  if (!eventPool.length) eventPool.push({ id: "empty-message", text: "暂无日志。", empty: true });
+
+  let currentLimit = Math.min(currentBase, currentPool.length, Math.max(1, capacity - reserveEventRows - reserveSeparator));
+  let eventLimit = Math.min(eventPool.length, Math.max(0, capacity - currentLimit - reserveSeparator));
+  if (eventLimit < reserveEventRows && eventPool.length) {
+    currentLimit = Math.min(currentLimit, Math.max(1, capacity - reserveEventRows - reserveSeparator));
+    eventLimit = Math.min(eventPool.length, Math.max(0, capacity - currentLimit - reserveSeparator));
+  }
+
+  let separatorRows = currentLimit > 0 && eventLimit > 0 && capacity - currentLimit - eventLimit > 0 ? 1 : 0;
+  let spareRows = capacity - currentLimit - eventLimit - separatorRows;
+  if (spareRows > 0 && eventLimit >= eventPool.length && currentLimit < currentPool.length) {
+    const extraCurrent = Math.min(spareRows, currentPool.length - currentLimit);
+    currentLimit += extraCurrent;
+    spareRows -= extraCurrent;
+  }
+  if (spareRows > 0 && currentLimit >= currentPool.length && eventLimit < eventPool.length) {
+    eventLimit += Math.min(spareRows, eventPool.length - eventLimit);
+  }
+  separatorRows = currentLimit > 0 && eventLimit > 0 && capacity - currentLimit - eventLimit > 0 ? 1 : 0;
+
+  const currentRows = currentPool.slice(0, currentLimit);
+  const eventRows = eventPool.slice(-eventLimit);
+
+  const rows = [
+    ...currentRows.map((row) => ({ ...row, id: `info-current-${row.id}`, source: "current" }))
+  ];
+  if (separatorRows) rows.push({ id: "info-separator", source: "separator", kind: "separator", text: "" });
+  rows.push(...eventRows.map((row) => ({
+    ...row,
+    id: `info-event-${row.id}`,
+    eventId: row.id,
+    source: "event",
+    kind: row.empty ? "empty" : "event"
+  })));
+  return rows.slice(0, capacity);
 }
 
 function formatTopDate(calendar) {
@@ -1227,51 +1300,47 @@ async function startTui() {
     );
   }
 
-  function LogPanel({ ticker, logs, view, budget }) {
+  function InfoPanel({ ticker, logs, view, budget }) {
     const tickerData = ticker && ticker.ticker ? ticker.ticker : ticker;
-    const actualDeltas = ticker && ticker.actualDeltas ? ticker.actualDeltas : null;
-    const tickerHeight = budget.currentLogHeight || Math.max(4, Math.ceil(budget.logHeight * 0.5));
-    const historyHeight = budget.eventLogHeight || Math.max(3, budget.logHeight - tickerHeight);
-    const availableTickerRows = Math.max(1, tickerHeight - 2);
-    const currentRows = getCurrentLogRows(view, tickerData, availableTickerRows, actualDeltas);
-    const historyCapacity = budget.narrow ? Math.max(1, historyHeight - 2) : Math.max(MIN_EVENT_HISTORY_ROWS, historyHeight - 2);
-    const historyRows = getLogRows(logs, historyCapacity);
+    const height = budget.infoWindowHeight || budget.logHeight;
+    const width = budget.infoWindowWidth || Math.max(24, budget.terminalColumns - 2);
+    const contentRows = Math.max(1, height - 2);
+    const infoRows = getInfoWindowRows(view, tickerData, logs, contentRows);
+    const latestEventId = infoRows.filter((row) => row.source === "event" && !row.empty).at(-1)?.eventId ?? null;
 
-    const latestId = historyRows.filter((log) => !log.empty).at(-1)?.id ?? null;
-    const currentWidth = budget.currentLogWidth || Math.max(24, Math.floor((budget.terminalColumns - 8) / 2));
-    const eventWidth = budget.eventLogWidth || currentWidth;
-    const currentPanel = h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: tickerHeight, width: budget.narrow ? undefined : currentWidth },
-        h(SectionTitle, { color: THEME.title }, "当前行动"),
-        ...currentRows.map((row) => {
-          const resourceTone = row.resource ? toneForResource(row.resource) : row.resourceId === "weeklyFocus" ? { color: THEME.status.info } : null;
-          return h(Text, {
-            key: row.id,
-            color: resourceTone ? resourceTone.color : row.kind === "status" ? THEME.status.info : THEME.muted,
-            bold: row.kind === "status" || (resourceTone && resourceTone.label === "critical")
-          }, trimText(row.text || " ", Math.max(16, (budget.narrow ? budget.terminalColumns - 6 : currentWidth - 4))));
-        })
-      );
-    const eventPanel = h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height: historyHeight, width: budget.narrow ? undefined : eventWidth },
-        h(SectionTitle, { color: THEME.title }, "事件流"),
-        ...historyRows.map((log) => {
-          const tone = log.empty
+    return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height, width },
+      h(SectionTitle, { color: THEME.title }, "玩家信息"),
+      ...infoRows.map((row) => {
+        if (row.source === "separator") {
+          return h(Text, { key: row.id, color: THEME.panel }, "─".repeat(Math.max(8, width - 4)));
+        }
+        const resourceTone = row.resource ? toneForResource(row.resource) : row.resourceId === "weeklyFocus" ? { color: THEME.status.info } : null;
+        const eventTone = row.source === "event"
+          ? row.empty
             ? { color: THEME.muted, bold: false, dim: true }
-            : toneForLog(log, log.id === latestId ? 0 : 1);
-          return h(Text, {
-            key: log.id,
-            color: tone.color,
-            bold: tone.bold,
-            dimColor: tone.dim
-          }, trimText(log.text || " ", Math.max(16, (budget.narrow ? budget.terminalColumns - 6 : eventWidth - 4))));
-        })
-      );
-    return h(Box, { flexDirection: budget.logDirection || (budget.narrow ? "column" : "row"), gap: budget.narrow ? 0 : 1, height: budget.logHeight },
-      currentPanel,
-      eventPanel
+            : toneForLog(row, row.eventId === latestEventId ? 0 : 1)
+          : null;
+        const color = resourceTone
+          ? resourceTone.color
+          : eventTone
+            ? eventTone.color
+            : row.kind === "status"
+              ? THEME.status.info
+              : row.kind === "advice"
+                ? THEME.status.good
+                : THEME.muted;
+        const prefix = row.source === "event" ? "• " : row.kind === "resource" ? "! " : "";
+        return h(Text, {
+          key: row.id,
+          color,
+          bold: row.kind === "status" || (resourceTone && resourceTone.label === "critical") || (eventTone && eventTone.bold),
+          dimColor: eventTone ? eventTone.dim : false
+        }, trimText(`${prefix}${row.text || " "}`, Math.max(16, width - 4)));
+      })
     );
   }
 
-  const MemoLogPanel = React.memo(LogPanel);
+  const MemoInfoPanel = React.memo(InfoPanel);
 
   function Footer({ paused, creatingProfile, schedulePhase, dailyPlannerMode, view }) {
     function renderHints(hints) {
@@ -1354,7 +1423,7 @@ async function startTui() {
     const dailyPlannerModeRef = useRef(false);
     const dailyPlannerDayRef = useRef(null);
     const [logs, setLogs] = useState([]);
-    const [ticker, setTicker] = useState(() => ({ ticker: createTuiTicker(stateRef.current), actualDeltas: null }));
+    const [ticker, setTicker] = useState(() => createTuiTicker(stateRef.current));
     const [revision, refresh] = useReducer((value) => value + 1, 0);
     const nextLogIdRef = useRef(0);
     const { exit } = useApp();
@@ -1397,7 +1466,7 @@ async function startTui() {
       }
       const offline = settleTime(stateRef.current, Date.now(), { randomEvents: true });
       saveProfile(stateRef.current);
-      setTicker({ ticker: offline.ticker || createTuiTicker(stateRef.current), actualDeltas: null });
+      setTicker(offline.ticker || createTuiTicker(stateRef.current));
       if (offline.seconds > 0 || (offline.events && offline.events.length)) {
         addLogs([{ category: "system", severity: "info", text: `离线结算 ${offline.seconds} 秒。` }, ...(offline.events || [])]);
       }
@@ -1412,13 +1481,7 @@ async function startTui() {
         const now = Date.now();
         const result = settleTime(stateRef.current, now, { randomEvents: true });
 
-        // 保存实际产出数据供getCurrentLogRows使用
-        const actualDeltas = result && result.activeSeconds > 0 ? result.deltas : null;
-
-        setTicker({
-          ticker: result.ticker || createTuiTicker(stateRef.current),
-          actualDeltas
-        });
+        setTicker(result.ticker || createTuiTicker(stateRef.current));
         if (result.events && result.events.length) addLogs(result.events);
         if (shouldSaveSettleResult(result)) saveProfile(stateRef.current);
         updateDailyPlannerAutoPanel();
@@ -1672,7 +1735,7 @@ async function startTui() {
 
     return h(Box, { flexDirection: "column", paddingX: 1 },
       h(TopBar, { view, paused, budget }),
-      h(MemoLogPanel, { ticker, logs, view, budget }),
+      h(MemoInfoPanel, { ticker, logs, view, budget }),
       h(TabBar, { activePanel }),
       dailyPlannerMode
         ? h(DailyPlannerPanel, { view, phaseId: schedulePhase, kind: dailyPlannerKind, options, selectedIndex, budget, paused })
@@ -1708,6 +1771,7 @@ module.exports = {
   getCharacterCardAttributeRows,
   getCurrentLogRows,
   getDailyPlannerCandidateOptions,
+  getInfoWindowRows,
   getNextDailyPlannerPhaseId,
   getTextDisplayWidth,
   getOptionProgress,

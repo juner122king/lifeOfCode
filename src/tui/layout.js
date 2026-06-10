@@ -38,6 +38,8 @@ function calculateLayoutBudget(rows, columns) {
   const eventLogHeight = narrow ? Math.max(3, logHeight - currentLogHeight) : logHeight;
   const currentLogWidth = narrow ? terminalColumns - 2 : Math.max(30, Math.floor((terminalColumns - 5) * 0.42));
   const eventLogWidth = narrow ? terminalColumns - 2 : Math.max(36, terminalColumns - currentLogWidth - 5);
+  const infoWindowHeight = logHeight;
+  const infoWindowWidth = terminalColumns - 2;
 
   return {
     terminalRows,
@@ -55,7 +57,9 @@ function calculateLayoutBudget(rows, columns) {
     currentLogHeight,
     eventLogHeight,
     currentLogWidth,
-    eventLogWidth
+    eventLogWidth,
+    infoWindowHeight,
+    infoWindowWidth
   };
 }
 

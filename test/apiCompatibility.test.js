@@ -111,6 +111,7 @@ const TUI_EXPORTS = [
   "getCharacterCardAttributeRows",
   "getCurrentLogRows",
   "getDailyPlannerCandidateOptions",
+  "getInfoWindowRows",
   "getLogRows",
   "getNextDailyPlannerPhaseId",
   "getOptionProgress",

@@ -29,6 +29,7 @@ const {
   getCharacterCardAttributeRows,
   getCurrentLogRows,
   getDailyPlannerCandidateOptions,
+  getInfoWindowRows,
   getNextDailyPlannerPhaseId,
   getTextDisplayWidth,
   getOptionProgress,
@@ -142,6 +143,8 @@ test("calculateLayoutBudget returns a compact 24 row budget with a usable list",
   assert.equal(budget.detailHeight, 3);
   assert.equal(budget.logDirection, "column");
   assert.equal(budget.currentLogHeight + budget.eventLogHeight, budget.logHeight);
+  assert.equal(budget.infoWindowHeight, budget.logHeight);
+  assert.equal(budget.infoWindowWidth, 78);
   assert.ok(budget.pageSize >= 3);
   assert.equal(budget.topHeight + budget.tabHeight + budget.footerHeight + budget.logHeight + budget.mainHeight, 24);
 });
@@ -156,6 +159,8 @@ test("calculateLayoutBudget falls back to 24 rows and expands taller terminals",
   assert.equal(fallback.tabHeight, 1);
   assert.equal(fallback.logHeight, 9);
   assert.equal(fallback.logDirection, "column");
+  assert.equal(fallback.infoWindowHeight, fallback.logHeight);
+  assert.equal(fallback.infoWindowWidth, 78);
 
   assert.equal(tall.topHeight, 3);
   assert.equal(tall.tabHeight, 1);
@@ -163,6 +168,8 @@ test("calculateLayoutBudget falls back to 24 rows and expands taller terminals",
   assert.equal(tall.mainHeight, 16);
   assert.equal(tall.logDirection, "row");
   assert.equal(tall.currentLogWidth < tall.eventLogWidth, true);
+  assert.equal(tall.infoWindowHeight, tall.logHeight);
+  assert.equal(tall.infoWindowWidth, 118);
 
   assert.ok(tall.mainHeight > fallback.mainHeight);
   assert.equal(tall.narrow, false);
@@ -342,6 +349,53 @@ test("getCurrentLogRows omits actual delta and output-rate rows in short panels"
   assert.equal(rows.find((row) => row.id === "current-output-rate"), undefined);
   assert.doesNotMatch(rows.map((row) => row.text).join("\n"), /本次变化|产出\/h/);
   assert.match(rows.find((row) => row.id === "current-resources-compact")?.text, /精力/);
+});
+
+test("getInfoWindowRows merges current status with event history in short panels", () => {
+  const state = createNewState(1_700_000_000_000);
+  const logs = createLogEntries([{ category: "system", text: "[系统] 已保存。" }], 0).entries;
+  const rows = getInfoWindowRows(
+    getGameViewModel(state),
+    ["[当前状态] 等待排程。"],
+    logs,
+    5
+  );
+
+  assert.equal(rows.length <= 5, true);
+  assert.equal(rows[0].source, "current");
+  assert.match(rows[0].text, /当前状态/);
+  assert.ok(rows.some((row) => row.source === "event"));
+  assert.match(rows.filter((row) => row.source === "event").at(-1)?.text, /已保存/);
+});
+
+test("getInfoWindowRows balances risks, advice, and recent events", () => {
+  const state = createNewState(1_700_000_000_000);
+  state.resources.energy = 12;
+  state.resources.pressure = 85;
+  const logs = createLogEntries([
+    { category: "warning", text: "[警告] 精力告急。" },
+    { category: "random", text: "[随机事件] CI 绿了。" }
+  ], 0).entries;
+
+  const rows = getInfoWindowRows(getGameViewModel(state), ["[当前状态] 活动 写功能。"], logs, 12);
+  const text = rows.map((row) => row.text).join("\n");
+
+  assert.ok(rows.some((row) => row.source === "current" && /精力/.test(row.text)));
+  assert.ok(rows.some((row) => row.kind === "advice"));
+  assert.match(text, /CI 绿了/);
+  assert.doesNotMatch(text, /本次变化|产出\/h/);
+});
+
+test("getInfoWindowRows keeps command echoes out and latest event at the bottom", () => {
+  const state = createNewState(1_700_000_000_000);
+  const messages = createCommandLogMessages("week project", ["本周重点已设为：项目周。"]);
+  const logs = createLogEntries([...messages, { category: "system", text: "[系统] 后续提醒。" }], 0).entries;
+
+  const rows = getInfoWindowRows(getGameViewModel(state), ["[当前状态] 等待排程。"], logs, 8);
+  const eventRows = rows.filter((row) => row.source === "event" && !row.empty);
+
+  assert.equal(rows.some((row) => row.text.includes("> week project")), false);
+  assert.match(eventRows.at(-1)?.text, /后续提醒/);
 });
 
 test("getCurrentLogRows displays specific rest action and output from ticker", () => {
