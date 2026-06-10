@@ -1226,6 +1226,51 @@ function getCharacterCardAttributeRows(view) {
   });
 }
 
+const CHARACTER_CARD_RADAR_AXES = [
+  { id: "logic", label: "逻辑", dx: -1, dy: 0 },
+  { id: "focus", label: "专注", dx: 1, dy: -1 },
+  { id: "learning", label: "学习", dx: 0, dy: -1 },
+  { id: "communication", label: "沟通", dx: 1, dy: 0 },
+  { id: "resilience", label: "抗压", dx: 0, dy: 1 },
+  { id: "creativity", label: "创造", dx: -1, dy: 1 }
+];
+
+function getCharacterCardRadarRows(attributeRows = []) {
+  const values = new Map((Array.isArray(attributeRows) ? attributeRows : []).map((row) => [
+    row && row.id,
+    clampProgressPercent(row && row.currentValue)
+  ]));
+  const width = 28;
+  const height = 7;
+  const center = { x: 13, y: 3 };
+  const grid = Array.from({ length: height }, () => Array.from({ length: width }, () => " "));
+  const put = (x, y, value) => {
+    if (x >= 0 && x < width && y >= 0 && y < height) grid[y][x] = value;
+  };
+  const putText = (x, y, text) => {
+    String(text || "").split("").forEach((char, index) => put(x + index, y, char));
+  };
+
+  put(center.x, center.y, "+");
+  CHARACTER_CARD_RADAR_AXES.forEach((axis) => {
+    for (let radius = 1; radius <= 3; radius += 1) {
+      put(center.x + axis.dx * radius, center.y + axis.dy * radius, "·");
+    }
+    const value = values.get(axis.id) || 0;
+    const radius = Math.max(0, Math.min(3, Math.round(value / 100 * 3)));
+    put(center.x + axis.dx * radius, center.y + axis.dy * radius, "*");
+  });
+
+  putText(center.x - 1, 0, "学习");
+  putText(center.x + 6, 1, "专注");
+  putText(0, center.y, "逻辑");
+  putText(center.x + 7, center.y, "沟通");
+  putText(2, 6, "创造");
+  putText(center.x - 1, 6, "抗压");
+
+  return grid.map((row) => row.join("").replace(/\s+$/, ""));
+}
+
 async function startTui() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     if (!defaultProfileExists()) {
@@ -1492,6 +1537,7 @@ async function startTui() {
   function CharacterCardPanel({ view, budget }) {
     const card = view.characterCard;
     const attributeRows = getCharacterCardAttributeRows(view);
+    const radarRows = getCharacterCardRadarRows(attributeRows);
     const learnedSkills = view.skillLevels
       .filter((skill) => skill.level > 0)
       .map((skill) => `${skill.name} ${skill.levelName}`);
@@ -1502,7 +1548,7 @@ async function startTui() {
     const detailWidth = budget.narrow ? mainWidth : Math.max(34, mainWidth - summaryWidth - 3);
     const attrBarWidth = Math.min(14, Math.max(6, Math.floor((detailWidth - 27) * 0.36)));
     const expBarWidth = Math.min(18, Math.max(8, detailWidth - attrBarWidth - 27));
-    const maxAttributeRows = Math.max(1, budget.mainHeight - (budget.narrow ? 8 : 4));
+    const maxAttributeRows = Math.max(1, budget.mainHeight - (budget.narrow ? 8 : 4) - radarRows.length);
     const summaryRows = [
       { color: THEME.muted, text: card.description },
       { color: THEME.muted, text: card.background || "" },
@@ -1527,6 +1573,9 @@ async function startTui() {
       h(Box, { gap: 1 },
         h(SectionTitle, { color: THEME.status.good }, "属性详情")
       ),
+      ...radarRows.map((row, index) => h(Text, { key: `radar-${index}`, color: index === 0 || index === radarRows.length - 1 ? THEME.status.info : THEME.muted },
+        trimText(row || " ", detailWidth)
+      )),
       ...attributeRows.slice(0, maxAttributeRows).map((row) => h(Box, { key: row.id, gap: 1, height: 1, overflow: "hidden", overflowX: "hidden" },
         h(Text, { color: THEME.text, bold: true }, trimText(row.label, 7).padEnd(7, " ")),
         h(AttributeProgress, { row, width: attrBarWidth }),
@@ -2052,6 +2101,7 @@ module.exports = {
   formatTopStatusRows,
   formatTopStatusLine,
   getCharacterCardAttributeRows,
+  getCharacterCardRadarRows,
   getCurrentLogRows,
   getDailyPlannerCandidateOptions,
   getInfoWindowRows,

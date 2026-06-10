@@ -109,6 +109,7 @@ const TUI_EXPORTS = [
   "formatTopStatusRows",
   "formatTopStatusSegmentRows",
   "getCharacterCardAttributeRows",
+  "getCharacterCardRadarRows",
   "getCurrentLogRows",
   "getDailyPlannerCandidateOptions",
   "getInfoWindowRows",

@@ -28,6 +28,7 @@ const {
   formatTopStatusRows,
   formatTopStatusLine,
   getCharacterCardAttributeRows,
+  getCharacterCardRadarRows,
   getCurrentLogRows,
   getDailyPlannerCandidateOptions,
   getInfoWindowRows,
@@ -1107,6 +1108,51 @@ test("getCharacterCardAttributeRows clamps progress to current base attribute", 
   assert.equal(rows.find((row) => row.id === "focus").progressPercent, 2);
   assert.equal(rows.find((row) => row.id === "resilience").currentValue, 72);
   assert.equal(rows.find((row) => row.id === "resilience").progressPercent, 72);
+});
+
+test("getCharacterCardRadarRows renders a stable six-axis text radar", () => {
+  const rows = getCharacterCardRadarRows([
+    { id: "logic", currentValue: 100 },
+    { id: "focus", currentValue: 80 },
+    { id: "learning", currentValue: 60 },
+    { id: "communication", currentValue: 40 },
+    { id: "resilience", currentValue: 20 },
+    { id: "creativity", currentValue: 0 }
+  ]);
+
+  assert.equal(rows.length, 7);
+  assert.match(rows.join("\n"), /逻辑/);
+  assert.match(rows.join("\n"), /专注/);
+  assert.match(rows.join("\n"), /学习/);
+  assert.match(rows.join("\n"), /沟通/);
+  assert.match(rows.join("\n"), /抗压/);
+  assert.match(rows.join("\n"), /创造/);
+  assert.match(rows.join("\n"), /\*/);
+  assert.match(rows.join("\n"), /·/);
+});
+
+test("getCharacterCardRadarRows changes shape with values and clamps extremes", () => {
+  const low = getCharacterCardRadarRows([
+    { id: "logic", currentValue: -50 },
+    { id: "focus", currentValue: 0 },
+    { id: "learning", currentValue: 0 },
+    { id: "communication", currentValue: 0 },
+    { id: "resilience", currentValue: 0 },
+    { id: "creativity", currentValue: 0 }
+  ]);
+  const high = getCharacterCardRadarRows([
+    { id: "logic", currentValue: 150 },
+    { id: "focus", currentValue: 100 },
+    { id: "learning", currentValue: 100 },
+    { id: "communication", currentValue: 100 },
+    { id: "resilience", currentValue: 100 },
+    { id: "creativity", currentValue: 100 }
+  ]);
+
+  assert.equal(low.length, 7);
+  assert.equal(high.length, 7);
+  assert.notEqual(low.join("\n"), high.join("\n"));
+  assert.ok(high.every((row) => getTextDisplayWidth(row) <= 28));
 });
 
 test("getCharacterCardAttributeRows animates only attributes trained by the active activity", () => {
