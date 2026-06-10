@@ -62,7 +62,10 @@ const characterCards = [
     resources: { knowledge: 80, money: -10 },
     skills: {},
     activityLevels: { study: 2 },
-    ownedTools: []
+    ownedTools: [],
+    growthNodes: [
+      { attr: "communication", threshold: 20, text: "你第一次把复杂概念讲到别人点头，理论终于开始进入协作现场。" }
+    ]
   },
   {
     id: "indie-hacker",
@@ -73,7 +76,10 @@ const characterCards = [
     resources: { leads: 4, money: 15 },
     skills: { javascript: 1 },
     activityLevels: { "feature-coding": 2 },
-    ownedTools: []
+    ownedTools: [],
+    growthNodes: [
+      { attr: "logic", threshold: 20, text: "你不再只靠灵感推进产品，也开始给每个判断补上可验证的工程理由。" }
+    ]
   },
   {
     id: "seasoned-contractor",
@@ -154,7 +160,12 @@ const activities = [
     activityExpPerHour: 45,
     outputsPerHour: { codeLines: 32 },
     risksPerHour: { bugs: 1.61, techDebt: 1.04, pressure: 0.35 },
-    attributeExpPerHour: { focus: 6, logic: 3 }
+    attributeExpPerHour: { focus: 6, logic: 3 },
+    narrativeStages: [
+      { seconds: 60, texts: ["你先把需求拆成几个可提交的小块，编辑器里的 TODO 开始排队。"] },
+      { seconds: 180, texts: ["核心逻辑逐渐成型，你停下来补了一次边界条件，避免后面返工。"] },
+      { seconds: 420, texts: ["功能串起来了，剩下的是把粗糙的分支打磨成用户看不见的稳定。"] }
+    ]
   }),
   activity({
     id: "bug-hunting",
@@ -166,7 +177,11 @@ const activities = [
     activityExpPerHour: 36,
     outputsPerHour: { tests: 3 },
     mitigationPerHour: { bugs: 3.64 },
-    attributeExpPerHour: { logic: 6, resilience: 3 }
+    attributeExpPerHour: { logic: 6, resilience: 3 },
+    narrativeStages: [
+      { seconds: 60, texts: ["你从复现路径开始追踪，终于抓到那个只在特定状态下出现的异常。"] },
+      { seconds: 240, texts: ["日志、断点和测试用例对上了，问题范围被压缩到一小段代码里。"] }
+    ]
   }),
   activity({
     id: "refactoring",
@@ -190,7 +205,11 @@ const activities = [
     activityExpPerHour: 40,
     outputsPerHour: { knowledge: 14 },
     risksPerHour: { pressure: 0.2 },
-    attributeExpPerHour: { learning: 9 }
+    attributeExpPerHour: { learning: 9 },
+    narrativeStages: [
+      { seconds: 60, texts: ["你把概念图和示例代码放在一起看，抽象名词终于开始落地。"] },
+      { seconds: 300, texts: ["笔记里多了一条自己的解释，下次再遇到同类问题不会只靠搜索。"] }
+    ]
   }),
   activity({
     id: "testing",
@@ -326,8 +345,8 @@ const activities = [
 ];
 
 const skills = [
-  skill({ id: "html-css", name: "HTML/CSS", tier: 1, description: "页面终于不会像调试日志一样朴素。", cost: roundCost({ knowledge: 18, money: 10 }, 2), attributeRequirements: { creativity: 16, learning: 22 }, upgradeResourceBase: { codeLines: 70, docs: 10 }, multipliers: { code: 1.018 } }),
-  skill({ id: "javascript", name: "JavaScript", tier: 1, description: "开始理解为什么 undefined 不是 bug。", cost: roundCost({ knowledge: 38, money: 25 }, 2), attributeRequirements: { logic: 22, learning: 24 }, upgradeResourceBase: { codeLines: 90, tests: 10 }, multipliers: { code: 1.024, bug: 1.008 } }),
+  skill({ id: "html-css", name: "HTML/CSS", tier: 1, description: "页面终于不会像调试日志一样朴素。", cost: roundCost({ knowledge: 18, money: 10 }, 2), attributeRequirements: { creativity: 16, learning: 22 }, upgradeResourceBase: { codeLines: 70, docs: 10 }, multipliers: { code: 1.018 }, learningLogs: [{ seconds: 60, texts: ["你把盒模型画在纸上，终于接受 margin 有自己的脾气。"] }, { seconds: 160, texts: ["第一个布局不再乱跑，页面开始像一份可以交付的作品。"] }], completionReflection: "你能把结构和样式分开思考，个人主页有了真正的视觉骨架。" }),
+  skill({ id: "javascript", name: "JavaScript", tier: 1, description: "开始理解为什么 undefined 不是 bug。", cost: roundCost({ knowledge: 38, money: 25 }, 2), attributeRequirements: { logic: 22, learning: 24 }, upgradeResourceBase: { codeLines: 90, tests: 10 }, multipliers: { code: 1.024, bug: 1.008 }, learningLogs: [{ seconds: 90, texts: ["你用一个小例子拆开闭包，变量作用域终于不再像迷雾。"] }, { seconds: 200, texts: ["异步流程被写成了可读的顺序，回调地狱露出出口。"] }], completionReflection: "你开始用数据流和事件思考页面，交互不再只是把代码堆上去。" }),
   skill({ id: "git", name: "Git", tier: 1, description: "至少知道 push 前要 pull。", cost: roundCost({ knowledge: 70, money: 50 }, 2), attributeRequirements: { logic: 22, resilience: 20 }, upgradeResourceBase: { docs: 12, tests: 10 }, multipliers: { code: 1.012, bug: 0.976, debt: 0.976 } }),
   skill({ id: "linux", name: "Linux", tier: 1, description: "能在终端里解决问题，而不是只会重启 IDE。", attributeRequirements: { resilience: 24, logic: 24 }, upgradeResourceBase: { docs: 10, tests: 15 }, multipliers: { pressure: 0.986 } }),
   skill({ id: "http-networking", name: "HTTP/网络协议", tier: 1, description: "看懂请求、响应、缓存和那些藏在 header 里的真相。", attributeRequirements: { logic: 24, learning: 24 }, upgradeResourceBase: { docs: 10, tests: 10 }, multipliers: { bug: 0.984 } }),
@@ -424,7 +443,7 @@ const tools = [
 const trainingProject = createTrainingProjectBuilder(skills);
 
 const projects = [
-  project({ id: "homepage", name: "个人主页", description: "把个人品牌、静态页面和基础交付资产打包成一份能对外验收的最小作品集。", difficulty: 1, maxSuccessRate: 0.98, minWorkHours: 2, resources: { codeLines: 80, docs: 8 }, skills: ["html-css"], activityLevels: { "feature-coding": 2, documentation: 1 }, rewards: { money: 80, reputation: 2 }, skillExpRewards: { "html-css": 80 }, attributeExp: { creativity: 24, communication: 12 } }),
+  project({ id: "homepage", name: "个人主页", description: "把个人品牌、静态页面和基础交付资产打包成一份能对外验收的最小作品集。", difficulty: 1, maxSuccessRate: 0.98, minWorkHours: 2, resources: { codeLines: 80, docs: 8 }, skills: ["html-css"], activityLevels: { "feature-coding": 2, documentation: 1 }, rewards: { money: 80, reputation: 2 }, skillExpRewards: { "html-css": 80 }, attributeExp: { creativity: 24, communication: 12 }, successFeedback: ["客户反馈：页面终于不像临时拼出来的占位稿，第一眼能看出你会交付。", "交付成果：个人介绍、作品入口和联系信息被收进同一个清晰页面。"], failureFeedback: ["客户反馈：页面方向是对的，但视觉和内容还没有形成可信的一次展示。", "复盘记录：这次没能过验收，不过你已经知道作品集最缺的是结构和细节。"] }),
   project({ id: "todo", name: "Todo App", description: "用状态流、交互闭环和基础测试把玩具需求做成可维护的小型产品切片。", difficulty: 2, maxSuccessRate: 0.95, minWorkHours: 4, resources: { codeLines: 180, tests: 20 }, skills: ["javascript"], activityLevels: { "feature-coding": 4, testing: 2 }, rewards: { money: 170, reputation: 3 }, skillExpRewards: { javascript: 120 }, attributeExp: { focus: 28, logic: 18 } }),
   project({ id: "blog", name: "博客系统", description: "把内容模型、版本协作和数据查询串成一条可持续发布的内容管线。", difficulty: 3, maxSuccessRate: 0.92, minWorkHours: 8, resources: { codeLines: 420, docs: 35, architecture: 12 }, skills: ["git", "sql"], activityLevels: { documentation: 4, refactoring: 4 }, rewards: { money: 420, reputation: 5 }, skillExpRewards: { git: 120, sql: 140 }, attributeExp: { communication: 32, creativity: 28 } }),
   project({ id: "admin", name: "电商后台", description: "拉通商品、订单和运营视图，把后台链路从需求清单推进到可交接的业务中台。", difficulty: 4, maxSuccessRate: 0.88, minWorkHours: 18, resources: { codeLines: 900, tests: 90, architecture: 55, leads: 8 }, skills: ["sql", "communication"], activityLevels: { freelancing: 4, architecture: 4, testing: 5 }, rewards: { money: 980, reputation: 8 }, skillExpRewards: { sql: 180, communication: 180 }, attributeExp: { communication: 42, resilience: 30 } }),
@@ -635,6 +654,11 @@ const randomEvents = [
     id: "requirement-change",
     name: "需求变更",
     message: "产品说只是改一个小需求，技术债增加了。",
+    messages: [
+      "产品说只是改一个小需求，技术债增加了。",
+      "评审会上需求边界突然外扩，你把临时方案记进了技术债清单。",
+      "原本清晰的验收标准被补了一条例外，压力和技术债一起抬头。"
+    ],
     apply(state) {
       state.resources.techDebt += 10;
       state.resources.pressure += 4;
@@ -644,6 +668,11 @@ const randomEvents = [
     id: "production-bug",
     name: "线上 Bug",
     message: "监控报警，Bug 增加了，声望略受影响。",
+    messages: [
+      "监控报警，Bug 增加了，声望略受影响。",
+      "用户反馈截图比日志更快到达群里，Bug 数和压力同时上涨。",
+      "一个边界条件在生产环境露面，团队开始临时排查。"
+    ],
     apply(state) {
       state.resources.bugs += 5;
       state.resources.reputation = Math.max(0, state.resources.reputation - 1);
@@ -653,6 +682,11 @@ const randomEvents = [
     id: "project-bonus",
     name: "项目奖金",
     message: "客户提前打款，钱包厚了一点。",
+    messages: [
+      "客户提前打款，钱包厚了一点。",
+      "一个小项目提前结清尾款，你的现金流终于喘了口气。",
+      "对方认可这次响应速度，顺手把奖金也打了过来。"
+    ],
     apply(state) {
       state.resources.money += 120;
     }
@@ -661,6 +695,11 @@ const randomEvents = [
     id: "mentor",
     name: "好导师",
     message: "导师认真 review 了你的代码，知识增加了。",
+    messages: [
+      "导师认真 review 了你的代码，知识增加了。",
+      "导师没有只留一句 LGTM，而是把设计取舍拆给你看了一遍。",
+      "一次结对排查把你的盲区照出来，知识储备变厚了一点。"
+    ],
     attributeExp: { learning: 20 },
     apply(state) {
       state.resources.knowledge += 25;
@@ -670,6 +709,11 @@ const randomEvents = [
     id: "ai-upgrade",
     name: "AI 工具升级",
     message: "AI 工具更新，今天写功能特别顺。",
+    messages: [
+      "AI 工具更新，今天写功能特别顺。",
+      "新模型把样板代码补得很稳，你把省下来的注意力用在结构上。",
+      "编辑器里的补全突然懂事，代码推进速度明显变快。"
+    ],
     attributeExp: { creativity: 12 },
     apply(state) {
       state.resources.codeLines += 60;
@@ -680,6 +724,11 @@ const randomEvents = [
     id: "dependency-hell",
     name: "依赖地狱",
     message: "升级一个包，顺手把半个 lockfile 送去火化，Bug 和技术债增加了。",
+    messages: [
+      "升级一个包，顺手把半个 lockfile 送去火化，Bug 和技术债增加了。",
+      "补丁版本看起来无害，实际把构建链路拆成了考古现场。",
+      "依赖升级牵出一串破窗，你决定先记债再救主流程。"
+    ],
     apply(state) {
       state.resources.bugs += 4;
       state.resources.techDebt += 8;
@@ -690,6 +739,11 @@ const randomEvents = [
     id: "works-on-my-machine",
     name: "我本地是好的",
     message: "复现失败，但生产环境很诚实，压力和 Bug 都上来了。",
+    messages: [
+      "复现失败，但生产环境很诚实，压力和 Bug 都上来了。",
+      "本地环境一切正常，线上用户却稳定撞墙，排查压力开始累积。",
+      "你终于发现两个环境的配置差异，代价是多出来的 Bug 和焦虑。"
+    ],
     apply(state) {
       state.resources.bugs += 3;
       state.resources.pressure += 5;
@@ -699,6 +753,11 @@ const randomEvents = [
     id: "merge-conflict",
     name: "合并冲突",
     message: "三个人同时改了同一段祖传代码，技术债和压力同步上涨。",
+    messages: [
+      "三个人同时改了同一段祖传代码，技术债和压力同步上涨。",
+      "分支合并像一场小型谈判，你用压力换来了勉强能跑的结果。",
+      "冲突文件越看越像会议纪要，技术债又添了一笔。"
+    ],
     apply(state) {
       state.resources.techDebt += 6;
       state.resources.pressure += 4;
@@ -708,6 +767,11 @@ const randomEvents = [
     id: "ci-green",
     name: "CI 绿了",
     message: "流水线全绿，Bug 少了一点，测试资产多了一点。",
+    messages: [
+      "流水线全绿，Bug 少了一点，测试资产多了一点。",
+      "连续几次提交都过了 CI，你把这份确定性沉淀成测试资产。",
+      "自动化检查拦下一个小失误，Bug 水位往下压了一点。"
+    ],
     apply(state) {
       state.resources.bugs = Math.max(0, state.resources.bugs - 4);
       state.resources.tests += 8;
@@ -717,6 +781,11 @@ const randomEvents = [
     id: "hotfix-release",
     name: "热修复上线",
     message: "热修复把火灭了，但 TODO 和压力留在了代码里。",
+    messages: [
+      "热修复把火灭了，但 TODO 和压力留在了代码里。",
+      "补丁赶在影响扩大前上线，声望回了一点，后续重构也排上了队。",
+      "你把问题先止住了，代价是一段需要回头清理的应急逻辑。"
+    ],
     apply(state) {
       state.resources.bugs = Math.max(0, state.resources.bugs - 6);
       state.resources.techDebt += 5;
@@ -728,6 +797,11 @@ const randomEvents = [
     id: "prompt-hallucination",
     name: "提示词幻觉",
     message: "模型一本正经编了个不存在的 API，代码和 Bug 一起增加。",
+    messages: [
+      "模型一本正经编了个不存在的 API，代码和 Bug 一起增加。",
+      "AI 给出的方案看着很完整，直到你发现核心接口根本不存在。",
+      "你接受了一段漂亮但错误的建议，代码量和问题数同步上涨。"
+    ],
     apply(state) {
       state.resources.codeLines += 35;
       state.resources.bugs += 4;
@@ -739,6 +813,11 @@ const randomEvents = [
     id: "stackoverflow-save",
     name: "StackOverflow 救场",
     message: "一个十年前的回答依旧能打，知识和代码都有进账。",
+    messages: [
+      "一个十年前的回答依旧能打，知识和代码都有进账。",
+      "你在旧问答里找到关键线索，顺手把原理补进了笔记。",
+      "搜索结果没有直接复制价值，却帮你拆开了问题结构。"
+    ],
     apply(state) {
       state.resources.knowledge += 18;
       state.resources.codeLines += 25;
@@ -749,10 +828,242 @@ const randomEvents = [
     id: "friday-scope-change",
     name: "需求周五下班前改一下",
     message: "周五 17:59 的一句话，让文档、压力和技术债重新做人。",
+    messages: [
+      "周五 17:59 的一句话，让文档、压力和技术债重新做人。",
+      "临近收工时需求突然拐弯，你只能先改文档再保住主路径。",
+      "最后一分钟的范围变化砸进来，原本清爽的计划被迫重排。"
+    ],
     apply(state) {
       state.resources.docs = Math.max(0, state.resources.docs - 6);
       state.resources.pressure += 8;
       state.resources.techDebt += 7;
+    }
+  },
+  {
+    id: "calm-standup",
+    name: "清晰站会",
+    message: "站会把阻塞点说清楚了，文档多了一点，压力少了一点。",
+    messages: [
+      "站会把阻塞点说清楚了，文档多了一点，压力少了一点。",
+      "你用两分钟讲清风险，团队顺手帮你砍掉一个无效分支。",
+      "需求、接口和责任人被重新对齐，今天的沟通成本下降了。"
+    ],
+    attributeExp: { communication: 10 },
+    apply(state) {
+      state.resources.docs += 4;
+      state.resources.pressure = Math.max(0, state.resources.pressure - 3);
+    }
+  },
+  {
+    id: "pair-programming",
+    name: "结对编程",
+    message: "同事坐下来一起拆问题，知识和测试资产都有进账。",
+    messages: [
+      "同事坐下来一起拆问题，知识和测试资产都有进账。",
+      "你们轮流解释思路，隐藏假设很快被拎了出来。",
+      "一段结对调试让你少走弯路，也补上了关键测试。"
+    ],
+    attributeExp: { communication: 8, logic: 8 },
+    apply(state) {
+      state.resources.knowledge += 12;
+      state.resources.tests += 5;
+    }
+  },
+  {
+    id: "deep-work-block",
+    name: "深度工作窗口",
+    message: "消息通知安静了一小时，代码产出明显增加。",
+    messages: [
+      "消息通知安静了一小时，代码产出明显增加。",
+      "你关掉干扰，把一段复杂逻辑从头推到了尾。",
+      "少见的完整专注窗口出现，代码推进得比预期顺。"
+    ],
+    attributeExp: { focus: 12 },
+    apply(state) {
+      state.resources.codeLines += 45;
+      state.stats.totalCodeLines += 45;
+    }
+  },
+  {
+    id: "design-breakthrough",
+    name: "设计突破",
+    message: "一个架构边界突然想通，文档和架构资产都有提升。",
+    messages: [
+      "一个架构边界突然想通，文档和架构资产都有提升。",
+      "你把原本纠缠的职责拆成两个模块，设计图终于清爽起来。",
+      "白板上的箭头少了几条，系统边界反而更清楚了。"
+    ],
+    attributeExp: { logic: 10, creativity: 8 },
+    apply(state) {
+      state.resources.architecture += 5;
+      state.resources.docs += 3;
+    }
+  },
+  {
+    id: "customer-thanks",
+    name: "客户感谢",
+    message: "客户专门发来感谢，声望和压力都往好的方向动了一点。",
+    messages: [
+      "客户专门发来感谢，声望和压力都往好的方向动了一点。",
+      "上线后的反馈很正面，你感到这次交付真的解决了问题。",
+      "对方认可你的响应速度，后续合作线索也亮了一点。"
+    ],
+    attributeExp: { communication: 8 },
+    apply(state) {
+      state.resources.reputation += 1;
+      state.resources.leads += 2;
+      state.resources.pressure = Math.max(0, state.resources.pressure - 2);
+    }
+  },
+  {
+    id: "quiet-lunch-walk",
+    name: "午间散步",
+    message: "你离开屏幕走了一圈，精力回升，压力下降。",
+    messages: [
+      "你离开屏幕走了一圈，精力回升，压力下降。",
+      "午间短暂断开工作上下文，下午的脑子轻了一点。",
+      "走到楼下再回来，那个卡住的问题也没那么吓人了。"
+    ],
+    attributeExp: { resilience: 8 },
+    apply(state) {
+      state.resources.energy += 8;
+      state.resources.pressure = Math.max(0, state.resources.pressure - 5);
+    }
+  },
+  {
+    id: "spec-clarified",
+    name: "规格澄清",
+    message: "你追问了一个模糊词，技术债被提前拦下一截。",
+    messages: [
+      "你追问了一个模糊词，技术债被提前拦下一截。",
+      "原型里的灰色地带被确认清楚，后续返工风险下降。",
+      "一句看似麻烦的确认，替你省掉了后面的实现摇摆。"
+    ],
+    attributeExp: { communication: 6, logic: 6 },
+    apply(state) {
+      state.resources.docs += 5;
+      state.resources.techDebt = Math.max(0, state.resources.techDebt - 4);
+    }
+  },
+  {
+    id: "keyboard-flow",
+    name: "手感在线",
+    message: "今天手感很顺，代码推进快，但也多留了几处待检查点。",
+    messages: [
+      "今天手感很顺，代码推进快，但也多留了几处待检查点。",
+      "你一路把想法写成实现，决定晚点再补一轮测试。",
+      "实现速度起来了，质量清单也悄悄长了一点。"
+    ],
+    apply(state) {
+      state.resources.codeLines += 55;
+      state.resources.techDebt += 3;
+      state.stats.totalCodeLines += 55;
+    }
+  },
+  {
+    id: "review-praise",
+    name: "评审认可",
+    message: "代码评审里有人夸了你的抽象，声望和信心都涨了一点。",
+    messages: [
+      "代码评审里有人夸了你的抽象，声望和信心都涨了一点。",
+      "你的拆分方案被团队采纳，沟通成本下降了一截。",
+      "评审意见不再只是挑错，也开始认可你的设计判断。"
+    ],
+    attributeExp: { communication: 8, creativity: 8 },
+    apply(state) {
+      state.resources.reputation += 1;
+      state.resources.pressure = Math.max(0, state.resources.pressure - 2);
+    }
+  },
+  {
+    id: "domain-insight",
+    name: "业务顿悟",
+    message: "你终于理解了业务规则背后的真实约束，知识和文档都有进账。",
+    messages: [
+      "你终于理解了业务规则背后的真实约束，知识和文档都有进账。",
+      "一个运营同事补充了背景，你把代码里的魔法数字改成了清楚命名。",
+      "业务语境对上之后，原本绕的实现突然变直了。"
+    ],
+    attributeExp: { learning: 10, communication: 6 },
+    apply(state) {
+      state.resources.knowledge += 16;
+      state.resources.docs += 4;
+    }
+  },
+  {
+    id: "test-flake",
+    name: "偶发测试",
+    message: "一个偶发失败暴露了时序问题，Bug 和压力上升，但测试资产也更真实了。",
+    messages: [
+      "一个偶发失败暴露了时序问题，Bug 和压力上升，但测试资产也更真实了。",
+      "CI 偶发红灯让你盯上异步边界，坏消息至少来得及时。",
+      "测试不稳定让人烦躁，却逼你看见了之前忽略的竞态。"
+    ],
+    attributeExp: { resilience: 6 },
+    apply(state) {
+      state.resources.bugs += 2;
+      state.resources.pressure += 3;
+      state.resources.tests += 3;
+    }
+  },
+  {
+    id: "meetup-note",
+    name: "技术分享",
+    message: "一场技术分享给了你新思路，知识和创造力经验增加。",
+    messages: [
+      "一场技术分享给了你新思路，知识和创造力经验增加。",
+      "你听到一个不同团队的实践，回头把可借鉴的部分记进笔记。",
+      "分享里的案例不完全适用，但打开了一个新的解法方向。"
+    ],
+    attributeExp: { learning: 8, creativity: 8 },
+    apply(state) {
+      state.resources.knowledge += 20;
+    }
+  },
+  {
+    id: "small-automation",
+    name: "小自动化",
+    message: "你顺手写了个脚本，重复操作少了一截，技术债下降。",
+    messages: [
+      "你顺手写了个脚本，重复操作少了一截，技术债下降。",
+      "一个小工具接管了手工步骤，团队少了一类低级失误。",
+      "自动化没有很华丽，但每天都能省下一点注意力。"
+    ],
+    attributeExp: { logic: 8, focus: 6 },
+    apply(state) {
+      state.resources.techDebt = Math.max(0, state.resources.techDebt - 5);
+      state.resources.tests += 4;
+    }
+  },
+  {
+    id: "healthy-boundary",
+    name: "边界感",
+    message: "你拒绝了一个临时插队需求，压力下降，声望没有受损。",
+    messages: [
+      "你拒绝了一个临时插队需求，压力下降，声望没有受损。",
+      "你把优先级讲清楚，对方接受了排期而不是继续催促。",
+      "这次你没有用透支来换速度，工作节奏稳住了一点。"
+    ],
+    attributeExp: { resilience: 10, communication: 6 },
+    apply(state) {
+      state.resources.pressure = Math.max(0, state.resources.pressure - 6);
+      state.resources.docs += 2;
+    }
+  },
+  {
+    id: "prototype-spark",
+    name: "原型火花",
+    message: "一个小原型跑通了，代码和线索都有进展。",
+    messages: [
+      "一个小原型跑通了，代码和线索都有进展。",
+      "你用最短路径验证了想法，后续项目多了一点可信度。",
+      "原型虽然粗糙，但它证明这条路线值得继续。"
+    ],
+    attributeExp: { creativity: 10 },
+    apply(state) {
+      state.resources.codeLines += 30;
+      state.resources.leads += 1;
+      state.stats.totalCodeLines += 30;
     }
   }
 ];

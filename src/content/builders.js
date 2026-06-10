@@ -39,6 +39,7 @@ function scaleProjectRewards(rewards = {}) {
 function activity(config) {
   return {
     ...config,
+    narrativeStages: config.narrativeStages || [],
     outputsPerHour: config.outputsPerHour || {},
     mitigationPerHour: config.mitigationPerHour || {},
     risksPerHour: config.risksPerHour || {},
@@ -67,6 +68,8 @@ function skill(config) {
     ...config,
     cost: config.cost || defaults.cost,
     learningSeconds: config.learningSeconds || defaults.learningSeconds,
+    learningLogs: config.learningLogs || [],
+    completionReflection: config.completionReflection || "",
     attributeRequirements: config.attributeRequirements || {},
     upgradeResourceBase: config.upgradeResourceBase || { docs: 10, tests: 10 },
     multipliers: config.multipliers || {}
@@ -109,7 +112,9 @@ function project(config) {
     },
     rewards: scaleProjectRewards(rewards),
     skillExpRewards: config.skillExpRewards || splitSkillExp(skills, config.skillExp || (config.difficulty * 90)),
-    attributeExp: config.attributeExp || {}
+    attributeExp: config.attributeExp || {},
+    successFeedback: config.successFeedback || [],
+    failureFeedback: config.failureFeedback || []
   };
 }
 

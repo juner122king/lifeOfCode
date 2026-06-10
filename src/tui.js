@@ -68,12 +68,16 @@ const DAILY_PLANNER_KIND_LABELS = {
 };
 const SCHEDULE_PHASE_IDS = SCHEDULE_PHASES.map((phase) => phase.id);
 
+function isHiddenTuiCommandHint(text) {
+  return /^命令：/.test(String(text || "").trim());
+}
+
 function normalizeLogMessages(messages, defaultCategory = null) {
   return messages.filter(Boolean).flatMap((message) => {
     if (typeof message === "object" && message !== null && "text" in message) {
       return String(message.text || "")
         .split("\n")
-        .filter(Boolean)
+        .filter((text) => text && !isHiddenTuiCommandHint(text))
         .map((text) => ({
           category: message.category || defaultCategory || null,
           severity: message.severity || "info",
@@ -82,7 +86,7 @@ function normalizeLogMessages(messages, defaultCategory = null) {
     }
     return String(message)
       .split("\n")
-      .filter(Boolean)
+      .filter((text) => text && !isHiddenTuiCommandHint(text))
       .map((text) => ({
         category: defaultCategory,
         severity: defaultCategory ? "info" : null,
@@ -91,8 +95,13 @@ function normalizeLogMessages(messages, defaultCategory = null) {
   });
 }
 
-function createLogEntries(messages, startId = 0, defaultCategory = null) {
+function isValidGameTimeLabel(value) {
+  return /^\d{2}:\d{2}$/.test(String(value || ""));
+}
+
+function createLogEntries(messages, startId = 0, defaultCategory = null, options = {}) {
   let nextId = Math.max(0, Math.floor(Number(startId) || 0));
+  const gameTimeLabel = isValidGameTimeLabel(options.gameTimeLabel) ? options.gameTimeLabel : null;
   const entries = normalizeLogMessages(messages, defaultCategory).map((entry) => {
     const log = {
       id: nextId++,
@@ -100,6 +109,7 @@ function createLogEntries(messages, startId = 0, defaultCategory = null) {
     };
     if (entry.category) log.category = entry.category;
     if (entry.severity) log.severity = entry.severity;
+    if (entry.category && gameTimeLabel) log.gameTimeLabel = gameTimeLabel;
     return log;
   });
   return { entries, nextId };
@@ -302,6 +312,17 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
 
 const INFO_TICKER_HIDDEN_PREFIXES = ["[当前时间]", "[阶段进度]", "[进度预览]"];
 const INFO_RESOURCE_PATTERN = /精力|压力|Bug|技术债/;
+const INFO_EVENT_LABELS = {
+  random: "情报",
+  project: "交付",
+  skill: "学习",
+  career: "成长",
+  warning: "警戒",
+  focus: "方针",
+  world: "大势",
+  system: "系统"
+};
+const INFO_TIMED_EVENT_CATEGORIES = new Set(["random", "project", "skill", "career", "warning", "focus", "world"]);
 
 function isInfoTickerRow(row) {
   const text = String(row && row.text || "").trim();
@@ -342,27 +363,127 @@ function createInfoActivityLevelRow(view) {
   };
 }
 
+function getInfoResourceValue(view, id) {
+  const resources = view && Array.isArray(view.resources) ? view.resources : [];
+  const resource = resources.find((item) => item && item.id === id);
+  return resource ? Number(resource.value) || 0 : 0;
+}
+
+function createInfoMoodRow(view) {
+  const energy = getInfoResourceValue(view, "energy");
+  const pressure = getInfoResourceValue(view, "pressure");
+  const bugs = getInfoResourceValue(view, "bugs");
+  const techDebt = getInfoResourceValue(view, "techDebt");
+  let mood = "节奏稳定";
+  let rank = 0;
+  if (energy <= 15 || pressure >= 85) {
+    mood = "需要收束";
+    rank = 3;
+  } else if (bugs >= 75 || techDebt >= 75) {
+    mood = "质量隐患升温";
+    rank = 2;
+  } else if (energy <= 35 || pressure >= 60 || bugs >= 50 || techDebt >= 50) {
+    mood = "状态紧绷";
+    rank = 1;
+  }
+  return {
+    id: "context-mood",
+    kind: "mood",
+    moodRank: rank,
+    text: `[状态] ${mood}`,
+    priority: 6
+  };
+}
+
+function createInfoIntentRow(view) {
+  if (view && view.activeProject) {
+    return {
+      id: "context-intent",
+      kind: "intent",
+      text: `[意图] 推进交付切片：${view.activeProject.name}`,
+      priority: 3
+    };
+  }
+  if (view && view.activeSkillLearning) {
+    return {
+      id: "context-intent",
+      kind: "intent",
+      text: `[意图] 巩固基础概念：${view.activeSkillLearning.name}`,
+      priority: 3
+    };
+  }
+  const activity = view && view.activeActivity;
+  if (activity) {
+    const intents = {
+      "feature-coding": "推进功能切片",
+      "bug-hunting": "追踪异常线索",
+      refactoring: "整理结构边界",
+      study: "巩固知识地图",
+      testing: "加固验证回路",
+      documentation: "沉淀交付上下文",
+      freelancing: "处理客户委托",
+      rest: "整理行动节奏"
+    };
+    return {
+      id: "context-intent",
+      kind: "intent",
+      text: `[意图] ${intents[activity.id] || `推进 ${activity.name}`}`,
+      priority: 3
+    };
+  }
+  const schedule = view && view.schedule;
+  return {
+    id: "context-intent",
+    kind: "intent",
+    text: schedule && (schedule.waiting || !schedule.confirmed)
+      ? "[意图] 整理节奏等待排程"
+      : "[意图] 观察局势，等待下一步行动",
+    priority: 3
+  };
+}
+
+function createInfoCampaignRow(view) {
+  const slots = view && view.schedule && Array.isArray(view.schedule.slots) ? view.schedule.slots : [];
+  const completed = slots.filter((slot) => slot && slot.completed).length;
+  const total = slots.length || 3;
+  const stats = view && view.stats ? view.stats : {};
+  const activeSeconds = Math.max(0, Math.floor(Number(stats.totalActiveSeconds) || 0));
+  const hours = Math.floor(activeSeconds / 3600);
+  const minutes = Math.floor(activeSeconds % 3600 / 60);
+  return {
+    id: "context-campaign",
+    kind: "campaign",
+    text: `[战报] 今日 ${completed}/${total} 阶段 | 累计行动 ${hours}h${minutes}m，交付 ${Math.floor(Number(stats.totalProjects) || 0)} 项`,
+    priority: 7
+  };
+}
+
+function stripInfoEventPrefix(text) {
+  return String(text || "").replace(/^(?:[[【][^\]】]+[\]】]\s*)+/, "");
+}
+
+function formatInfoEventText(row) {
+  if (!row || row.empty) return row && row.text || "";
+  const label = INFO_EVENT_LABELS[row.category] || "情报";
+  const time = INFO_TIMED_EVENT_CATEGORIES.has(row.category) && isValidGameTimeLabel(row.gameTimeLabel)
+    ? `${row.gameTimeLabel} `
+    : "";
+  return `[${label}] ${time}${stripInfoEventPrefix(row.text)}`;
+}
+
 function createInfoContextRows(view) {
   const rows = [];
   const activityLevelRow = createInfoActivityLevelRow(view);
   if (activityLevelRow) rows.push(activityLevelRow);
+  rows.push(createInfoIntentRow(view));
   const schedule = view && view.schedule ? view.schedule : null;
-  if (schedule) {
-    if (schedule.waiting || !schedule.confirmed) {
-      rows.push({
-        id: "context-schedule",
-        kind: "context",
-        text: "[日程] 等待安排并确认今日日程。",
-        priority: 3
-      });
-    } else if (schedule.currentPhase) {
-      rows.push({
-        id: "context-phase",
-        kind: "context",
-        text: `[阶段] ${schedule.currentPhase.name} ${schedule.currentPhase.timeRange}`,
-        priority: 3
-      });
-    }
+  if (schedule && (schedule.waiting || !schedule.confirmed)) {
+    rows.push({
+      id: "context-schedule",
+      kind: "context",
+      text: "[日程] 等待安排并确认今日日程。",
+      priority: 4
+    });
   }
 
   if (view && view.activeProject) {
@@ -370,7 +491,7 @@ function createInfoContextRows(view) {
       id: "context-project",
       kind: "context",
       text: `[项目] ${view.activeProject.name} ${Math.floor(Number(view.activeProject.progressPercent) || 0)}%`,
-      priority: 4
+      priority: 5
     });
   }
   if (view && view.activeSkillLearning) {
@@ -378,9 +499,12 @@ function createInfoContextRows(view) {
       id: "context-skill",
       kind: "context",
       text: `[学习] ${view.activeSkillLearning.name} ${Math.floor(Number(view.activeSkillLearning.progressPercent) || 0)}%`,
-      priority: 4
+      priority: 5
     });
   }
+
+  rows.push(createInfoMoodRow(view));
+  rows.push(createInfoCampaignRow(view));
 
   const currentMain = view && view.goals && view.goals.currentMain;
   if (currentMain) {
@@ -388,7 +512,7 @@ function createInfoContextRows(view) {
       id: "context-goal",
       kind: "context",
       text: `[目标] ${currentMain.name} ${currentMain.status} ${currentMain.progress}`,
-      priority: 5
+      priority: 7
     });
   }
 
@@ -402,7 +526,7 @@ function createInfoContextRows(view) {
       id: "context-deadline",
       kind: "context",
       text: `[Deadline] ${deadline.name || "项目"} ${due}（${distance}）`,
-      priority: 6
+      priority: 8
     });
   }
 
@@ -412,7 +536,7 @@ function createInfoContextRows(view) {
       id: "context-world",
       kind: "context",
       text: `[世界] ${worldEvent.name}：${worldEvent.message}`,
-      priority: 7
+      priority: 9
     });
   }
 
@@ -449,14 +573,14 @@ function getInfoWindowRows(view, ticker = null, logs = [], availableHeight = 12)
   const currentBase = capacity <= 6
     ? 3
     : capacity <= 12
-      ? Math.max(3, Math.floor(capacity * 0.4))
-      : 6;
-  const visibleEventCount = Array.isArray(logs) ? logs.filter((log) => isEventLog(log) && !log.empty).length : 0;
+      ? Math.min(5, Math.max(4, Math.floor(capacity * 0.45)))
+      : 7;
   const reserveEventRows = capacity >= 2 ? 1 : 0;
   const reserveSeparator = capacity >= 4 ? 1 : 0;
   const currentPool = getInfoCurrentRows(view, ticker, capacity);
   const eventPool = getLogRows(logs, Math.max(MAX_LOGS, capacity))
-    .filter((row) => !row.empty && !INFO_RESOURCE_PATTERN.test(String(row.text || "")));
+    .filter((row) => !row.empty && !INFO_RESOURCE_PATTERN.test(String(row.text || "")))
+    .map((row) => ({ ...row, displayText: formatInfoEventText(row) }));
   if (!eventPool.length) eventPool.push({ id: "empty-message", text: "暂无日志。", empty: true });
 
   let currentLimit = Math.min(currentBase, currentPool.length, Math.max(1, capacity - reserveEventRows - reserveSeparator));
@@ -487,6 +611,8 @@ function getInfoWindowRows(view, ticker = null, logs = [], availableHeight = 12)
   if (separatorRows) rows.push({ id: "info-separator", source: "separator", kind: "separator", text: "" });
   rows.push(...eventRows.map((row) => ({
     ...row,
+    rawText: row.text,
+    text: row.displayText || row.text,
     id: `info-event-${row.id}`,
     eventId: row.id,
     source: "event",
@@ -506,9 +632,16 @@ function formatTopDate(calendar) {
 
 function getTopRuntimeStatus(view, paused = false) {
   if (paused) return "已暂停";
+  if (view && view.dayEndReport) return "审计报告";
   const schedule = view && view.schedule ? view.schedule : {};
   if (!schedule.confirmed || schedule.waiting) return "等待排程";
-  return schedule.currentPhase ? "进行中" : "休整";
+  if (view && view.activeProject) return "交付推进中";
+  if (view && view.activeSkillLearning) return "学习中";
+  if (view && view.activeActivity) {
+    const phaseName = schedule.currentPhase && schedule.currentPhase.name ? schedule.currentPhase.name : "";
+    return phaseName ? `${phaseName}行动中` : "行动中";
+  }
+  return schedule.currentPhase ? "休整中" : "休整";
 }
 
 function formatDeadlineDistance(view) {
@@ -557,8 +690,9 @@ function formatTopStatusMeterLine(view, columns = DEFAULT_TERMINAL_COLUMNS) {
 function getTopStatusColor(status) {
   if (status === "已暂停") return THEME.status.paused;
   if (status === "等待排程") return THEME.status.warn;
-  if (status === "进行中") return THEME.status.info;
-  if (status === "休整") return THEME.muted;
+  if (status === "审计报告") return THEME.title;
+  if (/行动中|交付推进中|学习中/.test(status)) return THEME.status.info;
+  if (/休整/.test(status)) return THEME.muted;
   return THEME.status.neutral;
 }
 
@@ -1443,16 +1577,23 @@ async function startTui() {
             ? eventTone.color
             : row.kind === "status"
               ? THEME.status.info
-              : row.kind === "context"
-                ? THEME.text
-                : THEME.muted;
+              : row.kind === "intent"
+                ? THEME.status.good
+                : row.kind === "mood"
+                  ? row.moodRank >= 2 ? THEME.status.warn : THEME.status.info
+                  : row.kind === "campaign"
+                    ? THEME.title
+                    : row.kind === "context"
+                      ? THEME.text
+                      : THEME.muted;
         const prefix = row.source === "event" ? "• " : "";
+        const text = row.source === "event" ? row.displayText || row.text : row.text;
         return h(Text, {
           key: row.id,
           color,
-          bold: row.kind === "status" || (eventTone && eventTone.bold),
+          bold: row.kind === "status" || row.kind === "intent" || row.kind === "campaign" || (eventTone && eventTone.bold),
           dimColor: eventTone ? eventTone.dim : false
-        }, trimText(`${prefix}${row.text || " "}`, Math.max(16, width - 4)));
+        }, trimText(`${prefix}${text || " "}`, Math.max(16, width - 4)));
       })
     );
   }
@@ -1547,7 +1688,10 @@ async function startTui() {
     const { stdout } = useStdout();
 
     function addLogs(messages, defaultCategory = null) {
-      const created = createLogEntries(messages, nextLogIdRef.current, defaultCategory);
+      const view = getGameViewModel(stateRef.current);
+      const created = createLogEntries(messages, nextLogIdRef.current, defaultCategory, {
+        gameTimeLabel: view && view.calendar ? view.calendar.hhmm : null
+      });
       if (!created.entries.length) return;
       nextLogIdRef.current = created.nextId;
       setLogs((current) => appendLogEntries(current, created.entries));

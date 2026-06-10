@@ -74,6 +74,17 @@ test("createLogEntries assigns stable incrementing ids", () => {
   assert.equal(created.nextId, 10);
 });
 
+test("createLogEntries can attach a game time snapshot to categorized logs", () => {
+  const created = createLogEntries([
+    { category: "skill", text: "[技能] 学习日志：HTML/CSS。你把盒模型画在纸上。" },
+    "plain"
+  ], 4, null, { gameTimeLabel: "09:30" });
+
+  assert.equal(created.entries[0].gameTimeLabel, "09:30");
+  assert.equal(created.entries[1].gameTimeLabel, undefined);
+  assert.equal(created.nextId, 6);
+});
+
 test("appendLogEntries appends to the bottom and trims oldest logs", () => {
   const current = [
     { id: 1, text: "oldest" },
@@ -128,6 +139,24 @@ test("getLogRows keeps non-command command results in event history", () => {
   const rows = getLogRows(createLogEntries(messages, 0).entries, 8);
 
   assert.deepEqual(rows.filter((row) => !row.empty).map((row) => row.text), ["[项目] 项目 个人主页 交付成功。"]);
+});
+
+test("command hint lines are hidden from TUI logs and player info", () => {
+  const state = createNewState(1_700_000_000_000);
+  const messages = createCommandLogMessages("plan", [
+    "今日日程：D001 [草稿]，等待确认",
+    "  上午 09:00-12:00：项目：个人主页",
+    "命令：plan <morning|afternoon|evening> <activity|skill|project> <id>；plan evening none；plan confirm；plan clear"
+  ]);
+  const logs = createLogEntries(messages, 0).entries;
+  const logText = logs.map((row) => row.text).join("\n");
+  const infoText = getInfoWindowRows(getGameViewModel(state), ["[当前状态] 等待排程。"], logs, 8)
+    .map((row) => row.text)
+    .join("\n");
+
+  assert.doesNotMatch(logText, /命令：plan <morning/);
+  assert.doesNotMatch(infoText, /命令：plan <morning/);
+  assert.match(infoText, /项目：个人主页/);
 });
 
 test("calculateLayoutBudget returns a compact 24 row budget with a usable list", () => {
@@ -268,11 +297,27 @@ test("formatTopStatusLine applies paused, waiting, running, and rest status rule
   processCommand(runningState, "plan evening none", { randomEvents: false });
   processCommand(runningState, "plan confirm", { randomEvents: false });
   runningState.worldTimeMinutes = 9 * 60;
-  assert.match(formatTopStatusLine(getGameViewModel(runningState), false), /状态: 进行中/);
+  assert.match(formatTopStatusLine(getGameViewModel(runningState), false), /状态: 上午行动中/);
 
   runningState.worldTimeMinutes = 13 * 60;
   assert.match(formatTopStatusLine(getGameViewModel(runningState), false), /状态: 休整/);
   assert.match(formatTopStatusLine(getGameViewModel(runningState), false), /13:00 \(休整\)/);
+});
+
+test("formatTopStatusLine uses RPG runtime states for project and skill work", () => {
+  const projectView = {
+    ...getGameViewModel(createNewState(1_700_000_000_000)),
+    schedule: { confirmed: true, waiting: false, currentPhase: { name: "上午" } },
+    activeProject: { id: "homepage", name: "个人主页" }
+  };
+  const skillView = {
+    ...getGameViewModel(createNewState(1_700_000_000_000)),
+    schedule: { confirmed: true, waiting: false, currentPhase: { name: "下午" } },
+    activeSkillLearning: { id: "html-css", name: "HTML/CSS" }
+  };
+
+  assert.match(formatTopStatusLine(projectView, false), /状态: 交付推进中/);
+  assert.match(formatTopStatusLine(skillView, false), /状态: 学习中/);
 });
 
 test("formatTopStatusRows truncates long content without manual ASCII borders", () => {
@@ -418,13 +463,77 @@ test("getInfoWindowRows enriches current info with non-resource context", () => 
   const rows = getInfoWindowRows(view, ["[当前状态] 活动 写功能。"], logs, 12);
   const text = rows.map((row) => row.text).join("\n");
 
-  assert.match(text, /\[阶段\] 上午 09:00-12:00/);
+  assert.doesNotMatch(text, /\[阶段\]/);
   assert.match(text, /\[项目\] 个人主页 42%/);
   assert.match(text, /\[学习\] TypeScript 30%/);
   assert.match(text, /\[目标\] 找到第一份工作 进行中 2\/5/);
+  assert.match(text, /\[战报\] 今日/);
+  assert.doesNotMatch(rows.find((row) => row.id === "info-current-context-campaign")?.text || "", /找到第一份工作|2\/5|主线/);
   assert.match(text, /\[Deadline\] 个人主页 D005/);
   assert.match(text, /\[世界\] AI 热潮/);
   assert.doesNotMatch(text, /精力|压力|Bug|技术债|建议/);
+});
+
+test("getInfoWindowRows does not repeat the main goal in campaign and goal rows", () => {
+  const state = createNewState(1_700_000_000_000);
+  const baseView = getGameViewModel(state);
+  const view = {
+    ...baseView,
+    schedule: {
+      ...baseView.schedule,
+      confirmed: true,
+      waiting: false,
+      slots: [
+        { id: "morning", completed: true },
+        { id: "afternoon", completed: false },
+        { id: "evening", completed: false }
+      ]
+    },
+    stats: { ...baseView.stats, totalActiveSeconds: 8040, totalProjects: 0 },
+    goals: {
+      ...baseView.goals,
+      currentMain: { id: "learn-web-basics", name: "网页基础入门", status: "进行中", progress: "技能 html-css 0/1" }
+    }
+  };
+  const rows = getInfoWindowRows(view, ["[当前状态] 活动 重构代码 1 秒：进度推进"], [], 10);
+  const campaign = rows.find((row) => row.id === "info-current-context-campaign")?.text || "";
+  const goal = rows.find((row) => row.id === "info-current-context-goal")?.text || "";
+
+  assert.match(campaign, /\[战报\] 今日 1\/3 阶段 \| 累计行动 2h14m，交付 0 项/);
+  assert.doesNotMatch(campaign, /网页基础入门|html-css|主线/);
+  assert.match(goal, /\[目标\] 网页基础入门 进行中 技能 html-css 0\/1/);
+});
+
+test("getInfoWindowRows fills sparse panels with RPG summary rows", () => {
+  const state = createNewState(1_700_000_000_000);
+  state.resources.energy = 100;
+  state.resources.pressure = 0;
+  processCommand(state, "plan morning activity feature-coding", { randomEvents: false });
+  processCommand(state, "plan afternoon activity study", { randomEvents: false });
+  processCommand(state, "plan evening none", { randomEvents: false });
+  processCommand(state, "plan confirm", { randomEvents: false });
+  state.worldTimeMinutes = 9 * 60;
+  const rows = getInfoWindowRows(getGameViewModel(state), ["[当前状态] 活动 写功能。"], [], 10);
+  const text = rows.map((row) => row.text).join("\n");
+
+  assert.match(text, /\[意图\] 推进功能切片/);
+  assert.match(text, /\[状态\] 节奏稳定/);
+  assert.match(text, /\[战报\] 今日/);
+  assert.ok(rows.some((row) => row.source === "event" && row.empty));
+  assert.doesNotMatch(text, /精力|压力|Bug|技术债|建议/);
+});
+
+test("getInfoWindowRows narrates risk mood without resource names or numbers", () => {
+  const state = createNewState(1_700_000_000_000);
+  state.resources.energy = 8;
+  state.resources.pressure = 90;
+  state.resources.bugs = 90;
+  state.resources.techDebt = 90;
+  const rows = getInfoWindowRows(getGameViewModel(state), ["[当前状态] 等待排程。"], [], 10);
+  const mood = rows.find((row) => row.id === "info-current-context-mood");
+
+  assert.match(mood?.text || "", /\[状态\] 需要收束/);
+  assert.doesNotMatch(mood?.text || "", /精力|压力|Bug|技术债|\d/);
 });
 
 test("getInfoWindowRows shows active activity level progress after current status", () => {
@@ -448,12 +557,14 @@ test("getInfoWindowRows shows active activity level progress after current statu
   const rows = getInfoWindowRows(view, ["[当前状态] 活动 写功能。"], [], 8);
   const currentIndex = rows.findIndex((row) => row.text.includes("[当前状态]"));
   const progressIndex = rows.findIndex((row) => row.id === "info-current-context-activity-exp");
-  const phaseIndex = rows.findIndex((row) => row.id === "info-current-context-phase");
+  const intentIndex = rows.findIndex((row) => row.id === "info-current-context-intent");
+  const text = rows.map((row) => row.text).join("\n");
 
   assert.ok(currentIndex >= 0);
   assert.equal(progressIndex, currentIndex + 1);
-  assert.equal(phaseIndex > progressIndex, true);
+  assert.equal(intentIndex > progressIndex, true);
   assert.match(rows[progressIndex].text, /^\[Lv\.3\] \[[#=\-]{18}\] 77% 342\/440$/);
+  assert.doesNotMatch(text, /\[阶段\]/);
 });
 
 test("getInfoWindowRows omits activity level progress without an active activity or next exp", () => {
@@ -498,6 +609,33 @@ test("getInfoWindowRows keeps command echoes out and latest event at the bottom"
 
   assert.equal(rows.some((row) => row.text.includes("> week project")), false);
   assert.match(eventRows.at(-1)?.text, /后续提醒/);
+});
+
+test("getInfoWindowRows shows narrative events while keeping hidden detail filters", () => {
+  const state = createNewState(1_700_000_000_000);
+  const logs = createLogEntries([
+    { category: "random", text: "[随机事件] 活动片段：写功能。你先把需求拆成几个可提交的小块。" },
+    { category: "skill", text: "[技能] 学习日志：HTML/CSS。你把盒模型画在纸上。" },
+    { category: "project", text: "[项目] 项目 个人主页 交付成功。客户反馈：页面终于能看出你会交付。" },
+    { category: "system", text: "[系统] 已保存。" },
+    ...createCommandLogMessages("plan morning activity feature-coding", ["今日日程已确认。"])
+  ], 0, null, { gameTimeLabel: "09:30" }).entries;
+
+  const rows = getInfoWindowRows(getGameViewModel(state), [
+    "[当前状态] 活动 写功能。",
+    "[阶段进度] 上午 30%",
+    "[进度预览] 精力 12/100",
+    "[当前时间] D001 09:00"
+  ], logs, 10);
+  const text = rows.map((row) => row.text).join("\n");
+
+  assert.match(text, /\[情报\] 09:30 活动片段：写功能/);
+  assert.match(text, /\[学习\] 09:30 学习日志：HTML\/CSS/);
+  assert.match(text, /\[交付\] 09:30 项目 个人主页 交付成功/);
+  assert.match(text, /\[系统\] 已保存。/);
+  assert.doesNotMatch(text, /\[系统\] 09:30/);
+  assert.match(text, /客户反馈：/);
+  assert.doesNotMatch(text, /\[当前时间\]|\[阶段进度\]|\[进度预览\]|> plan morning|建议|精力|压力|Bug|技术债/);
 });
 
 test("getCurrentLogRows displays specific rest action and output from ticker", () => {

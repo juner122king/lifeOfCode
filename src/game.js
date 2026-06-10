@@ -258,6 +258,7 @@ function createNewState(now = Date.now(), options = {}) {
     lastDayEndSummaryDay: null,
     dayEndSummaryPending: null,
     dayPhaseEvents: [],
+    triggeredNarrativeKeys: [],
     dayStartResources: null,
     triggeredWorldEvents: [],
     activeProjectDeadlines: {},
@@ -360,6 +361,7 @@ function normalizeState(raw, now = Date.now()) {
     triggeredWorldEvents: Array.isArray(raw && raw.triggeredWorldEvents) ? raw.triggeredWorldEvents.filter((id) => WORLD_EVENTS.some((event) => event.id === id)) : [],
     activeProjectDeadlines: normalizeProjectDeadlines(raw && raw.activeProjectDeadlines),
     warnedBugRiskThresholds: normalizeBugRiskThresholds(raw && raw.warnedBugRiskThresholds),
+    triggeredNarrativeKeys: Array.isArray(raw && raw.triggeredNarrativeKeys) ? [...new Set(raw.triggeredNarrativeKeys.filter((key) => typeof key === "string"))] : [],
     activityLevels: normalizeActivityMap(raw && raw.activityLevels, 1),
     activityExp: normalizeActivityMap(raw && raw.activityExp, 0),
     activityStats: normalizeActivityStats(raw && raw.activityStats),
@@ -843,9 +845,10 @@ function getEffectiveAttribute(state, attr) {
   return getBaseAttribute(state, attr) + getBreakthrough(state, attr) * 0.2;
 }
 
-function addAttributeExp(state, attr, amount) {
+function addAttributeExp(state, attr, amount, options = {}) {
   if (!ATTRIBUTE_IDS.includes(attr) || amount <= 0) return 0;
   let gained = 0;
+  const beforeValue = getBaseAttribute(state, attr);
   state.attributeExp[attr] = Math.max(0, Number(state.attributeExp[attr]) || 0) + amount;
 
   while (getBaseAttribute(state, attr) < 100) {
@@ -857,12 +860,13 @@ function addAttributeExp(state, attr, amount) {
     gained += 1;
   }
 
+  if (gained > 0) collectAttributeGrowthEvents(state, attr, beforeValue, getBaseAttribute(state, attr), options.events);
   return gained;
 }
 
-function applyAttributeExpRewards(state, rewards = {}) {
+function applyAttributeExpRewards(state, rewards = {}, options = {}) {
   for (const [attr, amount] of Object.entries(rewards || {})) {
-    addAttributeExp(state, attr, amount);
+    addAttributeExp(state, attr, amount, options);
   }
 }
 
@@ -1255,6 +1259,93 @@ function formatGameEvents(events = []) {
 function pushMessageEvent(messages, events, category, text, severity = "info") {
   if (Array.isArray(messages)) messages.push(text);
   pushGameEvent(events, category, text, severity);
+}
+
+function chooseNarrativeText(source, rng = Math.random) {
+  const messages = Array.isArray(source && source.messages) ? source.messages.filter(Boolean) : [];
+  if (messages.length) return String(messages[Math.min(messages.length - 1, Math.floor(rng() * messages.length))] || "");
+  return String(source && source.message || "");
+}
+
+function chooseTextVariant(values = [], rng = Math.random) {
+  const items = Array.isArray(values) ? values.filter(Boolean) : [];
+  if (!items.length) return "";
+  return String(items[Math.min(items.length - 1, Math.floor(rng() * items.length))] || "");
+}
+
+function markNarrativeTriggered(state, key) {
+  if (!key) return false;
+  state.triggeredNarrativeKeys = Array.isArray(state.triggeredNarrativeKeys) ? state.triggeredNarrativeKeys : [];
+  if (state.triggeredNarrativeKeys.includes(key)) return false;
+  state.triggeredNarrativeKeys.push(key);
+  return true;
+}
+
+function pushActivityNarrativeEvents(state, activity, beforeSeconds, afterSeconds, events, options = {}) {
+  const stages = Array.isArray(activity && activity.narrativeStages) ? activity.narrativeStages : [];
+  if (!Array.isArray(events) || !stages.length) return;
+  const rng = options.rng || Math.random;
+  const day = getWorldCalendar(state.worldTimeMinutes).day;
+  for (const stage of stages) {
+    const threshold = Math.max(1, Math.floor(Number(stage.seconds) || 0));
+    if (beforeSeconds >= threshold || afterSeconds < threshold) continue;
+    const key = `activity:${day}:${activity.id}:${threshold}`;
+    if (!markNarrativeTriggered(state, key)) continue;
+    const text = chooseTextVariant(stage.texts, rng);
+    if (text) pushGameEvent(events, "random", `活动片段：${activity.name}。${text}`);
+  }
+}
+
+function pushSkillLearningLogEvents(state, skill, beforeSeconds, currentProgress, events, options = {}) {
+  const logs = Array.isArray(skill && skill.learningLogs) ? skill.learningLogs : [];
+  if (!Array.isArray(events) || !logs.length) return;
+  const rng = options.rng || Math.random;
+  const day = getWorldCalendar(state.worldTimeMinutes).day;
+  const required = Math.max(1, Number(currentProgress && currentProgress.requiredSeconds) || Number(skill.learningSeconds) || 1);
+  for (let index = 0; index < logs.length; index += 1) {
+    const log = logs[index];
+    const threshold = Math.max(1, Math.floor(Number(log && log.seconds) || required * (index + 1) / (logs.length + 1)));
+    if (beforeSeconds >= threshold || currentProgress.workedSeconds < threshold) continue;
+    const key = `skill:${day}:${skill.id}:log:${index}`;
+    if (!markNarrativeTriggered(state, key)) continue;
+    const text = typeof log === "string" ? log : chooseTextVariant(log.texts || [log.text], rng);
+    if (text) pushGameEvent(events, "skill", `学习日志：${skill.name}。${text}`);
+  }
+}
+
+function formatProjectFeedback(project, success, rng = Math.random) {
+  const pool = success ? project.successFeedback : project.failureFeedback;
+  const fallback = success
+    ? [`客户反馈：“${project.name} 可以上线了，先让真实用户检验它。”`, "个人感悟：这次交付把想法变成了可以验收的成果。"]
+    : [`复盘记录：“${project.name} 暂时没能扛住验收，但暴露的问题足够具体。”`, "个人感悟：失败没有返还投入，却留下了下一轮更清楚的边界。"];
+  return chooseTextVariant(pool && pool.length ? pool : fallback, rng);
+}
+
+const ATTRIBUTE_GROWTH_LINES = {
+  logic: "你开始更早发现边界条件，方案评审里的问题也变得更尖锐。",
+  focus: "你能在更长的上下文里保持清醒，杂音不再轻易打断思路。",
+  learning: "你学会了把陌生概念拆成练习路径，吸收新技术不再全靠硬扛。",
+  communication: "你开始把技术判断翻译成人能听懂的取舍，协作成本明显下降。",
+  resilience: "线上抖动和临时变更不再立刻击穿心态，你能先止血再复盘。",
+  creativity: "你更擅长把零散想法拼成可交付的形状，方案里有了自己的味道。"
+};
+
+function collectAttributeGrowthEvents(state, attr, beforeValue, afterValue, events) {
+  if (!Array.isArray(events)) return;
+  for (const threshold of [20, 40, 60, 80]) {
+    if (beforeValue >= threshold || afterValue < threshold) continue;
+    const key = `attribute:${attr}:${threshold}`;
+    if (!markNarrativeTriggered(state, key)) continue;
+    pushGameEvent(events, "career", `成长：${ATTRIBUTE_NAMES[attr] || attr} 达到 ${threshold}。${ATTRIBUTE_GROWTH_LINES[attr] || "你感觉自己变得更可靠了一点。"}`, "good");
+  }
+  const card = characterCardById(state.characterCardId);
+  for (const node of card && Array.isArray(card.growthNodes) ? card.growthNodes : []) {
+    const threshold = Math.max(1, Math.floor(Number(node.threshold) || 0));
+    if (node.attr !== attr || beforeValue >= threshold || afterValue < threshold) continue;
+    const key = `card:${card.id}:${attr}:${threshold}`;
+    if (!markNarrativeTriggered(state, key)) continue;
+    pushGameEvent(events, "career", `人物成长：${card.name}。${node.text}`, "good");
+  }
 }
 
 function getTodaySummary(state) {
@@ -1766,16 +1857,18 @@ function settleActivity(state, activity, seconds, options = {}) {
   if (activity.id !== "rest" && energyCostPerGameMinute > 0 && seconds <= 0) {
     return { deltas: {}, levelUps: 0, lowEnergy: true };
   }
+  const beforeActivitySeconds = Number(state.activityStats.byActivity[activity.id]) || 0;
   const { entries, context } = calculateActivityDeltaEntries(state, activity, seconds, options);
   const deltas = applyActivityDeltaEntries(state, entries);
   state.stats.totalCodeLines += Math.max(0, deltas.codeLines || 0);
   state.stats.totalBugsFixed += Math.max(0, -(deltas.bugs || 0));
   state.activityStats.totalActiveSeconds += seconds;
   state.activityStats.byActivity[activity.id] = (state.activityStats.byActivity[activity.id] || 0) + seconds;
+  pushActivityNarrativeEvents(state, activity, beforeActivitySeconds, state.activityStats.byActivity[activity.id], options.events, options);
 
   const levelUps = addActivityExp(state, activity.id, activityRateToDelta(activity.activityExpPerHour, seconds) * context.attributeMultiplier * context.overtimeFactor * context.learningFocusFactor * context.qualityFactor * context.maintenanceFactor);
   for (const [attr, amount] of Object.entries(activity.attributeExpPerHour || {})) {
-    addAttributeExp(state, attr, activityRateToDelta(amount, seconds));
+    addAttributeExp(state, attr, activityRateToDelta(amount, seconds), { events: options.events });
   }
 
   return { deltas, levelUps, lowEnergy: activity.id !== "rest" && energyCostPerGameMinute > 0 && state.resources.energy <= 0 };
@@ -1837,19 +1930,23 @@ function clearCompletedSkillLearning(state) {
 
 function settleSkillLearning(state, skill, seconds, options = {}) {
   const progress = ensureSkillLearningProgress(state, skill.id);
+  const beforeSeconds = Number(progress.workedSeconds) || 0;
   progress.workedSeconds += seconds * (options.workMultiplier || 1);
   const currentProgress = getSkillLearningProgress(state, skill);
+  pushSkillLearningLogEvents(state, skill, beforeSeconds, currentProgress, options.events, options);
   if (currentProgress.workedSeconds < currentProgress.requiredSeconds) return [];
 
   const skillProgress = ensureSkillProgress(state, skill.id);
   skillProgress.level = Math.max(skillProgress.level, 1);
   clearSkillLearningProgress(state, skill.id);
   syncUnlockedSkills(state);
+  const completionText = skill.completionReflection ? `学习总结：${skill.completionReflection}` : "";
   const message = formatLines([
     `技能 ${skill.name} 学习完成，达到 ${SKILL_LEVEL_NAMES[1]}。`,
+    completionText,
     formatNextAdvice(state)
   ]);
-  pushGameEvent(options.events, "skill", `技能 ${skill.name} 学习完成，达到 ${SKILL_LEVEL_NAMES[1]}。`, "good");
+  pushGameEvent(options.events, "skill", `技能 ${skill.name} 学习完成，达到 ${SKILL_LEVEL_NAMES[1]}。${completionText ? completionText : ""}`, "good");
   return [message];
 }
 
@@ -1863,7 +1960,7 @@ function applyProjectRewards(state, project, options = {}) {
     state.resources.reputation += project.rewards.reputation || 0;
     state.completedProjects.push(project.id);
     state.stats.totalProjects += 1;
-    applyAttributeExpRewards(state, project.attributeExp);
+    applyAttributeExpRewards(state, project.attributeExp, { events: options.events });
   }
   return {
     firstSuccess,
@@ -1889,31 +1986,36 @@ function settleProject(state, project, seconds, options = {}) {
   const rng = options.rng || Math.random;
   const roll = rng();
   if (roll <= successRate) {
+    const feedback = formatProjectFeedback(project, true, rng);
     const rewardResult = applyProjectRewards(state, project, {
       rewardMultiplier: options.rewardMultiplier || 1,
-      skillExpMultiplier: options.skillExpMultiplier || 1
+      skillExpMultiplier: options.skillExpMultiplier || 1,
+      events: options.events
     });
     clearProjectProgress(state, project.id);
     messages.push(formatLines([
       `项目 ${project.name} 工时达标：成功率 ${formatPercent(successRate)}，交付成功。`,
+      feedback,
       `获得：${formatResourceList(rewardResult.rewards)}`,
       rewardResult.firstSuccess ? formatAttributeExpRewards(project.attributeExp) : "重复交付：声望、属性经验和完成计数不重复获得。",
       formatSkillExpRewards(rewardResult.skillExp),
       formatNextAdvice(state)
     ]));
-    pushGameEvent(options.events, "project", `项目 ${project.name} 交付成功。获得：${formatResourceList(rewardResult.rewards)}。`, "good");
+    pushGameEvent(options.events, "project", `项目 ${project.name} 交付成功。${feedback} 获得：${formatResourceList(rewardResult.rewards)}。`, "good");
     return messages;
   }
 
+  const feedback = formatProjectFeedback(project, false, rng);
   const failedSkillExp = addSkillExp(state, project.skillExpRewards, 0.4);
   clearProjectProgress(state, project.id);
   messages.push(formatLines([
     `项目 ${project.name} 工时达标：成功率 ${formatPercent(successRate)}，交付失败。`,
+    feedback,
     `投入资源全部损失：${formatProjectResourceList(project.requirements.resources || {})}`,
     formatSkillExpRewards(failedSkillExp),
     formatNextAdvice(state)
   ]));
-  pushGameEvent(options.events, "project", `项目 ${project.name} 交付失败，投入资源全部损失。`, "danger");
+  pushGameEvent(options.events, "project", `项目 ${project.name} 交付失败。${feedback} 投入资源全部损失。`, "danger");
   return messages;
 }
 
@@ -2658,7 +2760,7 @@ function settleTime(state, now = Date.now(), options = {}) {
       if (mode.type === "activity") {
         result.activityName = mode.item.name;
         result.activeName = mode.item.name;
-        const segment = settleActivity(state, mode.item, workSeconds, { overtime, energyCostPerGameMinute });
+        const segment = settleActivity(state, mode.item, workSeconds, { overtime, energyCostPerGameMinute, events, rng: options.rng });
         for (const [key, value] of Object.entries(segment.deltas || {})) {
           result.deltas[key] = (result.deltas[key] || 0) + value;
         }
@@ -2670,7 +2772,7 @@ function settleTime(state, now = Date.now(), options = {}) {
           const modifiers = getWorkModifiers(state, "skill", mode.item, overtime);
           const energyDelta = consumeWorkEnergy(state, energyCostPerGameMinute, workSeconds);
           if (energyDelta) result.deltas.energy = (result.deltas.energy || 0) + energyDelta;
-          messages.push(...settleSkillLearning(state, mode.item, workSeconds, { ...modifiers, events }));
+          messages.push(...settleSkillLearning(state, mode.item, workSeconds, { ...modifiers, events, rng: options.rng }));
           if (scheduleContext && getSkillLevel(state, mode.item.id) > 0) markSchedulePhaseDone(state, scheduleContext.phase.id);
         }
       } else if (mode.type === "project") {
@@ -2775,13 +2877,14 @@ function settleTime(state, now = Date.now(), options = {}) {
     const rng = options.rng || Math.random;
     if (rng() < eventChance) {
       const event = content.randomEvents[Math.floor(rng() * content.randomEvents.length)];
+      const eventText = chooseNarrativeText(event, rng);
       const beforeRandom = snapshotResources(state.resources);
       event.apply(state);
-      applyAttributeExpRewards(state, event.attributeExp);
+      applyAttributeExpRewards(state, event.attributeExp, { events });
       clampState(state);
-      messages.push(`随机事件：${event.name}。${event.message}`);
+      messages.push(`随机事件：${event.name}。${eventText}`);
       const randomSummary = formatChangedResources(beforeRandom, state.resources);
-      pushGameEvent(events, "random", `随机事件：${event.name}。${event.message}${randomSummary ? ` 本次变化：${randomSummary}。` : ""}`);
+      pushGameEvent(events, "random", `随机事件：${event.name}。${eventText}${randomSummary ? ` 本次变化：${randomSummary}。` : ""}`);
       collectBugRiskEvents(state, beforeRandom, snapshotResources(state.resources), events);
     }
   }
@@ -4350,8 +4453,10 @@ function promote(state) {
   state.currentRole = role.promoteTo;
   const nextRole = roleById(state.currentRole);
   applyAttributeExpRewards(state, nextRole.attributeExp);
+  const transitionStory = `职业转折：从 ${role.name} 到 ${nextRole.name}，你不再只是完成任务，也开始被期待拆解问题、承担结果。`;
   return formatLines([
     `晋升成功！当前职位：${nextRole.name}。`,
+    transitionStory,
     `固定精力上限：${ENERGY_MAX}。当前精力 ${formatNumber(state.resources.energy)}（${formatEnergyStatus(state)}）。`,
     formatAttributeExpRewards(nextRole.attributeExp),
     formatNextAdvice(state)

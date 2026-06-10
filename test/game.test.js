@@ -1295,15 +1295,15 @@ test("活动结算只显示可见整数变化并附带当前总数", () => {
   assert.doesNotMatch(message, /测试/);
 });
 
-test("settleTime 普通活动 tick 只更新 TUI ticker，不追加结构化事件", () => {
+test("settleTime 普通短 tick 只更新 TUI ticker，不追加结构化事件", () => {
   const now = 1_700_000_000_000;
   const state = createNewState(now);
   startActivity(state, "study");
 
-  const result = settleTime(state, now + 60_000, { randomEvents: false });
+  const result = settleTime(state, now + 30_000, { randomEvents: false });
 
   assert.equal(result.events.length, 0);
-  assert.match(result.ticker.join("\n"), /\[当前行动\] 系统学习 60 秒：/);
+  assert.match(result.ticker.join("\n"), /\[当前行动\] 系统学习 30 秒：/);
   assert.match(result.ticker.join("\n"), /知识 \+/);
 });
 
@@ -1433,9 +1433,12 @@ test("learn 消耗资源并启动耗时学习，完成后才解锁技能", () =>
   assert.equal(state.unlockedSkills.includes("html-css"), false);
 
   const result = settleTime(state, state.lastTick + 660_000, { randomEvents: false });
+  const eventLog = formatGameEvents(result.events).join("\n");
 
   assert.match(result.messages.join("\n"), /技能 HTML\/CSS 学习完成/);
-  assert.deepEqual(formatGameEvents(result.events).filter((line) => line.includes("HTML/CSS")), ["[技能] 技能 HTML/CSS 学习完成，达到 入门。"]);
+  assert.match(result.messages.join("\n"), /学习总结：/);
+  assert.match(eventLog, /\[技能\] 学习日志：HTML\/CSS/);
+  assert.match(eventLog, /\[技能\] 技能 HTML\/CSS 学习完成，达到 入门。学习总结：/);
   assert.ok(state.unlockedSkills.includes("html-css"));
   assert.equal(getSkillProgress(state, "html-css").level, 1);
   assert.equal(state.activeSkillLearningId, null);
@@ -1491,6 +1494,34 @@ test("随机事件返回随机分类事件并附带资源变化摘要", () => {
   assert.match(eventLog, /\[随机事件\] 随机事件：需求变更/);
   assert.match(eventLog, /本次变化：/);
   assert.match(eventLog, /技术债 \+/);
+});
+
+test("随机事件支持 messages 叙事变体并保留旧 message 兼容", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  state.worldTimeMinutes = 10 * 60;
+  const requirementChange = content.randomEvents.find((event) => event.id === "requirement-change");
+  const legacyOnly = { name: "旧事件", message: "旧消息仍可显示。" };
+
+  const result = settleTime(state, now + 3600_000, { randomEvents: true, rng: () => 0 });
+  const eventLog = formatGameEvents(result.events).join("\n");
+
+  assert.ok(Array.isArray(requirementChange.messages));
+  assert.match(eventLog, new RegExp(requirementChange.messages[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.equal(legacyOnly.message, "旧消息仍可显示。");
+});
+
+test("活动阶段叙事跨阈值触发且同日同阶段不重复", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  startActivity(state, "feature-coding");
+
+  const first = settleTime(state, now + 60_000, { randomEvents: false, rng: () => 0 });
+  const repeat = settleTime(state, state.lastTick + 1_000, { randomEvents: false, rng: () => 0 });
+  const eventLog = formatGameEvents(first.events).join("\n");
+
+  assert.match(eventLog, /\[随机事件\] 活动片段：写功能/);
+  assert.doesNotMatch(formatGameEvents(repeat.events).join("\n"), /活动片段：写功能/);
 });
 
 test("新增技能 TypeScript 满足属性和资源后进入学习队列", () => {
@@ -1666,9 +1697,12 @@ test("项目达标后会自动成功并发放奖励", () => {
   submitProject(state, "homepage");
 
   const result = settleActiveProjectToCompletion(state, () => 0);
+  const eventLog = formatGameEvents(result.events).join("\n");
 
   assert.match(result.messages.join("\n"), /交付成功/);
-  assert.match(formatGameEvents(result.events).join("\n"), /\[项目\] 项目 个人主页 交付成功/);
+  assert.match(result.messages.join("\n"), /客户反馈：|交付成果：/);
+  assert.match(eventLog, /\[项目\] 项目 个人主页 交付成功/);
+  assert.match(eventLog, /客户反馈：|交付成果：/);
   assert.equal(state.completedProjects.includes("homepage"), true);
   assert.equal(state.activeProjectId, null);
   assert.equal(state.projectProgress.homepage, undefined);
@@ -1745,14 +1779,33 @@ test("项目失败会清空进度且不返还已投入资源", () => {
   const afterInvestment = { codeLines: state.resources.codeLines, docs: state.resources.docs };
 
   const result = settleActiveProjectToCompletion(state, () => 1);
+  const eventLog = formatGameEvents(result.events).join("\n");
 
   assert.match(result.messages.join("\n"), /交付失败/);
-  assert.match(formatGameEvents(result.events).join("\n"), /\[项目\] 项目 个人主页 交付失败/);
+  assert.match(result.messages.join("\n"), /客户反馈：|复盘记录：/);
+  assert.match(eventLog, /\[项目\] 项目 个人主页 交付失败/);
+  assert.match(eventLog, /客户反馈：|复盘记录：/);
   assert.equal(state.completedProjects.includes("homepage"), false);
   assert.equal(state.activeProjectId, null);
   assert.equal(state.projectProgress.homepage, undefined);
   assert.equal(state.resources.codeLines, afterInvestment.codeLines);
   assert.equal(state.resources.docs, afterInvestment.docs);
+});
+
+test("属性成长事件跨阈值只触发一次并支持人物卡成长节点", () => {
+  const state = createNewState(1_700_000_000_000, { characterCardId: "indie-hacker" });
+  state.attributes.logic = 19;
+  state.attributeExp.logic = 0;
+  const events = [];
+
+  addAttributeExp(state, "logic", 200, { events });
+  addAttributeExp(state, "logic", 200, { events });
+  const eventLog = formatGameEvents(events).join("\n");
+
+  assert.match(eventLog, /\[职业\] 成长：逻辑 达到 20/);
+  assert.match(eventLog, /\[职业\] 人物成长：野路子独立开发者/);
+  assert.equal((eventLog.match(/成长：逻辑 达到 20/g) || []).length, 1);
+  assert.equal((eventLog.match(/人物成长：野路子独立开发者/g) || []).length, 1);
 });
 
 test("Deadline 首次逾期只返回一次警告事件", () => {
@@ -1848,6 +1901,7 @@ test("晋升会检查活动等级条件", () => {
 
   const message = promote(state);
   assert.match(message, /晋升成功/);
+  assert.match(message, /职业转折：从 实习程序员 到 初级程序员/);
   assert.doesNotMatch(message, /职位上限/);
   assert.equal(state.currentRole, "junior");
   assert.equal(state.resources.energy, 40);
