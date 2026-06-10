@@ -368,7 +368,7 @@ test("getInfoWindowRows merges current status with event history in short panels
   assert.match(rows.filter((row) => row.source === "event").at(-1)?.text, /已保存/);
 });
 
-test("getInfoWindowRows balances risks, advice, and recent events", () => {
+test("getInfoWindowRows omits ticker detail, advice, and resource status rows", () => {
   const state = createNewState(1_700_000_000_000);
   state.resources.energy = 12;
   state.resources.pressure = 85;
@@ -377,13 +377,115 @@ test("getInfoWindowRows balances risks, advice, and recent events", () => {
     { category: "random", text: "[随机事件] CI 绿了。" }
   ], 0).entries;
 
-  const rows = getInfoWindowRows(getGameViewModel(state), ["[当前状态] 活动 写功能。"], logs, 12);
+  const rows = getInfoWindowRows(getGameViewModel(state), [
+    "[当前状态] 活动 写功能。 | 已工作 1h",
+    "[阶段进度] 上午 ███░░░░░░░ 30%",
+    "[进度预览] 精力 12/100",
+    "[当前时间] D001 09:00"
+  ], logs, 12);
   const text = rows.map((row) => row.text).join("\n");
 
-  assert.ok(rows.some((row) => row.source === "current" && /精力/.test(row.text)));
-  assert.ok(rows.some((row) => row.kind === "advice"));
+  assert.match(text, /活动 写功能/);
+  assert.doesNotMatch(text, /\[当前时间\]|\[阶段进度\]|\[进度预览\]/);
+  assert.equal(rows.some((row) => row.kind === "advice"), false);
+  assert.equal(rows.some((row) => row.kind === "resource"), false);
+  assert.doesNotMatch(text, /建议|精力|压力|Bug|技术债/);
   assert.match(text, /CI 绿了/);
   assert.doesNotMatch(text, /本次变化|产出\/h/);
+});
+
+test("getInfoWindowRows enriches current info with non-resource context", () => {
+  const state = createNewState(1_700_000_000_000);
+  const baseView = getGameViewModel(state);
+  const view = {
+    ...baseView,
+    schedule: {
+      ...baseView.schedule,
+      confirmed: true,
+      waiting: false,
+      currentPhase: { id: "morning", name: "上午", timeRange: "09:00-12:00" }
+    },
+    activeProject: { id: "homepage", name: "个人主页", progressPercent: 42 },
+    activeSkillLearning: { id: "typescript", name: "TypeScript", progressPercent: 30 },
+    goals: {
+      ...baseView.goals,
+      currentMain: { id: "main", name: "找到第一份工作", status: "进行中", progress: "2/5" }
+    },
+    nearestDeadline: { name: "个人主页", dueDay: 5, daysRemaining: 2, overdue: false },
+    activeWorldEvents: [{ id: "ai-boom", name: "AI 热潮", message: "LLM Agent 学习与项目技能经验 x2。" }]
+  };
+  const logs = createLogEntries([{ category: "system", text: "[系统] 已保存。" }], 0).entries;
+  const rows = getInfoWindowRows(view, ["[当前状态] 活动 写功能。"], logs, 12);
+  const text = rows.map((row) => row.text).join("\n");
+
+  assert.match(text, /\[阶段\] 上午 09:00-12:00/);
+  assert.match(text, /\[项目\] 个人主页 42%/);
+  assert.match(text, /\[学习\] TypeScript 30%/);
+  assert.match(text, /\[目标\] 找到第一份工作 进行中 2\/5/);
+  assert.match(text, /\[Deadline\] 个人主页 D005/);
+  assert.match(text, /\[世界\] AI 热潮/);
+  assert.doesNotMatch(text, /精力|压力|Bug|技术债|建议/);
+});
+
+test("getInfoWindowRows shows active activity level progress after current status", () => {
+  const state = createNewState(1_700_000_000_000);
+  const baseView = getGameViewModel(state);
+  const view = {
+    ...baseView,
+    activeActivity: { id: "feature-coding", name: "写功能", level: 3 },
+    activityLevels: [
+      { id: "study", name: "系统学习", level: 1, exp: 0, nextExp: 200, active: false },
+      { id: "feature-coding", name: "写功能", level: 3, exp: 342, nextExp: 440, active: true }
+    ],
+    schedule: {
+      ...baseView.schedule,
+      confirmed: true,
+      waiting: false,
+      currentPhase: { id: "morning", name: "上午", timeRange: "09:00-12:00" }
+    }
+  };
+
+  const rows = getInfoWindowRows(view, ["[当前状态] 活动 写功能。"], [], 8);
+  const currentIndex = rows.findIndex((row) => row.text.includes("[当前状态]"));
+  const progressIndex = rows.findIndex((row) => row.id === "info-current-context-activity-exp");
+  const phaseIndex = rows.findIndex((row) => row.id === "info-current-context-phase");
+
+  assert.ok(currentIndex >= 0);
+  assert.equal(progressIndex, currentIndex + 1);
+  assert.equal(phaseIndex > progressIndex, true);
+  assert.match(rows[progressIndex].text, /^\[Lv\.3\] \[[#=\-]{18}\] 77% 342\/440$/);
+});
+
+test("getInfoWindowRows omits activity level progress without an active activity or next exp", () => {
+  const state = createNewState(1_700_000_000_000);
+  const baseView = getGameViewModel(state);
+  const inactiveRows = getInfoWindowRows({
+    ...baseView,
+    activeActivity: null,
+    activityLevels: [{ id: "feature-coding", name: "写功能", level: 3, exp: 342, nextExp: 440, active: true }]
+  }, ["[当前状态] 休整。"], [], 8);
+  const cappedRows = getInfoWindowRows({
+    ...baseView,
+    activeActivity: { id: "feature-coding", name: "写功能", level: 3 },
+    activityLevels: [{ id: "feature-coding", name: "写功能", level: 3, exp: 342, nextExp: 0, active: true }]
+  }, ["[当前状态] 活动 写功能。"], [], 8);
+
+  assert.equal(inactiveRows.some((row) => /\[Lv\.\d+\]/.test(row.text)), false);
+  assert.equal(cappedRows.some((row) => /\[Lv\.\d+\]/.test(row.text)), false);
+});
+
+test("getInfoWindowRows keeps rest status but strips resource effect details", () => {
+  const rows = getInfoWindowRows(
+    getGameViewModel(createNewState(1_700_000_000_000)),
+    ["[当前状态] 健康休整：恢复精力，降低压力 | 刚开始新的一天"],
+    [],
+    5
+  );
+  const text = rows.map((row) => row.text).join("\n");
+
+  assert.match(text, /\[当前状态\] 健康休整/);
+  assert.doesNotMatch(text, /精力|压力|建议/);
+  assert.ok(rows.some((row) => row.source === "event" && row.empty));
 });
 
 test("getInfoWindowRows keeps command echoes out and latest event at the bottom", () => {
@@ -611,9 +713,9 @@ test("formatOptionDetail summarizes common option fields", () => {
     { label: "输出", value: "收益/游戏小时：知识 +17.95" },
     { label: "花费", value: "知识 100" },
     { label: "作用", value: "代码产出 +2%" },
-    { label: "缺口", value: "金钱 20" },
-    { label: "命令", value: "learn react" }
+    { label: "缺口", value: "金钱 20" }
   ]);
+  assert.equal(details.some((entry) => entry.label === "命令" || entry.value === "learn react"), false);
 });
 
 test("getOptionProgress freezes animated progress while paused", () => {

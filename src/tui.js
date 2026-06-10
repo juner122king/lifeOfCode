@@ -300,26 +300,147 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
   return rows.slice(0, Math.max(1, Math.floor(Number(availableHeight) || 1)));
 }
 
-function selectInfoCurrentRows(rows, limit) {
+const INFO_TICKER_HIDDEN_PREFIXES = ["[当前时间]", "[阶段进度]", "[进度预览]"];
+const INFO_RESOURCE_PATTERN = /精力|压力|Bug|技术债/;
+
+function isInfoTickerRow(row) {
+  const text = String(row && row.text || "").trim();
+  if (!text) return false;
+  if (INFO_TICKER_HIDDEN_PREFIXES.some((prefix) => text.startsWith(prefix))) return false;
+  return text.startsWith("[当前行动]") || text.startsWith("[当前状态]") || text.startsWith("[阶段转换]") || text.startsWith("[提前完成]") || text.startsWith("[一天结束]");
+}
+
+function sanitizeInfoTickerText(text) {
+  const withoutInlineMeta = String(text || "").split(" | ")[0].trim();
+  if (!INFO_RESOURCE_PATTERN.test(withoutInlineMeta)) return withoutInlineMeta;
+  return withoutInlineMeta.split("：")[0].trim();
+}
+
+function formatInfoLevelProgressBar(percent, width = 18) {
+  const safeWidth = Math.max(1, Math.floor(Number(width) || 18));
+  const safePercent = Math.max(0, Math.min(100, Math.floor(Number(percent) || 0)));
+  const filled = Math.round(safePercent / 100 * safeWidth);
+  return `[${Array.from({ length: safeWidth }, (_, index) => {
+    if (index >= filled) return "-";
+    return index === filled - 1 && filled < safeWidth ? "=" : "#";
+  }).join("")}]`;
+}
+
+function createInfoActivityLevelRow(view) {
+  if (!view || !view.activeActivity || !Array.isArray(view.activityLevels)) return null;
+  const activeLevel = view.activityLevels.find((activity) => activity && activity.active === true && activity.id === view.activeActivity.id);
+  if (!activeLevel || !(Number(activeLevel.nextExp) > 0)) return null;
+  const level = Math.max(1, Math.floor(Number(activeLevel.level) || Number(view.activeActivity.level) || 1));
+  const exp = Math.max(0, Math.floor(Number(activeLevel.exp) || 0));
+  const nextExp = Math.max(1, Math.floor(Number(activeLevel.nextExp) || 1));
+  const percent = Math.max(0, Math.min(100, Math.floor(exp / nextExp * 100)));
+  return {
+    id: "context-activity-exp",
+    kind: "context",
+    text: `[Lv.${level}] ${formatInfoLevelProgressBar(percent)} ${percent}% ${exp}/${nextExp}`,
+    priority: 2
+  };
+}
+
+function createInfoContextRows(view) {
+  const rows = [];
+  const activityLevelRow = createInfoActivityLevelRow(view);
+  if (activityLevelRow) rows.push(activityLevelRow);
+  const schedule = view && view.schedule ? view.schedule : null;
+  if (schedule) {
+    if (schedule.waiting || !schedule.confirmed) {
+      rows.push({
+        id: "context-schedule",
+        kind: "context",
+        text: "[日程] 等待安排并确认今日日程。",
+        priority: 3
+      });
+    } else if (schedule.currentPhase) {
+      rows.push({
+        id: "context-phase",
+        kind: "context",
+        text: `[阶段] ${schedule.currentPhase.name} ${schedule.currentPhase.timeRange}`,
+        priority: 3
+      });
+    }
+  }
+
+  if (view && view.activeProject) {
+    rows.push({
+      id: "context-project",
+      kind: "context",
+      text: `[项目] ${view.activeProject.name} ${Math.floor(Number(view.activeProject.progressPercent) || 0)}%`,
+      priority: 4
+    });
+  }
+  if (view && view.activeSkillLearning) {
+    rows.push({
+      id: "context-skill",
+      kind: "context",
+      text: `[学习] ${view.activeSkillLearning.name} ${Math.floor(Number(view.activeSkillLearning.progressPercent) || 0)}%`,
+      priority: 4
+    });
+  }
+
+  const currentMain = view && view.goals && view.goals.currentMain;
+  if (currentMain) {
+    rows.push({
+      id: "context-goal",
+      kind: "context",
+      text: `[目标] ${currentMain.name} ${currentMain.status} ${currentMain.progress}`,
+      priority: 5
+    });
+  }
+
+  const deadline = view && view.nearestDeadline;
+  if (deadline) {
+    const due = Number.isFinite(Number(deadline.dueDay)) ? `D${String(Math.floor(Number(deadline.dueDay))).padStart(3, "0")}` : "D---";
+    const distance = deadline.overdue
+      ? `已逾期 ${Math.abs(Math.floor(Number(deadline.daysRemaining) || 0))} 天`
+      : `剩余 ${Math.floor(Number(deadline.daysRemaining) || 0)} 天`;
+    rows.push({
+      id: "context-deadline",
+      kind: "context",
+      text: `[Deadline] ${deadline.name || "项目"} ${due}（${distance}）`,
+      priority: 6
+    });
+  }
+
+  const worldEvent = view && Array.isArray(view.activeWorldEvents) ? view.activeWorldEvents[0] : null;
+  if (worldEvent) {
+    rows.push({
+      id: "context-world",
+      kind: "context",
+      text: `[世界] ${worldEvent.name}：${worldEvent.message}`,
+      priority: 7
+    });
+  }
+
+  return rows;
+}
+
+function getInfoCurrentRows(view, ticker = null, limit = 6) {
   const safeLimit = Math.max(0, Math.floor(Number(limit) || 0));
   if (safeLimit <= 0) return [];
-  const candidates = rows.filter((row) => row && row.kind !== "separator" && String(row.text || "").trim());
+  const tickerRows = normalizeTickerRows(ticker)
+    .map((row, index) => ({
+      ...row,
+      id: index === 0 ? "current-status" : row.id,
+      kind: "status",
+      text: sanitizeInfoTickerText(row.text),
+      priority: 1
+    }))
+    .filter(isInfoTickerRow);
+  const candidates = [...tickerRows, ...createInfoContextRows(view)]
+    .filter((row) => !INFO_RESOURCE_PATTERN.test(String(row.text || "")));
   const selected = [];
   const selectedIds = new Set();
-  const addMatches = (predicate) => {
-    for (const row of candidates) {
-      if (selected.length >= safeLimit) return;
-      if (selectedIds.has(row.id) || !predicate(row)) continue;
-      selected.push(row);
-      selectedIds.add(row.id);
-    }
-  };
-
-  addMatches((row) => row.kind === "status");
-  addMatches((row) => row.kind === "resource" && (row.priority <= 2 || String(row.text || "").includes("⚠")));
-  addMatches((row) => row.kind === "advice");
-  addMatches((row) => row.kind === "resource");
-  addMatches(() => true);
+  for (const row of candidates.sort((a, b) => (a.priority || 99) - (b.priority || 99))) {
+    if (selected.length >= safeLimit) break;
+    if (selectedIds.has(row.id)) continue;
+    selected.push(row);
+    selectedIds.add(row.id);
+  }
   return selected;
 }
 
@@ -333,9 +454,9 @@ function getInfoWindowRows(view, ticker = null, logs = [], availableHeight = 12)
   const visibleEventCount = Array.isArray(logs) ? logs.filter((log) => isEventLog(log) && !log.empty).length : 0;
   const reserveEventRows = capacity >= 2 ? 1 : 0;
   const reserveSeparator = capacity >= 4 ? 1 : 0;
-  const currentPool = selectInfoCurrentRows(getCurrentLogRows(view, ticker, Math.max(20, capacity)), capacity);
+  const currentPool = getInfoCurrentRows(view, ticker, capacity);
   const eventPool = getLogRows(logs, Math.max(MAX_LOGS, capacity))
-    .filter((row) => !row.empty);
+    .filter((row) => !row.empty && !INFO_RESOURCE_PATTERN.test(String(row.text || "")));
   if (!eventPool.length) eventPool.push({ id: "empty-message", text: "暂无日志。", empty: true });
 
   let currentLimit = Math.min(currentBase, currentPool.length, Math.max(1, capacity - reserveEventRows - reserveSeparator));
@@ -850,8 +971,7 @@ function formatOptionDetail(option) {
     option.rewards && { label: "奖励", value: option.rewards },
     option.cost && { label: "花费", value: option.cost },
     option.effects && { label: "作用", value: option.effects },
-    option.missing && { label: "缺口", value: option.missing },
-    option.command && { label: "命令", value: option.command }
+    option.missing && { label: "缺口", value: option.missing }
   ].filter((entry) => entry && String(entry.value || "").trim());
 }
 
@@ -1314,26 +1434,23 @@ async function startTui() {
         if (row.source === "separator") {
           return h(Text, { key: row.id, color: THEME.panel }, "─".repeat(Math.max(8, width - 4)));
         }
-        const resourceTone = row.resource ? toneForResource(row.resource) : row.resourceId === "weeklyFocus" ? { color: THEME.status.info } : null;
         const eventTone = row.source === "event"
           ? row.empty
             ? { color: THEME.muted, bold: false, dim: true }
             : toneForLog(row, row.eventId === latestEventId ? 0 : 1)
           : null;
-        const color = resourceTone
-          ? resourceTone.color
-          : eventTone
+        const color = eventTone
             ? eventTone.color
             : row.kind === "status"
               ? THEME.status.info
-              : row.kind === "advice"
-                ? THEME.status.good
+              : row.kind === "context"
+                ? THEME.text
                 : THEME.muted;
-        const prefix = row.source === "event" ? "• " : row.kind === "resource" ? "! " : "";
+        const prefix = row.source === "event" ? "• " : "";
         return h(Text, {
           key: row.id,
           color,
-          bold: row.kind === "status" || (resourceTone && resourceTone.label === "critical") || (eventTone && eventTone.bold),
+          bold: row.kind === "status" || (eventTone && eventTone.bold),
           dimColor: eventTone ? eventTone.dim : false
         }, trimText(`${prefix}${row.text || " "}`, Math.max(16, width - 4)));
       })
