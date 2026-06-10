@@ -3,7 +3,8 @@ const MIN_LOG_PANEL_HEIGHT = 8;
 const MIN_LIST_PAGE_SIZE = 3;
 const DEFAULT_TERMINAL_ROWS = 24;
 const DEFAULT_TERMINAL_COLUMNS = 80;
-const TOP_BAR_HEIGHT = 4;
+const TOP_BAR_HEIGHT = 3;
+const TAB_BAR_HEIGHT = 1;
 
 function getPageWindow(optionsLength, selectedIndex, pageSize) {
   const length = Math.max(0, Math.floor(Number(optionsLength) || 0));
@@ -23,8 +24,9 @@ function calculateLayoutBudget(rows, columns) {
   const compact = terminalRows <= 24;
   const narrow = terminalColumns < 100;
   const topHeight = TOP_BAR_HEIGHT;
+  const tabHeight = TAB_BAR_HEIGHT;
   const footerHeight = 3;
-  const contentHeight = terminalRows - topHeight - footerHeight;
+  const contentHeight = terminalRows - topHeight - tabHeight - footerHeight;
   const logHeightRatio = narrow ? (compact ? 0.53 : 0.48) : 0.45;
   const logHeight = Math.max(MIN_LOG_PANEL_HEIGHT, Math.floor(contentHeight * logHeightRatio));
   const mainHeight = Math.max(6, contentHeight - logHeight);
@@ -42,6 +44,7 @@ function calculateLayoutBudget(rows, columns) {
     terminalColumns,
     narrow,
     topHeight,
+    tabHeight,
     footerHeight,
     logHeight,
     mainHeight,
@@ -62,6 +65,7 @@ module.exports = {
   MIN_EVENT_HISTORY_ROWS,
   MIN_LIST_PAGE_SIZE,
   MIN_LOG_PANEL_HEIGHT,
+  TAB_BAR_HEIGHT,
   TOP_BAR_HEIGHT,
   calculateLayoutBudget,
   getPageWindow

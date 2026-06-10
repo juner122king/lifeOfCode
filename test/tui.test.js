@@ -134,7 +134,8 @@ test("calculateLayoutBudget returns a compact 24 row budget with a usable list",
 
   assert.equal(budget.terminalRows, 24);
   assert.equal(budget.narrow, true);
-  assert.equal(budget.topHeight, 4);
+  assert.equal(budget.topHeight, 3);
+  assert.equal(budget.tabHeight, 1);
   assert.equal(budget.logHeight, 9);
   assert.equal(budget.mainHeight, 8);
   assert.equal(budget.listHeight, 5);
@@ -142,7 +143,7 @@ test("calculateLayoutBudget returns a compact 24 row budget with a usable list",
   assert.equal(budget.logDirection, "column");
   assert.equal(budget.currentLogHeight + budget.eventLogHeight, budget.logHeight);
   assert.ok(budget.pageSize >= 3);
-  assert.equal(budget.topHeight + budget.footerHeight + budget.logHeight + budget.mainHeight, 24);
+  assert.equal(budget.topHeight + budget.tabHeight + budget.footerHeight + budget.logHeight + budget.mainHeight, 24);
 });
 
 test("calculateLayoutBudget falls back to 24 rows and expands taller terminals", () => {
@@ -151,11 +152,13 @@ test("calculateLayoutBudget falls back to 24 rows and expands taller terminals",
 
   assert.equal(fallback.terminalRows, 24);
   assert.equal(fallback.terminalColumns, 80);
-  assert.equal(fallback.topHeight, 4);
+  assert.equal(fallback.topHeight, 3);
+  assert.equal(fallback.tabHeight, 1);
   assert.equal(fallback.logHeight, 9);
   assert.equal(fallback.logDirection, "column");
 
-  assert.equal(tall.topHeight, 4);
+  assert.equal(tall.topHeight, 3);
+  assert.equal(tall.tabHeight, 1);
   assert.equal(tall.logHeight, 13);
   assert.equal(tall.mainHeight, 16);
   assert.equal(tall.logDirection, "row");

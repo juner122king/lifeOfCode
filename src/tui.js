@@ -1057,7 +1057,7 @@ async function startTui() {
   }
 
   function TabBar({ activePanel }) {
-    return h(Box, { gap: 1 },
+    return h(Box, { gap: 1, height: 1, overflow: "hidden", overflowX: "hidden" },
       ...PANELS.map((panel) => {
         const active = panel.id === activePanel;
         const color = THEME.panels[panel.id] || THEME.status.neutral;
@@ -1072,7 +1072,7 @@ async function startTui() {
     );
   }
 
-  function TopBar({ view, paused, activePanel, budget }) {
+  function TopBar({ view, paused, budget }) {
     const boxWidth = Math.max(20, budget.terminalColumns - 2);
     const contentWidth = Math.max(10, boxWidth);
     const rows = formatTopStatusSegmentRows(view, paused, contentWidth);
@@ -1095,8 +1095,7 @@ async function startTui() {
             bold: segment.bold
           }, segment.text))
         )
-      )),
-      h(TabBar, { activePanel })
+      ))
     );
   }
 
@@ -1722,8 +1721,9 @@ async function startTui() {
     });
 
     return h(Box, { flexDirection: "column", paddingX: 1 },
-      h(TopBar, { view, paused, activePanel, budget }),
+      h(TopBar, { view, paused, budget }),
       h(MemoLogPanel, { ticker, logs, view, budget }),
+      h(TabBar, { activePanel }),
       dailyPlannerMode
         ? h(DailyPlannerPanel, { view, phaseId: schedulePhase, kind: dailyPlannerKind, options, selectedIndex, budget, paused })
         : activePanel === "cards" && !needsInitialProfile
