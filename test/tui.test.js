@@ -321,7 +321,7 @@ test("getCurrentLogRows includes status, advice, weekly focus, and key resources
   assert.doesNotMatch(rows.map((row) => row.text).join("\n"), /今日预算/);
 });
 
-test("getCurrentLogRows prioritizes compact action details in short panels", () => {
+test("getCurrentLogRows omits actual delta and output-rate rows in short panels", () => {
   const state = createNewState(1_700_000_000_000);
   processCommand(state, "plan morning activity feature-coding", { randomEvents: false });
   processCommand(state, "plan afternoon activity study", { randomEvents: false });
@@ -338,8 +338,9 @@ test("getCurrentLogRows prioritizes compact action details in short panels", () 
 
   assert.equal(rows.length <= 5, true);
   assert.match(rows.find((row) => row.id === "current-status")?.text, /活动 写功能/);
-  assert.match(rows.find((row) => row.id === "current-actual-output")?.text, /本次变化/);
-  assert.match(rows.find((row) => row.id === "current-output-rate")?.text, /产出\/h/);
+  assert.equal(rows.find((row) => row.id === "current-actual-output"), undefined);
+  assert.equal(rows.find((row) => row.id === "current-output-rate"), undefined);
+  assert.doesNotMatch(rows.map((row) => row.text).join("\n"), /本次变化|产出\/h/);
   assert.match(rows.find((row) => row.id === "current-resources-compact")?.text, /精力/);
 });
 

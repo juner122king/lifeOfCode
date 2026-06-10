@@ -19,7 +19,6 @@ const {
   writeLastProfileId
 } = require("./game");
 const {
-  RESOURCE_NAMES,
   SCHEDULE_PHASES
 } = require("./core/constants");
 const {
@@ -182,76 +181,6 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
     return "";
   }
 
-  // 格式化实际产出（每秒实际变化，不累加）
-  function formatActualOutput(deltas) {
-    if (!deltas || Object.keys(deltas).length === 0) return null;
-
-    const parts = [];
-
-    // 按资源类型排序：正收益优先
-    const sorted = Object.entries(deltas).sort(([, a], [, b]) => b - a);
-
-    for (const [key, value] of sorted) {
-      const numValue = Number(value) || 0;
-      if (Math.abs(numValue) < 0.01) continue;
-
-      const resourceName = RESOURCE_NAMES[key] || key;
-      const formatted = Math.abs(numValue) >= 1
-        ? Math.floor(Math.abs(numValue)).toString()
-        : numValue.toFixed(1);
-
-      if (numValue > 0) {
-        parts.push(`${resourceName}+${formatted}`);
-      } else {
-        parts.push(`${resourceName}${formatted}`);
-      }
-    }
-
-    return parts.length > 0 ? `本次变化: ${parts.join(" ")}` : null;
-  }
-
-  // 格式化产出率信息（每小时）
-  function formatOutputRate(view) {
-    if (!view) return null;
-
-    // 获取当前活动
-    const activity = view.activeActivity;
-    const project = view.activeProject;
-    const skill = view.activeSkillLearning;
-
-    if (!activity && !project && !skill) return null;
-
-    // 使用 view 中的 currentOutputRate
-    const rate = view.currentOutputRate;
-    if (!rate || Object.keys(rate).length === 0) return null;
-
-    const gains = [];
-    const costs = [];
-
-    // 区分收益和消耗
-    for (const [key, value] of Object.entries(rate)) {
-      const numValue = Number(value) || 0;
-      if (Math.abs(numValue) < 0.01) continue;
-
-      const resourceName = RESOURCE_NAMES[key] || key;
-      const formatted = Math.abs(numValue) >= 1
-        ? Math.floor(Math.abs(numValue)).toString()
-        : numValue.toFixed(1);
-
-      if (numValue > 0) {
-        gains.push(`${resourceName}+${formatted}`);
-      } else {
-        costs.push(`${resourceName}${formatted}`);
-      }
-    }
-
-    const parts = [];
-    if (gains.length > 0) parts.push(`产出/h: ${gains.join(" ")}`);
-    if (costs.length > 0) parts.push(`消耗: ${costs.join(" ")}`);
-
-    return parts.length > 0 ? parts.join(" | ") : null;
-  }
-
   // 第一组：当前状态（ticker 信息）
   if (tickerRows.length >= 3) {
     // 特殊状态：一天结束、阶段转换、提前完成
@@ -275,30 +204,8 @@ function getCurrentLogRows(view, ticker = null, availableHeight = 20, actualDelt
     });
   }
 
-  // 添加实际产出（每秒实际变化，不累加）
-  const actualOutput = formatActualOutput(actualDeltas);
-  if (actualOutput && availableHeight >= 4) {
-    rows.push({
-      id: "current-actual-output",
-      kind: "actual",
-      text: actualOutput,
-      priority: 2
-    });
-  }
-
-  // 添加产出率信息（理论每小时）
-  const outputRate = formatOutputRate(view);
-  if (outputRate && availableHeight >= 5) {
-    rows.push({
-      id: "current-output-rate",
-      kind: "rate",
-      text: outputRate,
-      priority: 3
-    });
-  }
-
   // 分隔行（仅在空间足够时）
-  if (availableHeight >= 8 && (tickerRows.length > 0 || outputRate)) {
+  if (availableHeight >= 8 && tickerRows.length > 0) {
     rows.push({
       id: "separator-1",
       kind: "separator",
