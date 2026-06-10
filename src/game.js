@@ -244,6 +244,7 @@ function createNewState(now = Date.now(), options = {}) {
     activeActivityId: null,
     activeProjectId: null,
     projectProgress: {},
+    dayStartProjectProgress: {},
     worldTimeMinutes: WORLD_START_MINUTES,
     scheduleDraft: createScheduleDraft(1),
     lockedSchedule: null,
@@ -254,6 +255,10 @@ function createNewState(now = Date.now(), options = {}) {
     lifestyleStanceId: "health",
     pendingLifestyleStanceId: null,
     lastMorningTransitionDay: 1,
+    lastDayEndSummaryDay: null,
+    dayEndSummaryPending: null,
+    dayPhaseEvents: [],
+    dayStartResources: null,
     triggeredWorldEvents: [],
     activeProjectDeadlines: {},
     warnedBugRiskThresholds: [],
@@ -282,6 +287,7 @@ function createNewState(now = Date.now(), options = {}) {
     }
   };
   if (options.characterCardId) applyCharacterCard(state, options.characterCardId);
+  state.dayStartResources = snapshotResources(state.resources);
   return state;
 }
 
@@ -378,6 +384,17 @@ function normalizeState(raw, now = Date.now()) {
     normalized.activeProjectId = null;
   }
   if (normalized.activeProjectId) normalized.activeActivityId = null;
+  normalized.dayStartResources = normalized.dayStartResources && typeof normalized.dayStartResources === "object"
+    ? normalizeResources(normalized.dayStartResources, snapshotResources(normalized.resources))
+    : snapshotResources(normalized.resources);
+  normalized.dayStartProjectProgress = normalized.dayStartProjectProgress && typeof normalized.dayStartProjectProgress === "object"
+    ? Object.fromEntries(Object.entries(normalized.dayStartProjectProgress)
+      .filter(([id, value]) => projectById(id) && Number.isFinite(Number(value)))
+      .map(([id, value]) => [id, Math.max(0, Number(value) || 0)]))
+    : snapshotProjectProgress(normalized);
+  normalized.dayPhaseEvents = Array.isArray(normalized.dayPhaseEvents)
+    ? normalized.dayPhaseEvents.filter((event) => event && typeof event === "object" && event.id && event.phaseId)
+    : [];
   if (!normalized.lockedSchedule) normalized.waitingForSchedule = true;
   if (normalized.lockedSchedule) normalized.scheduleDraft = normalizeSchedule(normalized.scheduleDraft, normalized.lockedSchedule.day);
   delete normalized.dailyActionMinutesUsed;
@@ -758,6 +775,8 @@ function applyMorningTransitionIfDue(state, messages = [], events = []) {
 
   // 记录一天开始的资源快照
   state.dayStartResources = snapshotResources(state.resources);
+  state.dayStartProjectProgress = snapshotProjectProgress(state);
+  state.dayPhaseEvents = [];
 
   clampState(state);
 
@@ -1021,6 +1040,15 @@ function getProjectProgress(state, projectOrId) {
   };
 }
 
+function snapshotProjectProgress(state) {
+  const snapshot = {};
+  for (const project of content.projects || []) {
+    const progress = getProjectProgress(state, project);
+    if (progress.workedSeconds > 0) snapshot[project.id] = progress.workedSeconds;
+  }
+  return snapshot;
+}
+
 function roleMeets(currentRole, requiredRole) {
   const currentRank = roleRank(currentRole);
   const requiredRank = roleRank(requiredRole);
@@ -1280,8 +1308,6 @@ function getNextMilestone(state) {
 }
 
 function createTuiTicker(state, result = null, changedResources = "") {
-  syncScheduledActiveMode(state);
-
   // 检测一天结束状态
   if (state.dayEndSummaryPending) {
     const summary = state.dayEndSummaryPending.summary;
@@ -1299,6 +1325,8 @@ function createTuiTicker(state, result = null, changedResources = "") {
       `[资源变化] ${resourceStr}`
     ];
   }
+
+  syncScheduledActiveMode(state);
 
   // 检测阶段转换状态
   if (state.phaseTransitionPending) {
@@ -2148,13 +2176,13 @@ function isScheduledSlotFinished(state, phaseId, slot) {
   return false;
 }
 
-function shouldTriggerDayEndSummary(state) {
-  // 检查是否到达 21:00
+function shouldTriggerDayEndSummary(state, endedDay = null) {
+  // 检查是否到达 24:00 跨日边界
   const minuteOfDay = state.worldTimeMinutes % MINUTES_PER_DAY;
-  if (minuteOfDay !== 21 * 60) return false;
+  if (minuteOfDay !== 0) return false;
 
   // 检查是否已经触发过今天的总结
-  const currentDay = getWorldCalendar(state.worldTimeMinutes).day;
+  const currentDay = endedDay || getWorldCalendar(Math.max(0, state.worldTimeMinutes - 1)).day;
   if (state.lastDayEndSummaryDay === currentDay) return false;
 
   // 只在有锁定日程的情况下触发（避免影响手动模式和测试）
@@ -2163,8 +2191,77 @@ function shouldTriggerDayEndSummary(state) {
   return true;
 }
 
-function generateDayEndSummary(state) {
-  const calendar = getWorldCalendar(state.worldTimeMinutes);
+function getScheduleSlotDisplayName(slot) {
+  if (!slot) return "未安排";
+  if (slot.type === "none") return "晚间放松";
+  if (slot.type === "activity") return activityById(slot.id)?.name || slot.id;
+  if (slot.type === "skill") return itemById(content.skills, slot.id)?.name || slot.id;
+  if (slot.type === "project") return projectById(slot.id)?.name || slot.id;
+  return slot.id || "未知任务";
+}
+
+function getProjectProgressDeltas(state) {
+  const start = state.dayStartProjectProgress && typeof state.dayStartProjectProgress === "object" ? state.dayStartProjectProgress : {};
+  return content.projects
+    .map((project) => {
+      const progress = getProjectProgress(state, project);
+      const startWorkedSeconds = Math.max(0, Number(start[project.id]) || 0);
+      const deltaSeconds = Math.max(0, progress.workedSeconds - startWorkedSeconds);
+      if (deltaSeconds <= 0) return null;
+      const startPercent = progress.requiredSeconds > 0 ? Math.min(100, startWorkedSeconds / progress.requiredSeconds * 100) : 100;
+      const endPercent = progress.requiredSeconds > 0 ? Math.min(100, progress.workedSeconds / progress.requiredSeconds * 100) : 100;
+      return {
+        id: project.id,
+        name: project.name,
+        startPercent,
+        endPercent,
+        deltaPercent: Math.max(0, endPercent - startPercent),
+        deltaSeconds
+      };
+    })
+    .filter(Boolean);
+}
+
+function getDayEndHealthTags(state) {
+  const tags = [];
+  const energy = Number(state.resources.energy) || 0;
+  const pressure = Number(state.resources.pressure) || 0;
+  const bugs = Number(state.resources.bugs) || 0;
+  const techDebt = Number(state.resources.techDebt) || 0;
+  if (energy <= 20) tags.push("极度疲劳");
+  else if (energy <= 45) tags.push("需要休息");
+  else tags.push("尚可");
+  if (pressure >= 75) tags.push("高压预警");
+  else if (pressure >= 45) tags.push("中度焦虑");
+  if (bugs >= 25) tags.push("线上火苗");
+  if (techDebt >= 50) tags.push("技术债压顶");
+  if (energy <= 25 && pressure >= 45) tags.push("颈椎僵硬");
+  return [...new Set(tags)];
+}
+
+function generateDayEndCommentary(state, resourceDeltas = {}) {
+  const code = Number(resourceDeltas.codeLines) || 0;
+  const bugs = Number(resourceDeltas.bugs) || 0;
+  const docs = Number(resourceDeltas.docs) || 0;
+  const techDebt = Number(resourceDeltas.techDebt) || 0;
+  const pressure = Number(state.resources.pressure) || 0;
+  if (code >= 150 && bugs >= 3) {
+    return "小张啊，今天代码产出挺高，但测试那边说缺陷也没少冒头。明天先把质量口子补上，不然绩效故事不好讲。";
+  }
+  if (techDebt >= 10) {
+    return "今天交付看着顺，但技术债的账本又厚了一页。早点还债，不然以后每次改需求都像拆炸弹。";
+  }
+  if (docs >= 10 && bugs <= 0) {
+    return "今天像个靠谱工程师：文档留痕、缺陷可控。保持这个节奏，Leader 暂时不会在群里点你名。";
+  }
+  if (pressure >= 70) {
+    return "你今天扛住了不少事，但精神缓存已经报警。睡前别再刷需求群，明天先安排一个低压阶段。";
+  }
+  return "今天没有惊天动地，但资产在增长，坑也还看得见。明天继续把能交付的东西往前推。";
+}
+
+function generateDayEndSummary(state, options = {}) {
+  const calendar = options.calendar || getWorldCalendar(state.worldTimeMinutes);
   const schedule = state.lockedSchedule;
 
   // 工作统计
@@ -2176,26 +2273,31 @@ function generateDayEndSummary(state) {
 
   // 活动统计（从 schedule 中获取）
   const activities = [];
+  const phaseActions = [];
   if (schedule && schedule.slots) {
-    if (schedule.slots.morning && schedule.slots.morning.type === "activity") {
-      activities.push({ id: schedule.slots.morning.id, phase: "morning" });
-    }
-    if (schedule.slots.afternoon && schedule.slots.afternoon.type === "activity") {
-      activities.push({ id: schedule.slots.afternoon.id, phase: "afternoon" });
-    }
-    if (schedule.slots.evening && schedule.slots.evening.type === "activity") {
-      activities.push({ id: schedule.slots.evening.id, phase: "evening" });
+    for (const phase of SCHEDULE_PHASES) {
+      const slot = schedule.slots[phase.id];
+      phaseActions.push({
+        phaseId: phase.id,
+        phaseName: phase.name,
+        timeRange: formatScheduleTimeRange(phase),
+        type: slot ? slot.type : null,
+        id: slot ? slot.id : null,
+        label: getScheduleSlotDisplayName(slot),
+        completed: state.scheduleCompletedPhases.includes(phase.id)
+      });
+      if (slot && slot.type === "activity") activities.push({ id: slot.id, phase: phase.id });
     }
   }
 
   // 资源变化（从 dayStartResources 对比当前资源）
-  const resources = {};
+  const resourceDeltas = {};
   if (state.dayStartResources) {
     for (const [key, value] of Object.entries(state.resources)) {
       const start = state.dayStartResources[key] || 0;
       const delta = value - start;
       if (Math.abs(delta) >= 1) {
-        resources[key] = delta;
+        resourceDeltas[key] = delta;
       }
     }
   }
@@ -2216,13 +2318,24 @@ function generateDayEndSummary(state) {
       tomorrowReminders.push(`明日作息：${stance.name}`);
     }
   }
+  const projectProgressDeltas = getProjectProgressDeltas(state);
+  const healthTags = getDayEndHealthTags(state);
+  const phaseEvents = Array.isArray(state.dayPhaseEvents) ? state.dayPhaseEvents.slice() : [];
 
   return {
     day: calendar.day,
     weekday: calendar.weekday,
+    calendar,
     workTime,
     activities,
-    resources,
+    phaseActions,
+    phaseEvents,
+    resources: resourceDeltas,
+    resourceDeltas,
+    currentResources: snapshotResources(state.resources),
+    projectProgressDeltas,
+    healthTags,
+    commentary: generateDayEndCommentary(state, resourceDeltas),
     tomorrowReminders
   };
 }
@@ -2348,6 +2461,48 @@ function markSchedulePhaseDone(state, phaseId) {
   state.scheduleCompletedPhases.push(phaseId);
 }
 
+function getPhaseEventName(phaseId) {
+  if (phaseId === "night") return "深夜";
+  return SCHEDULE_PHASE_BY_ID[phaseId]?.name || phaseId;
+}
+
+function maybeApplyPhaseEvent(state, phaseId, messages = [], events = [], options = {}) {
+  if (options.randomEvents === false) return {};
+  const pool = content.phaseEvents && content.phaseEvents[phaseId];
+  if (!Array.isArray(pool) || !pool.length) return {};
+  const rng = options.rng || Math.random;
+  if (rng() >= 0.4) return {};
+  const event = pool[Math.min(pool.length - 1, Math.floor(rng() * pool.length))];
+  if (!event) return {};
+  const deltas = {};
+  for (const [key, value] of Object.entries(event.resources || {})) {
+    const delta = applyResourceDelta(state, key, value);
+    if (delta) {
+      deltas[key] = delta;
+      if (key === "codeLines" && delta > 0) state.stats.totalCodeLines = (state.stats.totalCodeLines || 0) + delta;
+    }
+  }
+  clampState(state);
+  const summary = formatChangedResources({}, deltas);
+  const record = {
+    id: event.id,
+    phaseId,
+    phaseName: getPhaseEventName(phaseId),
+    name: event.name,
+    message: event.message,
+    resourceDeltas: deltas
+  };
+  state.dayPhaseEvents = Array.isArray(state.dayPhaseEvents) ? state.dayPhaseEvents : [];
+  state.dayPhaseEvents.push(record);
+  pushMessageEvent(
+    messages,
+    events,
+    "random",
+    `阶段小事：${event.name}。${event.message}${summary ? ` 本次变化：${summary}。` : ""}`
+  );
+  return deltas;
+}
+
 function applyWorldEventTriggers(state, fromDay, toDay, messages = [], events = []) {
   if (toDay < fromDay) return;
   state.triggeredWorldEvents = Array.isArray(state.triggeredWorldEvents) ? state.triggeredWorldEvents : [];
@@ -2435,6 +2590,10 @@ function getWorkModifiers(state, type, item, overtime) {
 }
 
 function settleTime(state, now = Date.now(), options = {}) {
+  if (state.dayEndSummaryPending) {
+    state.lastTick = now;
+    return { seconds: 0, messages: [], events: [], ticker: createTuiTicker(state), deltas: {}, activeSeconds: 0 };
+  }
   ensureScheduleForCurrentDay(state);
   clearCompletedSkillLearning(state);
   const maxSeconds = options.maxSeconds ?? OFFLINE_CAP_SECONDS;
@@ -2542,6 +2701,7 @@ function settleTime(state, now = Date.now(), options = {}) {
         // 检查是否触发阶段转换窗口
         if (shouldTriggerPhaseTransition(state, scheduleContext.phase)) {
           markSchedulePhaseDone(state, scheduleContext.phase.id);
+          mergeDeltas(result.deltas, maybeApplyPhaseEvent(state, scheduleContext.phase.id, messages, events, options));
           const nextPhaseId = getNextPhaseId(scheduleContext.phase.id);
           state.phaseTransitionPending = {
             fromPhase: scheduleContext.phase.id,
@@ -2554,20 +2714,23 @@ function settleTime(state, now = Date.now(), options = {}) {
           break; // 暂停时间推进
         } else {
           markSchedulePhaseDone(state, scheduleContext.phase.id);
+          mergeDeltas(result.deltas, maybeApplyPhaseEvent(state, scheduleContext.phase.id, messages, events, options));
         }
       }
     }
 
     // 检查是否触发一天结束总结（在日期跨越之前）
-    if (shouldTriggerDayEndSummary(state)) {
-      state.lastDayEndSummaryDay = getWorldCalendar(state.worldTimeMinutes).day;
+    if (shouldTriggerDayEndSummary(state, beforeDay)) {
+      mergeDeltas(result.deltas, maybeApplyPhaseEvent(state, "night", messages, events, options));
+      const endedCalendar = getWorldCalendar(Math.max(0, state.worldTimeMinutes - 1));
+      state.lastDayEndSummaryDay = beforeDay;
       state.dayEndSummaryPending = {
-        day: getWorldCalendar(state.worldTimeMinutes).day,
+        day: beforeDay,
         triggerMinute: state.worldTimeMinutes,
-        summary: generateDayEndSummary(state)
+        summary: generateDayEndSummary(state, { calendar: endedCalendar })
       };
       clearActiveWork(state);
-      pushMessageEvent(messages, events, "system", "一天结束，查看今日总结。");
+      pushMessageEvent(messages, events, "system", "24:00 到了，请查看今日审计报告，确认后进入睡眠。");
       break; // 暂停时间推进
     }
 
@@ -3453,7 +3616,7 @@ function getCurrentOutputRate(state, activity, project, skill, currentPhase) {
 }
 
 function getGameViewModel(state) {
-  syncScheduledActiveMode(state);
+  if (!state.dayEndSummaryPending) syncScheduledActiveMode(state);
   clearCompletedSkillLearning(state);
   const role = roleById(state.currentRole);
   const characterCard = characterCardById(state.characterCardId);
@@ -3480,6 +3643,7 @@ function getGameViewModel(state) {
   return {
     title: "代码人生",
     calendar,
+    dayEndReport: state.dayEndSummaryPending ? buildDayEndReport(state.dayEndSummaryPending.summary) : null,
     schedule: {
       day: schedule.day,
       confirmed: Boolean(state.lockedSchedule),
@@ -3943,7 +4107,7 @@ function processCompleteCommand(state, args) {
   ]);
 }
 
-function processDayCommand(state, args) {
+function processDayCommand(state, args, options = {}) {
   if (!state.dayEndSummaryPending) {
     return "当前不在一天结束总结窗口。";
   }
@@ -3952,12 +4116,14 @@ function processDayCommand(state, args) {
   const pending = state.dayEndSummaryPending;
 
   if (action === "confirm" || !action) {
-    // 确认总结，跳转到第二天 09:00
+    // 确认总结，结算睡眠并跳转到第二天 09:00
     const currentDay = pending.day;
     state.dayEndSummaryPending = null;
 
-    // 跳转到第二天 09:00
     const nextDayStart = currentDay * MINUTES_PER_DAY + 9 * 60;
+    const sleepMinutes = Math.max(0, nextDayStart - state.worldTimeMinutes);
+    const sleepDeltas = sleepMinutes > 0 ? settleLifestyleRest(state, "rest_night", sleepMinutes) : {};
+    const sleepSummary = formatChangedResources({}, sleepDeltas);
     state.worldTimeMinutes = nextDayStart;
 
     // 重置日程
@@ -3967,9 +4133,11 @@ function processDayCommand(state, args) {
     const messages = [];
     const events = [];
     applyMorningTransitionIfDue(state, messages, events);
+    state.lastTick = options.now ?? Date.now();
 
     return formatLines([
       `D${currentDay} ${pending.summary.weekday} 已结束。`,
+      `睡眠结算 ${Math.floor(sleepMinutes / 60)}h${sleepMinutes % 60}m${sleepSummary ? `：${sleepSummary}` : "。"}`,
       `欢迎来到 D${currentDay + 1}，请安排今日日程。`,
       formatNextAdvice(state)
     ]);
@@ -4019,6 +4187,94 @@ function formatDayEndSummary(summary) {
   lines.push("输入 day confirm 或按 Enter 确认，进入明天。");
 
   return lines.join("\n");
+}
+
+function formatReportNumber(value, digits = 0) {
+  const number = Number(value) || 0;
+  return digits > 0 ? number.toFixed(digits) : formatNumber(number);
+}
+
+function formatReportDelta(value, unit = "") {
+  const number = Number(value) || 0;
+  const sign = number > 0 ? "+" : number < 0 ? "-" : "";
+  return `${sign}${formatReportNumber(Math.abs(number))}${unit}`;
+}
+
+function getReportDelta(summary, id) {
+  return Number(summary && summary.resourceDeltas && summary.resourceDeltas[id]) || 0;
+}
+
+function formatReportProjectProgress(projectProgressDeltas = []) {
+  const first = projectProgressDeltas[0];
+  if (!first) return "独立项目推进: 今日无显著推进";
+  return `独立项目《${first.name}》总进度: ${formatReportNumber(first.startPercent, 1)}% -> ${formatReportNumber(first.endPercent, 1)}% (▲ ${formatReportNumber(first.deltaPercent, 1)}%)`;
+}
+
+function buildDayEndReport(summary) {
+  if (!summary) return null;
+  const calendar = summary.calendar || {};
+  const year = Number.isFinite(Number(calendar.year)) ? Math.floor(Number(calendar.year)) : 1;
+  const month = Number.isFinite(Number(calendar.month)) ? String(Math.floor(Number(calendar.month))).padStart(2, "0") : "01";
+  const week = Number.isFinite(Number(calendar.weekOfMonth)) ? Math.floor(Number(calendar.weekOfMonth)) : 1;
+  const dateLabel = `Y${year}-M${month}-W${week} ${summary.weekday}`;
+  const code = getReportDelta(summary, "codeLines");
+  const bugs = getReportDelta(summary, "bugs");
+  const docs = getReportDelta(summary, "docs");
+  const tests = getReportDelta(summary, "tests");
+  const techDebt = getReportDelta(summary, "techDebt");
+  const money = getReportDelta(summary, "money");
+  const reputation = getReportDelta(summary, "reputation");
+  const leads = getReportDelta(summary, "leads");
+  const knowledge = getReportDelta(summary, "knowledge");
+  const energy = summary.currentResources ? summary.currentResources.energy : null;
+  const pressure = summary.currentResources ? summary.currentResources.pressure : null;
+  const actions = (summary.phaseActions || [])
+    .map((action) => `${action.phaseName}: ${action.label}${action.completed ? " [完成]" : ""}`)
+    .join(" │ ") || "今日没有锁定行动";
+  const phaseEventText = (summary.phaseEvents || [])
+    .slice(-3)
+    .map((event) => `${event.phaseName}:${event.name}`)
+    .join(" │ ") || "今日没有额外插曲";
+  const healthTags = summary.healthTags && summary.healthTags.length ? summary.healthTags.map((tag) => `[${tag}]`).join(" ") : "[状态尚可]";
+  const projectProgress = formatReportProjectProgress(summary.projectProgressDeltas || []);
+  const separator = "─".repeat(74);
+  const rows = [
+    "═".repeat(86),
+    `📅 ${dateLabel} │ ⌛ 24:00 │ 📑 打工人每日资产与代码审计报告`,
+    "═".repeat(86),
+    "",
+    "🏢 【大厂搬砖流水线】",
+    separator,
+    `▪ 今日行动轨迹: ${actions}`,
+    `▪ 交付业务代码: ${formatReportDelta(code, " 行")} │ ▪ 线上新增缺陷: 🐛 ${formatReportDelta(bugs, " 个")}`,
+    `▪ 文档沉淀贡献: ${formatReportDelta(docs, " 点")} │ ▪ 累计技术债务: 📈 ${formatReportDelta(techDebt, " 点")}`,
+    `▪ 测试资产变化: ${formatReportDelta(tests, " 点")} │ ▪ 阶段小事: ${phaseEventText}`,
+    "",
+    "🚀 【极客秘密基地 (Side-Hustle)】",
+    separator,
+    `▪ 知识/线索资产: 知识 ${formatReportDelta(knowledge)} │ 线索 ${formatReportDelta(leads)}`,
+    `▪ 私活/外包收益: ¥${formatReportDelta(money)} │ ▪ 社区声望影响力: ${formatReportDelta(reputation)}`,
+    `▪ ${projectProgress}`,
+    "",
+    "🧠 【人类基本盘与健康赤字】",
+    separator,
+    `▪ 剩余能量: ${energy === null ? "--" : `${formatReportNumber(energy)}%`} │ ▪ 精神压力: ${pressure === null ? "--" : formatReportNumber(pressure)}`,
+    `▪ 财务收支: ¥${formatReportDelta(money)} │ ▪ 健康状态: ${healthTags}`,
+    "",
+    separator,
+    "💬 【Leader/内心独白辣评】",
+    `“${summary.commentary || "今天的缓存已写盘，明天继续。"}”`,
+    separator,
+    "",
+    "⌨️ [按 Space 确认并清空缓存，迎接明天的太阳...]"
+  ];
+  return {
+    title: "打工人每日资产与代码审计报告",
+    dateLabel,
+    timeLabel: "24:00",
+    rows,
+    summary
+  };
 }
 
 function missingProjectRequirements(state, project, options = {}) {
@@ -4407,7 +4663,7 @@ function processCommand(state, input, options = {}) {
   const command = parts[0];
   const args = parts.slice(1);
   const arg = args[0];
-  if (!trimmed.startsWith("wait ") && !trimmed.startsWith("plan") && !trimmed.startsWith("lifestyle")) {
+  if (!trimmed.startsWith("wait ") && !trimmed.startsWith("plan") && !trimmed.startsWith("lifestyle") && !trimmed.startsWith("day")) {
     messages.push(...settleTime(state, now, { randomEvents: options.randomEvents, rng: options.rng }).messages);
   }
 
@@ -4464,7 +4720,7 @@ function processCommand(state, input, options = {}) {
       messages.push(processPhaseCommand(state, args));
       break;
     case "day":
-      messages.push(processDayCommand(state, args));
+      messages.push(processDayCommand(state, args, { ...options, now }));
       break;
     case "profiles":
       messages.push(formatProfiles(listProfiles({ saveRoot: options.saveRoot, currentProfileId: state.profileId, now })));

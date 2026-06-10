@@ -757,6 +757,89 @@ const randomEvents = [
   }
 ];
 
+const phaseEvents = {
+  morning: [
+    {
+      id: "morning-green-ci",
+      name: "晨间 CI 全绿",
+      message: "早上的流水线一路绿灯，你趁势把测试资产补了一点。",
+      resources: { tests: 2, pressure: -1 }
+    },
+    {
+      id: "morning-standup-scope",
+      name: "站会需求澄清",
+      message: "站会把一个含糊需求问清楚了，文档多了一页，技术债少了一点。",
+      resources: { docs: 2, techDebt: -1 }
+    },
+    {
+      id: "morning-hot-coffee",
+      name: "咖啡续命",
+      message: "一杯热咖啡把注意力拉回来了，但钱包轻了一点。",
+      resources: { energy: 3, money: -3 }
+    }
+  ],
+  afternoon: [
+    {
+      id: "afternoon-review-nit",
+      name: "代码评审挑刺",
+      message: "同事指出一个边界条件，你补了测试，但也被压力命中。",
+      resources: { tests: 2, pressure: 1 }
+    },
+    {
+      id: "afternoon-flow-state",
+      name: "下午心流",
+      message: "需求、接口和键盘突然对齐，业务代码顺手多交了一截。",
+      resources: { codeLines: 12, pressure: 1 }
+    },
+    {
+      id: "afternoon-doc-save",
+      name: "接口文档救场",
+      message: "你翻出旧接口文档，少踩了一个坑，知识和文档都有进账。",
+      resources: { docs: 2, knowledge: 2 }
+    }
+  ],
+  evening: [
+    {
+      id: "evening-scope-trim",
+      name: "晚间砍需求",
+      message: "你把一个不必要的边角需求砍掉了，压力稍微降了一点。",
+      resources: { docs: 1, pressure: -2 }
+    },
+    {
+      id: "evening-late-bug",
+      name: "下班前冒烟",
+      message: "临走前冒烟测出一个小问题，Bug 和压力一起抬头。",
+      resources: { bugs: 2, pressure: 2 }
+    },
+    {
+      id: "evening-small-refactor",
+      name: "顺手重构",
+      message: "你把一段重复逻辑抽掉了，技术债少了一点，测试多了一点。",
+      resources: { techDebt: -2, tests: 1 }
+    }
+  ],
+  night: [
+    {
+      id: "night-neck-warning",
+      name: "颈椎报警",
+      message: "身体提醒你今天坐得太久，压力上来了，但你总算准备睡觉。",
+      resources: { pressure: 1, energy: 2 }
+    },
+    {
+      id: "night-dream-debug",
+      name: "梦里 Debug",
+      message: "睡前脑内回放白天的问题，灵感冒出来，知识增加了一点。",
+      resources: { knowledge: 2, bugs: -1 }
+    },
+    {
+      id: "night-good-sleep",
+      name: "睡眠回血",
+      message: "你终于按时关机，明天的精神缓存预热成功。",
+      resources: { energy: 6, pressure: -2 }
+    }
+  ]
+};
+
 module.exports = {
   roles,
   characterCards,
@@ -765,5 +848,6 @@ module.exports = {
   tools,
   projects,
   goals,
-  randomEvents
+  randomEvents,
+  phaseEvents
 };

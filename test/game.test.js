@@ -705,6 +705,101 @@ test("晚上 none 不产生加班压力，同一技能多阶段只扣一次资�
   assert.equal(skill.resources.money, 0);
 });
 
+test("已确认日程在 24:00 进入每日审计报告而不是直接跳到 09:00", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  processCommand(state, "plan morning activity feature-coding", { randomEvents: false });
+  processCommand(state, "plan afternoon activity study", { randomEvents: false });
+  processCommand(state, "plan evening none", { randomEvents: false });
+  processCommand(state, "plan confirm", { randomEvents: false });
+  state.worldTimeMinutes = 23 * 60 + 59;
+  state.lastTick = now;
+
+  const result = settleTime(state, now + 1000, { randomEvents: false });
+  const calendar = getWorldCalendar(state.worldTimeMinutes);
+  const view = getGameViewModel(state);
+
+  assert.equal(calendar.hhmm, "00:00");
+  assert.equal(calendar.day, 2);
+  assert.equal(result.seconds, 1);
+  assert.ok(state.dayEndSummaryPending);
+  assert.equal(state.dayEndSummaryPending.day, 1);
+  assert.equal(state.dayEndSummaryPending.summary.weekday, "周一");
+  assert.equal(view.dayEndReport.timeLabel, "24:00");
+  assert.match(view.dayEndReport.rows.join("\n"), /打工人每日资产与代码审计报告/);
+  assert.match(view.dayEndReport.rows.join("\n"), /Space/);
+});
+
+test("day confirm 结算睡眠并进入次日 09:00 排程", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  processCommand(state, "plan morning activity feature-coding", { randomEvents: false });
+  processCommand(state, "plan afternoon activity study", { randomEvents: false });
+  processCommand(state, "plan evening none", { randomEvents: false });
+  processCommand(state, "plan confirm", { randomEvents: false });
+  state.worldTimeMinutes = 23 * 60 + 59;
+  state.lastTick = now;
+  state.resources.energy = 20;
+  state.resources.pressure = 50;
+  settleTime(state, now + 1000, { randomEvents: false });
+
+  const message = processCommand(state, "day confirm", { now: now + 2000, randomEvents: false }).messages.join("\n");
+
+  assert.equal(getWorldCalendar(state.worldTimeMinutes).hhmm, "09:00");
+  assert.equal(getWorldCalendar(state.worldTimeMinutes).day, 2);
+  assert.equal(state.dayEndSummaryPending, null);
+  assert.equal(state.waitingForSchedule, true);
+  assert.ok(state.resources.energy > 20);
+  assert.ok(state.resources.pressure < 50);
+  assert.match(message, /睡眠结算 9h0m/);
+});
+
+test("21:00 不再触发日终报告，夜间继续休整到 24:00", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  processCommand(state, "plan morning activity rest", { randomEvents: false });
+  processCommand(state, "plan afternoon activity rest", { randomEvents: false });
+  processCommand(state, "plan evening none", { randomEvents: false });
+  processCommand(state, "plan confirm", { randomEvents: false });
+  state.worldTimeMinutes = 20 * 60 + 59;
+  state.lastTick = now;
+  state.resources.energy = 30;
+
+  settleTime(state, now + 1000, { randomEvents: false });
+
+  assert.equal(getWorldCalendar(state.worldTimeMinutes).hhmm, "21:00");
+  assert.equal(state.dayEndSummaryPending, null);
+  assert.ok(state.resources.energy > 30);
+});
+
+test("阶段小事件受 randomEvents 和 rng 控制并进入报告", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  processCommand(state, "plan morning activity feature-coding", { randomEvents: false });
+  processCommand(state, "plan afternoon activity study", { randomEvents: false });
+  processCommand(state, "plan evening none", { randomEvents: false });
+  processCommand(state, "plan confirm", { randomEvents: false });
+  state.worldTimeMinutes = 11 * 60 + 59;
+  state.lastTick = now;
+
+  const eventResult = settleTime(state, now + 1000, { randomEvents: true, rng: () => 0 });
+
+  assert.equal(getWorldCalendar(state.worldTimeMinutes).hhmm, "12:00");
+  assert.ok(state.dayPhaseEvents.some((event) => event.phaseId === "morning"));
+  assert.ok(eventResult.events.some((event) => event.category === "random" && /阶段小事/.test(event.text)));
+
+  const quiet = createNewState(now);
+  processCommand(quiet, "plan morning activity feature-coding", { randomEvents: false });
+  processCommand(quiet, "plan afternoon activity study", { randomEvents: false });
+  processCommand(quiet, "plan evening none", { randomEvents: false });
+  processCommand(quiet, "plan confirm", { randomEvents: false });
+  quiet.worldTimeMinutes = 11 * 60 + 59;
+  quiet.lastTick = now;
+  settleTime(quiet, now + 1000, { randomEvents: false, rng: () => 0 });
+
+  assert.equal(quiet.dayPhaseEvents.length, 0);
+});
+
 test("晚上 none 的零秒结算会清空旧活动并显示晚间休整", () => {
   const now = 1_700_000_000_000;
   const state = createStaleEveningNoneState(now);

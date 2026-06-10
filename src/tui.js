@@ -690,7 +690,7 @@ function isPhaseTransitionMode(view) {
 }
 
 function isDayEndSummaryMode(view) {
-  return Boolean(view && view.state && view.state.dayEndSummaryPending);
+  return Boolean(view && view.dayEndReport);
 }
 
 function getDailyPlannerCandidateOptions(state, kind) {
@@ -1291,6 +1291,35 @@ async function startTui() {
     );
   }
 
+  function DayEndReportPanel({ view, budget }) {
+    const report = view && view.dayEndReport;
+    const rows = report && Array.isArray(report.rows) ? report.rows : ["暂无日报。", "⌨️ [按 Space 确认并清空缓存，迎接明天的太阳...]"];
+    const height = Math.max(6, budget.logHeight + (budget.tabHeight || 1) + budget.mainHeight);
+    const width = Math.max(30, budget.terminalColumns - 2);
+    const contentWidth = Math.max(20, width - 4);
+    const maxRows = Math.max(1, height - 2);
+    const visibleRows = rows.length <= maxRows
+      ? rows
+      : [
+          ...rows.slice(0, Math.max(1, maxRows - 2)),
+          "…",
+          rows[rows.length - 1]
+        ];
+    return h(Box, { borderStyle: "double", borderColor: THEME.title, paddingX: 1, flexDirection: "column", height, width },
+      ...visibleRows.map((line, index) => {
+        const text = trimText(line || " ", contentWidth);
+        const isTitle = index <= 2 || line.includes("【") || line.includes("📑");
+        const isPrompt = line.includes("Space");
+        const isComment = line.includes("“") || line.includes("”");
+        return h(Text, {
+          key: `day-report-${index}`,
+          color: isPrompt ? THEME.status.good : isTitle ? THEME.title : isComment ? THEME.status.info : THEME.text,
+          bold: isTitle || isPrompt
+        }, text);
+      })
+    );
+  }
+
   function LogPanel({ ticker, logs, view, budget }) {
     const tickerData = ticker && ticker.ticker ? ticker.ticker : ticker;
     const actualDeltas = ticker && ticker.actualDeltas ? ticker.actualDeltas : null;
@@ -1387,9 +1416,9 @@ async function startTui() {
     }
     if (isDayEndSummaryMode(view)) {
       return renderHints([
-        { label: "Enter/Y", text: "明天" },
+        { label: "Space", text: "确认睡眠" },
+        { label: "Enter/Y", text: "确认" },
         { label: "R", text: "重看" },
-        { label: "Tab", text: "面板" },
         { label: "Q", text: "保存退出" }
       ]);
     }
@@ -1520,6 +1549,12 @@ async function startTui() {
         return;
       }
       if (input === " ") {
+        if (isDayEndSummaryMode(view)) {
+          if (paused) setPaused(false);
+          runCommand("day confirm");
+          pendingDeleteProfileIdRef.current = null;
+          return;
+        }
         const now = Date.now();
         if (!needsInitialProfile) {
           if (paused) {
@@ -1719,6 +1754,14 @@ async function startTui() {
         if (result.changed) refresh();
       }
     });
+
+    if (isDayEndSummaryMode(view)) {
+      return h(Box, { flexDirection: "column", paddingX: 1 },
+        h(TopBar, { view, paused, budget }),
+        h(DayEndReportPanel, { view, budget }),
+        h(Footer, { paused, creatingProfile, schedulePhase, dailyPlannerMode: false, view })
+      );
+    }
 
     return h(Box, { flexDirection: "column", paddingX: 1 },
       h(TopBar, { view, paused, budget }),

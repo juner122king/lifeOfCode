@@ -678,6 +678,46 @@ test("syncPausedClock lets paused saves discard paused real time", () => {
   assert.equal(resumed.seconds, 1);
 });
 
+test("day-end view model exposes the audit report for TUI", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  processCommand(state, "plan morning activity feature-coding", { randomEvents: false });
+  processCommand(state, "plan afternoon activity study", { randomEvents: false });
+  processCommand(state, "plan evening none", { randomEvents: false });
+  processCommand(state, "plan confirm", { randomEvents: false });
+  state.worldTimeMinutes = 23 * 60 + 59;
+  state.lastTick = now;
+
+  settleTime(state, now + 60_000, { randomEvents: false });
+  const view = getGameViewModel(state);
+  const reportText = view.dayEndReport.rows.join("\n");
+
+  assert.equal(view.dayEndReport.timeLabel, "24:00");
+  assert.match(reportText, /打工人每日资产与代码审计报告/);
+  assert.match(reportText, /大厂搬砖流水线/);
+  assert.match(reportText, /人类基本盘与健康赤字/);
+  assert.match(reportText, /Leader\/内心独白辣评/);
+  assert.match(reportText, /Space/);
+});
+
+test("TUI day confirm command clears report and enters next morning", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  processCommand(state, "plan morning activity feature-coding", { randomEvents: false });
+  processCommand(state, "plan afternoon activity study", { randomEvents: false });
+  processCommand(state, "plan evening none", { randomEvents: false });
+  processCommand(state, "plan confirm", { randomEvents: false });
+  state.worldTimeMinutes = 23 * 60 + 59;
+  state.lastTick = now;
+  settleTime(state, now + 60_000, { randomEvents: false });
+
+  const result = processTuiCommand(state, "day confirm", { now: now + 120_000, randomEvents: false });
+
+  assert.match(result.messages.join("\n"), /睡眠结算/);
+  assert.equal(getGameViewModel(state).dayEndReport, null);
+  assert.equal(state.waitingForSchedule, true);
+});
+
 test("getCharacterCardAttributeRows pairs initial card attributes with current growth", () => {
   const state = createNewState(1_700_000_000_000, { characterCardId: "academy-prodigy" });
   state.attributes.learning = 84;
