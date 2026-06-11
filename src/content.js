@@ -234,7 +234,7 @@ const activities = [
     energyCostPerHour: 8.4,
     activityExpPerHour: 42,
     outputsPerHour: { docs: 10 },
-    mitigationPerHour: { techDebt: 0.91 },
+    mitigationPerHour: { techDebt: 0.91, pressure: 9 },
     attributeExpPerHour: { learning: 9, communication: 5 }
   }),
   activity({
@@ -260,7 +260,7 @@ const activities = [
     energyCostPerHour: 11.2,
     activityExpPerHour: 42,
     outputsPerHour: { reputation: 0.8, codeLines: 8, docs: 2 },
-    risksPerHour: { pressure: 0.7 },
+    risksPerHour: {},
     attributeExpPerHour: { communication: 9, creativity: 5 }
   }),
   activity({
@@ -339,7 +339,8 @@ const activities = [
     primaryAttribute: "resilience",
     energyCostPerHour: 0,
     activityExpPerHour: 12,
-    outputsPerHour: { energy: 5 },
+    outputsPerHour: { energy: 2.5 },
+    mitigationPerHour: { pressure: 24 },
     attributeExpPerHour: { resilience: 6 }
   })
 ];

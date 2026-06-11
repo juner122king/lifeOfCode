@@ -458,7 +458,6 @@ test("内容不再包含全局经验资源、成本、倍率和奖励", () => {
   assert.ok(content.activities.every((activity) => noExpKey(activity.outputsPerHour)));
   assert.ok(content.activities.every((activity) => noExpKey(activity.mitigationPerHour)));
   assert.ok(content.activities.every((activity) => noExpKey(activity.risksPerHour)));
-  assert.ok(content.activities.every((activity) => !Object.hasOwn(activity.mitigationPerHour, "pressure")));
   assert.ok(content.skills.every((skill) => noExpKey(skill.cost) && noExpKey(skill.multipliers)));
   assert.ok(content.tools.every((tool) => noExpKey(tool.multipliers)));
   assert.ok(content.roles.every((role) => noExpKey(role.promoteRequirements)));
@@ -952,10 +951,10 @@ test("主动 rest 的精力恢复受压力抑制但不再降低压力", () => {
   settleTime(lowPressure, now + 60_000, { randomEvents: false });
   settleTime(highPressure, now + 60_000, { randomEvents: false });
 
-  assert.ok(Math.abs(lowPressure.resources.energy - 5) < 0.000001);
-  assert.ok(Math.abs(highPressure.resources.energy - 1) < 0.000001);
+  assert.ok(Math.abs(lowPressure.resources.energy - 2.5) < 0.000001);
+  assert.ok(Math.abs(highPressure.resources.energy - 0.5) < 0.000001);
   assert.equal(lowPressure.resources.pressure, 0);
-  assert.equal(highPressure.resources.pressure, 100);
+  assert.equal(highPressure.resources.pressure, 76);
 });
 
 test("side_hustle 深夜即时消耗精力并产生收益", () => {
@@ -1197,7 +1196,7 @@ test("activity energy costs and quality mitigation match balance targets", () =>
     "bug-hunting": { bugs: 3.64 },
     refactoring: { techDebt: 3.19 },
     testing: { bugs: 1.14 },
-    documentation: { techDebt: 0.91 },
+    documentation: { techDebt: 0.91, pressure: 9 },
     architecture: { techDebt: 2.28 },
     "code-review": { bugs: 3.64, techDebt: 2.28 },
     "performance-tuning": { techDebt: 1.37 },
@@ -1705,7 +1704,7 @@ test("testing、documentation、freelancing、rest 分别产出对应资源", ()
   startActivity(rest, "rest");
   settleTime(rest, start + 60_000, { randomEvents: false });
   assert.ok(rest.resources.energy > 30);
-  assert.equal(rest.resources.pressure, 50);
+  assert.equal(rest.resources.pressure, 26);
 });
 
 test("项目会检查条件，开始时投入资源并按工时推进", () => {
