@@ -3003,6 +3003,18 @@ function settleTime(state, now = Date.now(), options = {}) {
     state.worldTimeMinutes += segmentMinutes;
     remainingMinutes -= segmentMinutes;
     processedSeconds += segmentMinutes;
+
+    checkPressureOverload(
+      state,
+      messages,
+      events,
+      (state, key, value) => {
+        const delta = applyResourceDelta(state, key, value);
+        if (delta) result.deltas[key] = (result.deltas[key] || 0) + delta;
+        return delta;
+      },
+      pushMessageEvent
+    );
     if (scheduleContext && scheduleContext.phase) {
       const minuteOfDay = state.worldTimeMinutes % MINUTES_PER_DAY;
       if (minuteOfDay === scheduleContext.phase.end) {
