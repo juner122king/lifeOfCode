@@ -27,6 +27,7 @@ const { getEnergyStatus } = require("./core/energy");
 const { clamp, formatNumber, formatRateNumber } = require("./core/math");
 const {
   getPressureRecoveryMultiplier,
+  getPressureThresholdEffects,
   checkPressureOverload
 } = require("./core/pressure");
 const {
@@ -1009,11 +1010,15 @@ function getProductionRisk(state) {
   const debtPenalty = clamp((state.resources.techDebt || 0) / 240 * 0.25, 0, 0.25);
   const logicBugRelief = attributeBonus(state, "logic", 0.003, 0.22);
   const bugDebtBoost = 1 + clamp((state.resources.techDebt || 0) / 240 * 0.5 * (1 - logicBugRelief), 0, 0.5);
+
+  const thresholdEffects = getPressureThresholdEffects(state);
+
   return {
-    codeEfficiency: (1 - pressurePenalty) * (1 - debtPenalty),
+    codeEfficiency: (1 - pressurePenalty) * (1 - debtPenalty) * (1 - thresholdEffects.codeEfficiencyPenalty),
     bugDebtBoost,
     pressurePenalty,
-    debtPenalty
+    debtPenalty,
+    thresholdEffects
   };
 }
 
@@ -2023,7 +2028,7 @@ function calculateActivityDeltaEntries(state, activity, gameMinutes, options = {
 
   for (const [key, rate] of Object.entries(activity.risksPerHour || {})) {
     let delta = activityRateToDelta(rate, duration);
-    if (key === "bugs") delta *= context.multipliers.bug * context.risk.bugDebtBoost;
+    if (key === "bugs") delta *= context.multipliers.bug * context.risk.bugDebtBoost * (1 + (context.risk.thresholdEffects?.bugRiskIncrease || 0));
     if (key === "techDebt") delta *= context.multipliers.debt;
     if (key === "pressure") delta *= context.multipliers.pressure;
     if (RISK_RESOURCE_IDS.has(key)) delta *= context.energyStatus.riskMultiplier;
