@@ -1109,6 +1109,65 @@ function formatActivityOptionDetail(option) {
 function formatOptionDetail(option) {
   if (!option) return [];
   if (option.detailKind === "activity") return formatActivityOptionDetail(option);
+
+  const isProject = Number.isFinite(option.successRate) && Number.isFinite(option.maxSuccessRate);
+  if (isProject) {
+    const details = [];
+    const isInProgress = option.status === "进行中" || option.status === "已暂停";
+    const isBlocked = option.missing && String(option.missing).trim().length > 0;
+
+    if (isInProgress && Number.isFinite(option.workedSeconds)) {
+      const formatGameTime = (seconds) => {
+        const minutes = Math.floor(seconds);
+        const hours = Math.floor(minutes / 60);
+        return hours > 0 ? `${hours}h` : `${minutes}m`;
+      };
+      details.push({
+        label: "已投入",
+        value: `${formatGameTime(option.workedSeconds)} / ${formatGameTime(option.requiredSeconds)}（${option.progressPercent}%）`
+      });
+    }
+
+    if (isBlocked) {
+      details.push({ label: "缺口", value: option.missing, tone: "blocked" });
+    }
+
+    const formatPercent = (v) => `${Math.round(v * 100)}%`;
+    details.push({
+      label: "成功率",
+      value: `${formatPercent(option.successRate)} / ${formatPercent(option.maxSuccessRate)}`,
+      tone: "successRate",
+      rate: option.successRate
+    });
+
+    if (option.difficultyLabel) {
+      details.push({ label: "难度", value: option.difficultyLabel });
+    }
+
+    if (isInProgress && option.deadlineText) {
+      details.push({
+        label: "Deadline",
+        value: option.deadlineText,
+        tone: "deadline",
+        critical: option.deadlineCritical
+      });
+    }
+
+    if (option.cost) {
+      details.push({ label: "花费", value: option.cost });
+    }
+
+    if (option.description) {
+      details.push({ label: "描述", value: option.description });
+    }
+
+    if (option.rewards) {
+      details.push({ label: "奖励", value: option.rewards });
+    }
+
+    return details.filter((entry) => entry && String(entry.value || "").trim());
+  }
+
   return [
     option.description && { label: "描述", value: option.description },
     Number.isFinite(option.level) && { label: "等级", value: `${option.levelName || `Lv.${option.level}`}${Number.isFinite(option.exp) && Number.isFinite(option.nextExp) && option.nextExp > 0 ? ` ${option.exp}/${option.nextExp}` : ""}` },
@@ -1437,9 +1496,21 @@ async function startTui() {
         h(Progress, { percent: progress.percent, width: Math.min(18, Math.max(8, contentWidth - 18)), animated: progress.active }),
         progress.text ? h(Text, { color: THEME.muted }, trimText(progress.text, 18)) : null
       ) : null,
-      ...details.slice(0, maxRows).map((entry, index) => h(Text, { key: `${entry.label}-${index}`, color: entry.label === "缺口" ? THEME.status.warn : THEME.text },
-        `${entry.label}：${trimText(entry.value, contentWidth - entry.label.length - 1)}`
-      ))
+      ...details.slice(0, maxRows).map((entry, index) => {
+        let color = THEME.text;
+        if (entry.tone === "blocked") {
+          color = THEME.status.warn;
+        } else if (entry.tone === "successRate" && Number.isFinite(entry.rate)) {
+          if (entry.rate >= 0.8) color = THEME.status.good;
+          else if (entry.rate >= 0.5) color = THEME.status.warn;
+          else color = THEME.status.danger;
+        } else if (entry.tone === "deadline") {
+          color = entry.critical ? THEME.status.danger : THEME.status.warn;
+        }
+        return h(Text, { key: `${entry.label}-${index}`, color },
+          `${entry.label}：${trimText(entry.value, contentWidth - entry.label.length - 1)}`
+        );
+      })
     );
   }
 

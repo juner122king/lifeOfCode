@@ -3843,8 +3843,9 @@ function getManagementOptions(state, type) {
       const successRate = getProjectSuccessRate(state, project);
       const deadline = state.activeProjectDeadlines && state.activeProjectDeadlines[project.id];
       const deadlineText = deadline && Number.isFinite(Number(deadline.dueWorldMinute))
-        ? `；Deadline D${String(getWorldCalendar(deadline.dueWorldMinute).day).padStart(3, "0")}`
+        ? `D${String(getWorldCalendar(deadline.dueWorldMinute).day).padStart(3, "0")}`
         : "";
+      const deadlineCritical = deadline && Number(deadline.dueWorldMinute) < Number(state.worldTimeMinutes || WORLD_START_MINUTES);
       return {
         id: project.id,
         name: project.name,
@@ -3854,7 +3855,7 @@ function getManagementOptions(state, type) {
         available: missing.length === 0,
         rewards: formatSkillExpRewards(project.skillExpRewards),
         cost: progress.resourcesPaid ? "已投入" : formatProjectResourceList(project.requirements.resources || {}),
-        effects: `工时 ${formatDuration(progress.workedSeconds)}/${formatDuration(progress.requiredSeconds)}（${progress.progressPercent}%）；成功率 ${formatPercent(successRate)} / 最高 ${formatPercent(project.maxSuccessRate)}${deadlineText}`,
+        effects: `工时 ${formatDuration(progress.workedSeconds)}/${formatDuration(progress.requiredSeconds)}（${progress.progressPercent}%）；成功率 ${formatPercent(successRate)} / 最高 ${formatPercent(project.maxSuccessRate)}`,
         missing: missing.join("、"),
         difficulty: project.difficulty,
         difficultyLabel: formatDifficultyLabel(project.difficulty),
@@ -3868,6 +3869,8 @@ function getManagementOptions(state, type) {
         progressActive: active,
         progressText: `${formatDuration(progress.workedSeconds)}/${formatDuration(progress.requiredSeconds)}`,
         resourcesPaid: progress.resourcesPaid,
+        deadlineText,
+        deadlineCritical,
         command: `project ${project.id}`
       };
     });
