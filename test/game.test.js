@@ -1073,7 +1073,7 @@ test("start feature-coding 后只结算写功能活动", () => {
   const startMessage = startActivity(state, "feature-coding");
   assert.match(startMessage, /开始活动：写功能/);
   assert.match(startMessage, /收益\/游戏小时：代码 \+35\.55/);
-  assert.match(startMessage, /风险\/游戏小时：Bug \+1\.45，技术债 \+0\.94，压力 \+0\.32/);
+  assert.match(startMessage, /风险\/游戏小时：Bug \+1\.21，技术债 \+0\.78，压力 \+0\.26/);
   assert.match(startMessage, /精力消耗\/游戏小时：精力 -11\.2/);
   settleTime(state, now + 60_000, { randomEvents: false });
 
@@ -1131,7 +1131,7 @@ test("activities 展示活动列表、等级、锁定状态和当前状态", () 
   assert.match(message, /feature-coding - 写功能 \[进行中\] Lv\.1/);
   assert.match(message, /等级经验/);
   assert.match(message, /产出：收益\/游戏小时：代码 \+35\.55/);
-  assert.match(message, /风险\/游戏小时：Bug \+1\.45/);
+  assert.match(message, /风险\/游戏小时：Bug \+1\.21/);
   assert.match(message, /architecture - 架构设计 \[未解锁\]/);
   assert.match(message, /rest - 休息恢复/);
 });
@@ -1146,7 +1146,7 @@ test("activity options 按游戏小时展示收益、风险、改善和精力", 
 
   assert.equal(
     featureCoding.output,
-    "收益/游戏小时：代码 +35.55；风险/游戏小时：Bug +1.45，技术债 +0.94，压力 +0.32；精力消耗/游戏小时：精力 -11.2"
+    "收益/游戏小时：代码 +35.55；风险/游戏小时：Bug +1.21，技术债 +0.78，压力 +0.26；精力消耗/游戏小时：精力 -11.2"
   );
   assert.equal(featureCoding.detailKind, "activity");
   assert.equal(featureCoding.roleSummary, "核心产出");
@@ -1155,7 +1155,7 @@ test("activity options 按游戏小时展示收益、风险、改善和精力", 
   assert.deepEqual(featureCoding.rateSections, {
     gains: "代码 +35.55",
     improvements: "",
-    risks: "Bug +1.45，技术债 +0.94，压力 +0.32",
+    risks: "Bug +1.21，技术债 +0.78，压力 +0.26",
     energy: "精力 -11.2",
     lowEnergy: ""
   });

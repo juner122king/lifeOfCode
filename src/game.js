@@ -26,6 +26,10 @@ const {
 const { getEnergyStatus } = require("./core/energy");
 const { clamp, formatNumber, formatRateNumber } = require("./core/math");
 const {
+  getPressureRecoveryMultiplier,
+  checkPressureOverload
+} = require("./core/pressure");
+const {
   formatWorldCalendar,
   getWorldCalendar,
   normalizeWorldTimeMinutes
@@ -668,10 +672,6 @@ function mergeDeltas(target, source = {}) {
   }
 }
 
-function getPressureRecoveryMultiplier(state) {
-  return clamp(1 - (Number(state.resources && state.resources.pressure) || 0) / 125, 0.2, 1);
-}
-
 function settleLifestyleRest(state, windowId, seconds) {
   const stance = getLifestyleStance(state.lifestyleStanceId);
   const deltas = {};
@@ -687,7 +687,7 @@ function settleLifestyleRest(state, windowId, seconds) {
   if (stance.id === "health") {
     const resilienceRelief = 1 + attributeBonus(state, "resilience", 0.004, 0.32);
     applyRecovery(1);
-    deltas.pressure = applyResourceDelta(state, "pressure", -duration * 0.05 * resilienceRelief);
+    deltas.pressure = applyResourceDelta(state, "pressure", -duration * 0.008 * resilienceRelief);
     return deltas;
   }
 
@@ -696,14 +696,14 @@ function settleLifestyleRest(state, windowId, seconds) {
     const focusRelief = attributeBonus(state, "focus", 0.003, 0.18);
     applyRecovery(0.4);
     deltas.knowledge = applyResourceDelta(state, "knowledge", duration * 0.06 * learningBoost);
-    if (focusRelief > 0) deltas.pressure = applyResourceDelta(state, "pressure", -duration * 0.01 * focusRelief);
+    if (focusRelief > 0) deltas.pressure = applyResourceDelta(state, "pressure", -duration * 0.003 * focusRelief);
     return deltas;
   }
 
   if (stance.id === "cyber_gaming") {
     const resilienceRelief = 1 + attributeBonus(state, "resilience", 0.004, 0.32);
     applyRecovery(0.6);
-    deltas.pressure = applyResourceDelta(state, "pressure", -duration * 0.12 * resilienceRelief);
+    deltas.pressure = applyResourceDelta(state, "pressure", -duration * 0.015 * resilienceRelief);
     return deltas;
   }
 
@@ -788,8 +788,6 @@ function applyMorningTransitionIfDue(state, messages = [], events = []) {
     state.lifestyleStanceId = normalizeLifestyleStanceId(state.pendingLifestyleStanceId);
     state.pendingLifestyleStanceId = null;
   }
-
-  applyResourceDelta(state, "pressure", -5);
 
   pushMessageEvent(messages, events, "system", `09:00：${formatLifestyle(state).split("\n")[0]}。`);
   return true;
