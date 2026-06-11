@@ -58,11 +58,11 @@ const GAME_MINUTES_PER_HOUR = 60;
 const SAVE_VERSION = 2;
 const ENERGY_MAX = 100;
 const ENERGY_STATUS_DEFS = [
-  { id: "depleted", name: "枯竭", min: 0, max: 0, productivityMultiplier: 0, riskMultiplier: 1.75 },
-  { id: "overdrawn", name: "透支", min: 1, max: 29, productivityMultiplier: 0.55, riskMultiplier: 1.75 },
-  { id: "tired", name: "疲惫", min: 30, max: 59, productivityMultiplier: 0.8, riskMultiplier: 1.25 },
+  { id: "depleted", name: "枯竭", min: 0, max: 0, productivityMultiplier: 0, riskMultiplier: 2.5 },
+  { id: "overdrawn", name: "透支", min: 1, max: 29, productivityMultiplier: 0.55, riskMultiplier: 2.2 },
+  { id: "tired", name: "疲惫", min: 30, max: 59, productivityMultiplier: 0.8, riskMultiplier: 1.5 },
   { id: "stable", name: "平稳", min: 60, max: 89, productivityMultiplier: 1, riskMultiplier: 1 },
-  { id: "full", name: "充沛", min: 90, max: 100, productivityMultiplier: 1.1, riskMultiplier: 0.9 }
+  { id: "full", name: "充沛", min: 90, max: 100, productivityMultiplier: 1.1, riskMultiplier: 0.75 }
 ];
 
 const SCHEDULE_PHASES = [
