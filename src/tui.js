@@ -512,7 +512,7 @@ function createInfoContextRows(view) {
       id: "context-goal",
       kind: "context",
       text: `[目标] ${currentMain.name} ${currentMain.status} ${currentMain.progress}`,
-      priority: 7
+      priority: 3
     });
   }
 
@@ -526,7 +526,7 @@ function createInfoContextRows(view) {
       id: "context-deadline",
       kind: "context",
       text: `[Deadline] ${deadline.name || "项目"} ${due}（${distance}）`,
-      priority: 8
+      priority: 6
     });
   }
 
@@ -536,7 +536,7 @@ function createInfoContextRows(view) {
       id: "context-world",
       kind: "context",
       text: `[世界] ${worldEvent.name}：${worldEvent.message}`,
-      priority: 9
+      priority: 2
     });
   }
 

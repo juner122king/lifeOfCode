@@ -1265,6 +1265,13 @@ function formatDuration(seconds) {
   return `${Number.isInteger(hours) ? hours.toFixed(0) : hours.toFixed(1)} 小时`;
 }
 
+function formatGameDuration(seconds) {
+  const minutes = Math.max(0, Math.floor(seconds));
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = minutes / 60;
+  return `${Number.isInteger(hours) ? hours.toFixed(0) : hours.toFixed(1)} 小时`;
+}
+
 function formatMultiplierList(multipliers = {}) {
   const entries = Object.entries(multipliers)
     .filter(([, value]) => value && value !== 1)
@@ -3867,7 +3874,7 @@ function getManagementOptions(state, type) {
         progressPercent: progress.progressPercent,
         progressLabel: "工时进度",
         progressActive: active,
-        progressText: `${formatDuration(progress.workedSeconds)}/${formatDuration(progress.requiredSeconds)}`,
+        progressText: `${formatGameDuration(progress.workedSeconds)}/${formatGameDuration(progress.requiredSeconds)}`,
         resourcesPaid: progress.resourcesPaid,
         deadlineText,
         deadlineCritical,
