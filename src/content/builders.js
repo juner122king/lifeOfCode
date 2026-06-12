@@ -36,6 +36,55 @@ function scaleProjectRewards(rewards = {}) {
   };
 }
 
+function sumResources(entries = []) {
+  const result = {};
+  for (const resources of entries) {
+    for (const [key, value] of Object.entries(resources || {})) {
+      result[key] = (result[key] || 0) + Number(value || 0);
+    }
+  }
+  return result;
+}
+
+function splitResourceByRatios(resources = {}, ratios = [1]) {
+  return ratios.map((ratio, index) => {
+    const part = {};
+    for (const [key, value] of Object.entries(resources || {})) {
+      const total = Number(value) || 0;
+      const previous = ratios
+        .slice(0, index)
+        .reduce((sum, currentRatio) => sum + Math.floor(total * currentRatio), 0);
+      part[key] = index === ratios.length - 1
+        ? Math.max(0, total - previous)
+        : Math.floor(total * ratio);
+    }
+    return part;
+  });
+}
+
+function splitWorkHours(totalWorkHours, ratios = [1]) {
+  return ratios.map((ratio, index) => {
+    if (index === ratios.length - 1) {
+      const previous = ratios
+        .slice(0, index)
+        .reduce((sum, currentRatio) => sum + roundBalance(totalWorkHours * currentRatio), 0);
+      return roundBalance(totalWorkHours - previous);
+    }
+    return roundBalance(totalWorkHours * ratio);
+  });
+}
+
+function createDefaultProjectStages(totalWorkHours, resources = {}) {
+  const ratios = [0.3, 0.5, 0.2];
+  const resourceParts = splitResourceByRatios(resources, ratios);
+  const workHours = splitWorkHours(totalWorkHours, ratios);
+  return [
+    { id: "scope", name: "需求校准", workHours: workHours[0], resources: resourceParts[0], successModifier: 0.02 },
+    { id: "implementation", name: "实现推进", workHours: workHours[1], resources: resourceParts[1] },
+    { id: "acceptance", name: "验收收口", workHours: workHours[2], resources: resourceParts[2], successModifier: -0.01 }
+  ];
+}
+
 function activity(config) {
   return {
     ...config,
@@ -98,15 +147,35 @@ function project(config) {
   const skills = config.skills || [];
   const resources = config.resources || template.resources;
   const rewards = config.rewards || template.rewards;
+  const defaultWorkHours = roundBalance(config.minWorkHours || template.minWorkHours);
+  const stageSource = Array.isArray(config.stages) && config.stages.length
+    ? config.stages.map((stage) => ({
+        ...stage,
+        resources: scaleProjectResources(stage.resources || {}, config.difficulty)
+      }))
+    : createDefaultProjectStages(defaultWorkHours, scaleProjectResources(resources, config.difficulty));
+  const stages = stageSource.map((stage, index) => ({
+    id: stage.id || `stage-${index + 1}`,
+    name: stage.name || `阶段 ${index + 1}`,
+    workHours: roundBalance(stage.workHours || defaultWorkHours),
+    resources: stage.resources || {},
+    successModifier: Number(stage.successModifier) || 0,
+    failureDeltas: stage.failureDeltas || null
+  }));
+  const totalWorkHours = roundBalance(stages.reduce((sum, stage) => sum + (Number(stage.workHours) || 0), 0));
   return {
     id: config.id,
     name: config.name,
     description: config.description || defaultProjectDescription(skills),
+    kind: config.kind || "milestone",
+    tags: Array.isArray(config.tags) ? [...config.tags] : [],
+    deadlineDays: Number.isFinite(Number(config.deadlineDays)) ? Math.max(1, Math.floor(Number(config.deadlineDays))) : null,
     difficulty: config.difficulty,
     maxSuccessRate: config.maxSuccessRate || template.maxSuccessRate,
-    minWorkHours: roundBalance(config.minWorkHours || template.minWorkHours),
+    minWorkHours: totalWorkHours,
+    stages,
     requirements: {
-      resources: scaleProjectResources(resources, config.difficulty),
+      resources: sumResources(stages.map((stage) => stage.resources)),
       skills,
       activityLevels: capProjectActivityLevels(config.activityLevels || {}, config.difficulty)
     },

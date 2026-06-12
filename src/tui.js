@@ -1110,21 +1110,25 @@ function formatOptionDetail(option) {
   if (!option) return [];
   if (option.detailKind === "activity") return formatActivityOptionDetail(option);
 
-  const isProject = Number.isFinite(option.successRate) && Number.isFinite(option.maxSuccessRate);
+    const isProject = Number.isFinite(option.successRate) && Number.isFinite(option.maxSuccessRate);
   if (isProject) {
     const details = [];
     const isInProgress = option.status === "进行中" || option.status === "已暂停";
     const isBlocked = option.missing && String(option.missing).trim().length > 0;
 
-    if (isInProgress && Number.isFinite(option.workedSeconds)) {
+    if (option.kindLabel) {
+      details.push({ label: "类型", value: option.kindLabel });
+    }
+
+    if (Number.isFinite(option.stageIndex) && Number.isFinite(option.stageCount)) {
       const formatGameTime = (seconds) => {
         const minutes = Math.floor(seconds);
         const hours = Math.floor(minutes / 60);
         return hours > 0 ? `${hours}h` : `${minutes}m`;
       };
       details.push({
-        label: "已投入",
-        value: `${formatGameTime(option.workedSeconds)} / ${formatGameTime(option.requiredSeconds)}（${option.progressPercent}%）`
+        label: "当前阶段",
+        value: `${option.stageIndex + 1}/${option.stageCount} ${option.stageName || ""} ${formatGameTime(option.stageWorkedSeconds)} / ${formatGameTime(option.stageRequiredSeconds)}（${option.stageProgressPercent || 0}%）`
       });
     }
 
@@ -1154,7 +1158,11 @@ function formatOptionDetail(option) {
     }
 
     if (option.cost) {
-      details.push({ label: "花费", value: option.cost });
+      details.push({ label: "素材预算", value: option.cost });
+    }
+
+    if (option.spentResourcesText) {
+      details.push({ label: "已消耗", value: option.spentResourcesText });
     }
 
     if (option.description) {

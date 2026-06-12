@@ -69,6 +69,16 @@ const ACTIVITY_ENERGY_COST_PER_HOUR = {
 };
 const SKILL_ENERGY_COST_PER_HOUR = 7;
 const PROJECT_ENERGY_COST_PER_HOUR_BY_DIFFICULTY = { 1: 8, 2: 8, 3: 10, 4: 12, 5: 14 };
+const PROJECT_BOARD_REFRESH_HOUR = 9;
+const PROJECT_BOARD_COMMISSION_COUNT = 6;
+const PROJECT_FAILURE_DELTAS_BY_DIFFICULTY = {
+  1: { bugs: 1, techDebt: 1, pressure: 2 },
+  2: { bugs: 2, techDebt: 2, pressure: 4 },
+  3: { bugs: 4, techDebt: 4, pressure: 7 },
+  4: { bugs: 6, techDebt: 7, pressure: 10 },
+  5: { bugs: 9, techDebt: 10, pressure: 14 }
+};
+const RESOURCE_EPSILON = 1e-9;
 const REST_RECOVERY_PER_HOUR = {
   active: 4,
   rest_noon: 4,
@@ -156,6 +166,14 @@ function goalById(id) {
 
 function projectById(id) {
   return itemById(content.projects || [], id);
+}
+
+function milestoneProjects() {
+  return (content.projects || []).filter((project) => (project.kind || "milestone") === "milestone");
+}
+
+function commissionProjects() {
+  return (content.projects || []).filter((project) => project.kind === "commission");
 }
 
 function roleRank(id) {
@@ -251,6 +269,7 @@ function createNewState(now = Date.now(), options = {}) {
     activeActivityId: null,
     activeProjectId: null,
     projectProgress: {},
+    projectBoard: null,
     dayStartProjectProgress: {},
     worldTimeMinutes: WORLD_START_MINUTES,
     scheduleDraft: createScheduleDraft(1),
@@ -356,6 +375,7 @@ function normalizeState(raw, now = Date.now()) {
     activeActivityId: activityById(raw && raw.activeActivityId) ? raw.activeActivityId : null,
     activeProjectId: projectById(raw && raw.activeProjectId) ? raw.activeProjectId : null,
     projectProgress: normalizeProjectProgress(raw && raw.projectProgress),
+    projectBoard: normalizeProjectBoard(raw && raw.projectBoard, raw),
     worldTimeMinutes: normalizeWorldTimeMinutes(raw && raw.worldTimeMinutes),
     scheduleDraft: normalizeSchedule(raw && raw.scheduleDraft, calendarDay),
     lockedSchedule: raw && raw.lockedSchedule ? normalizeSchedule(raw.lockedSchedule, calendarDay, { locked: true }) : null,
@@ -404,6 +424,14 @@ function normalizeState(raw, now = Date.now()) {
   normalized.dayPhaseEvents = Array.isArray(normalized.dayPhaseEvents)
     ? normalized.dayPhaseEvents.filter((event) => event && typeof event === "object" && event.id && event.phaseId)
     : [];
+  for (const [id, deadline] of Object.entries(normalized.activeProjectDeadlines || {})) {
+    if (!normalized.projectProgress[id] || !Number.isFinite(Number(deadline && deadline.dueWorldMinute))) continue;
+    if (!Number.isFinite(Number(normalized.projectProgress[id].dueWorldMinute))) {
+      normalized.projectProgress[id].dueWorldMinute = Math.max(0, Math.floor(Number(deadline.dueWorldMinute)));
+    }
+    if (deadline && deadline.warned) normalized.projectProgress[id].deadlineWarned = true;
+  }
+  ensureProjectBoard(normalized);
   if (!normalized.lockedSchedule) normalized.waitingForSchedule = true;
   if (normalized.lockedSchedule) normalized.scheduleDraft = normalizeSchedule(normalized.scheduleDraft, normalized.lockedSchedule.day);
   delete normalized.dailyActionMinutesUsed;
@@ -491,21 +519,121 @@ function normalizeAttributes(raw, defaults, min, max) {
   return result;
 }
 
+function getProjectStages(projectOrId) {
+  const project = typeof projectOrId === "string" ? projectById(projectOrId) : projectOrId;
+  if (!project) return [];
+  if (Array.isArray(project.stages) && project.stages.length) return project.stages;
+  return [{
+    id: "delivery",
+    name: "交付",
+    workHours: Number(project.minWorkHours) || 1,
+    resources: project.requirements && project.requirements.resources || {},
+    successModifier: 0,
+    failureDeltas: null
+  }];
+}
+
+function getProjectTotalStageSeconds(projectOrId) {
+  return getProjectStages(projectOrId).reduce((sum, stage) => sum + Math.max(1, Math.round((Number(stage.workHours) || 0) * 3600)), 0);
+}
+
+function getStageRequiredSeconds(stage) {
+  return Math.max(1, Math.round((Number(stage && stage.workHours) || 0) * 3600));
+}
+
+function normalizeSpentResources(raw) {
+  const result = {};
+  if (!raw || typeof raw !== "object") return result;
+  for (const key of RESOURCE_ORDER) {
+    const value = Number(raw[key]);
+    if (Number.isFinite(value) && value > 0) result[key] = value;
+  }
+  return result;
+}
+
+function createProjectProgressFromWorkedSeconds(project, rawProgress, workedSeconds) {
+  const stages = getProjectStages(project);
+  const totalRequiredSeconds = getProjectTotalStageSeconds(project);
+  let remaining = Math.max(0, Math.min(Number(workedSeconds) || 0, totalRequiredSeconds));
+  let stageIndex = 0;
+  let stageWorkedSeconds = 0;
+  for (let index = 0; index < stages.length; index += 1) {
+    const required = getStageRequiredSeconds(stages[index]);
+    if (remaining >= required && index < stages.length - 1) {
+      remaining -= required;
+      stageIndex = index + 1;
+      stageWorkedSeconds = 0;
+    } else {
+      stageIndex = index;
+      stageWorkedSeconds = Math.min(required, remaining);
+      break;
+    }
+  }
+  const result = {
+    stageIndex,
+    stageWorkedSeconds,
+    workedSeconds: Math.max(0, Number(workedSeconds) || 0),
+    spentResources: normalizeSpentResources(rawProgress && (rawProgress.spentResources || rawProgress.investedResources)),
+    failureCount: Math.max(0, Math.floor(Number(rawProgress && rawProgress.failureCount) || 0))
+  };
+  const acceptedAtWorldMinute = Number(rawProgress && rawProgress.acceptedAtWorldMinute);
+  const dueWorldMinute = Number(rawProgress && rawProgress.dueWorldMinute);
+  if (Number.isFinite(acceptedAtWorldMinute)) result.acceptedAtWorldMinute = Math.max(0, Math.floor(acceptedAtWorldMinute));
+  if (Number.isFinite(dueWorldMinute)) result.dueWorldMinute = Math.max(0, Math.floor(dueWorldMinute));
+  if (rawProgress && (rawProgress.legacyPrepaid || rawProgress.resourcesPaid)) result.legacyPrepaid = true;
+  if (rawProgress && rawProgress.deadlineWarned) result.deadlineWarned = true;
+  return result;
+}
+
 function normalizeProjectProgress(raw) {
   const result = {};
   for (const project of content.projects || []) {
     const progress = raw && raw[project.id];
     if (!progress || typeof progress !== "object") continue;
     const workedSeconds = Math.max(0, Number(progress.workedSeconds) || 0);
-    const resourcesPaid = Boolean(progress.resourcesPaid);
-    if (workedSeconds > 0 || resourcesPaid) {
-      result[project.id] = { workedSeconds, resourcesPaid };
-      if (Number.isFinite(Number(progress.dueWorldMinute))) {
-        result[project.id].dueWorldMinute = Math.max(0, Math.floor(Number(progress.dueWorldMinute)));
+    const hasProgress = workedSeconds > 0 ||
+      Boolean(progress.resourcesPaid || progress.legacyPrepaid) ||
+      Number.isFinite(Number(progress.stageIndex)) ||
+      Number.isFinite(Number(progress.stageWorkedSeconds));
+    if (hasProgress) {
+      const next = createProjectProgressFromWorkedSeconds(project, progress, workedSeconds);
+      if (Number.isFinite(Number(progress.stageIndex))) {
+        const stages = getProjectStages(project);
+        next.stageIndex = clamp(Math.floor(Number(progress.stageIndex) || 0), 0, Math.max(0, stages.length - 1));
+        next.stageWorkedSeconds = Math.max(0, Math.min(getStageRequiredSeconds(stages[next.stageIndex]), Number(progress.stageWorkedSeconds) || 0));
       }
+      result[project.id] = next;
     }
   }
   return result;
+}
+
+function stableHash(value) {
+  const text = String(value || "");
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function seededRandom(seed) {
+  let value = stableHash(seed) || 1;
+  return () => {
+    value = (Math.imul(value, 1664525) + 1013904223) >>> 0;
+    return value / 0x100000000;
+  };
+}
+
+function normalizeProjectBoard(raw, stateLike = {}) {
+  const calendar = getWorldCalendar(stateLike.worldTimeMinutes);
+  const day = Math.max(1, Math.floor(Number(raw && raw.day) || calendar.day || 1));
+  const validIds = new Set((content.projects || []).map((project) => project.id));
+  const offerIds = Array.isArray(raw && raw.offerIds)
+    ? [...new Set(raw.offerIds.filter((id) => validIds.has(id)))]
+    : [];
+  return { day, offerIds };
 }
 
 function normalizeSkillProgress(raw, unlockedSkills = []) {
@@ -794,19 +922,89 @@ function applyMorningTransitionIfDue(state, messages = [], events = []) {
   return true;
 }
 
+function getProjectBoardDay(state) {
+  const calendar = getWorldCalendar(state.worldTimeMinutes);
+  const beforeRefresh = calendar.hour < PROJECT_BOARD_REFRESH_HOUR;
+  return Math.max(1, calendar.day - (beforeRefresh ? 1 : 0));
+}
+
+function pickStableProjects(pool, count, seed) {
+  const rng = seededRandom(seed);
+  const items = pool
+    .map((project) => ({ project, score: rng() }))
+    .sort((a, b) => a.score - b.score)
+    .map((entry) => entry.project);
+  return items.slice(0, Math.max(0, count));
+}
+
+function generateProjectBoardOfferIds(state, day) {
+  const profileSeed = `${state.profileId || DEFAULT_PROFILE_ID}:${day}`;
+  const byDifficulty = new Map();
+  for (const project of commissionProjects()) {
+    const difficulty = clamp(Math.floor(Number(project.difficulty) || 1), 1, 5);
+    byDifficulty.set(difficulty, [...(byDifficulty.get(difficulty) || []), project]);
+  }
+  const selected = [];
+  for (const difficulty of [1, 2, 3, 4, 5]) {
+    const pool = byDifficulty.get(difficulty) || [];
+    const pickCount = difficulty <= 2 ? 2 : 1;
+    selected.push(...pickStableProjects(pool, pickCount, `${profileSeed}:${difficulty}`));
+  }
+  if (selected.length < PROJECT_BOARD_COMMISSION_COUNT) {
+    const used = new Set(selected.map((project) => project.id));
+    const rest = commissionProjects().filter((project) => !used.has(project.id));
+    selected.push(...pickStableProjects(rest, PROJECT_BOARD_COMMISSION_COUNT - selected.length, `${profileSeed}:rest`));
+  }
+  return selected.slice(0, PROJECT_BOARD_COMMISSION_COUNT).map((project) => project.id);
+}
+
+function ensureProjectBoard(state) {
+  const day = getProjectBoardDay(state);
+  const board = normalizeProjectBoard(state.projectBoard, state);
+  if (board.day !== day || !board.offerIds.length) {
+    state.projectBoard = { day, offerIds: generateProjectBoardOfferIds(state, day) };
+  } else {
+    state.projectBoard = board;
+  }
+  const knownIds = new Set((content.projects || []).map((project) => project.id));
+  const offerIds = new Set((state.projectBoard.offerIds || []).filter((id) => knownIds.has(id)));
+  const completed = new Set(state.completedProjects || []);
+  for (const project of milestoneProjects()) {
+    if (!completed.has(project.id) || state.projectProgress[project.id]) offerIds.add(project.id);
+  }
+  for (const id of Object.keys(state.projectProgress || {})) {
+    if (knownIds.has(id)) offerIds.add(id);
+  }
+  state.projectBoard.offerIds = [...offerIds];
+  return state.projectBoard;
+}
+
+function getProjectBoardProjects(state) {
+  const board = ensureProjectBoard(state);
+  const projects = [];
+  const seen = new Set();
+  for (const id of board.offerIds || []) {
+    const project = projectById(id);
+    if (!project || seen.has(id)) continue;
+    projects.push(project);
+    seen.add(id);
+  }
+  return projects;
+}
+
 function getNearestDeadline(state) {
-  const entries = Object.entries(state.activeProjectDeadlines || {})
-    .map(([id, deadline]) => {
+  const entries = Object.entries(state.projectProgress || {})
+    .map(([id, progress]) => {
       const project = projectById(id);
-      if (!project || !Number.isFinite(Number(deadline.dueWorldMinute)) || deadline.failed) return null;
-      const daysRemaining = Math.ceil((deadline.dueWorldMinute - state.worldTimeMinutes) / MINUTES_PER_DAY);
+      if (!project || !Number.isFinite(Number(progress.dueWorldMinute))) return null;
+      const daysRemaining = Math.ceil((progress.dueWorldMinute - state.worldTimeMinutes) / MINUTES_PER_DAY);
       return {
         id,
         name: project.name,
-        dueWorldMinute: deadline.dueWorldMinute,
-        dueDay: getWorldCalendar(deadline.dueWorldMinute).day,
+        dueWorldMinute: progress.dueWorldMinute,
+        dueDay: getWorldCalendar(progress.dueWorldMinute).day,
         daysRemaining,
-        overdue: deadline.dueWorldMinute < state.worldTimeMinutes
+        overdue: progress.dueWorldMinute < state.worldTimeMinutes
       };
     })
     .filter(Boolean)
@@ -823,13 +1021,15 @@ function formatNearestDeadline(state) {
 
 function clampState(state) {
   for (const key of RESOURCE_ORDER) {
-    state.resources[key] = Math.max(0, Number(state.resources[key]) || 0);
+    const value = Math.max(0, Number(state.resources[key]) || 0);
+    state.resources[key] = Math.abs(value) < RESOURCE_EPSILON ? 0 : value;
   }
   state.resources.pressure = clamp(state.resources.pressure, 0, 100);
   delete state.dailyEnergyCapMultiplier;
   delete state.pendingMorningEnergyCapMultiplier;
   delete state.pendingMorningEnergyPenalty;
-  state.resources.energy = clamp(Number(state.resources.energy) || 0, 0, getEffectiveMaxEnergy(state));
+  const energy = clamp(Number(state.resources.energy) || 0, 0, getEffectiveMaxEnergy(state));
+  state.resources.energy = Math.abs(energy) < RESOURCE_EPSILON ? 0 : energy;
 }
 
 function getBaseAttribute(state, attr) {
@@ -1036,8 +1236,9 @@ function getProjectSuccessRate(state, projectOrId) {
   const maxSuccessRate = clamp(Number(project.maxSuccessRate) || 0.9, 0.15, 1);
   const difficulty = clamp(Number(project.difficulty) || 1, 1, 5);
   let rate = maxSuccessRate - getProjectRiskScore(state) * difficulty * 0.12;
-  const deadline = state.activeProjectDeadlines && state.activeProjectDeadlines[project.id];
-  if (deadline && Number(deadline.dueWorldMinute) < Number(state.worldTimeMinutes || WORLD_START_MINUTES)) {
+  const progress = state.projectProgress && state.projectProgress[project.id];
+  const dueWorldMinute = Number(progress && progress.dueWorldMinute);
+  if (Number.isFinite(dueWorldMinute) && dueWorldMinute < Number(state.worldTimeMinutes || WORLD_START_MINUTES)) {
     rate -= 0.12;
   }
   return clamp(rate, 0.15, maxSuccessRate);
@@ -1046,21 +1247,40 @@ function getProjectSuccessRate(state, projectOrId) {
 function getProjectRequiredSeconds(projectOrId) {
   const project = typeof projectOrId === "string" ? projectById(projectOrId) : projectOrId;
   if (!project) return 0;
-  return Math.max(1, Math.round((Number(project.minWorkHours) || 0) * 3600));
+  return Math.max(1, getProjectTotalStageSeconds(project) || Math.round((Number(project.minWorkHours) || 0) * 3600));
 }
 
 function getProjectProgress(state, projectOrId) {
   const project = typeof projectOrId === "string" ? projectById(projectOrId) : projectOrId;
   const id = project && project.id;
   const progress = id && state.projectProgress[id] ? state.projectProgress[id] : {};
-  const workedSeconds = Math.max(0, Number(progress.workedSeconds) || 0);
+  const stages = getProjectStages(project);
+  const stageIndex = clamp(Math.floor(Number(progress.stageIndex) || 0), 0, Math.max(0, stages.length - 1));
+  const stage = stages[stageIndex] || null;
+  const stageRequiredSeconds = stage ? getStageRequiredSeconds(stage) : 0;
+  const stageWorkedSeconds = Math.max(0, Math.min(stageRequiredSeconds || Number.POSITIVE_INFINITY, Number(progress.stageWorkedSeconds) || 0));
+  const completedSeconds = stages
+    .slice(0, stageIndex)
+    .reduce((sum, item) => sum + getStageRequiredSeconds(item), 0);
+  const workedSeconds = Math.max(0, Number(progress.workedSeconds) || completedSeconds + stageWorkedSeconds);
   const requiredSeconds = getProjectRequiredSeconds(project);
   return {
+    stage,
+    stageIndex,
+    stageCount: stages.length,
+    stageWorkedSeconds,
+    stageRequiredSeconds,
+    stageProgressPercent: stageRequiredSeconds > 0 ? Math.min(100, Math.floor(stageWorkedSeconds / stageRequiredSeconds * 100)) : 100,
     workedSeconds,
     requiredSeconds,
     remainingSeconds: Math.max(0, requiredSeconds - workedSeconds),
     progressPercent: requiredSeconds > 0 ? Math.min(100, Math.floor(workedSeconds / requiredSeconds * 100)) : 100,
-    resourcesPaid: Boolean(progress.resourcesPaid)
+    spentResources: normalizeSpentResources(progress.spentResources),
+    failureCount: Math.max(0, Math.floor(Number(progress.failureCount) || 0)),
+    acceptedAtWorldMinute: Number.isFinite(Number(progress.acceptedAtWorldMinute)) ? Math.floor(Number(progress.acceptedAtWorldMinute)) : null,
+    dueWorldMinute: Number.isFinite(Number(progress.dueWorldMinute)) ? Math.floor(Number(progress.dueWorldMinute)) : null,
+    legacyPrepaid: Boolean(progress.legacyPrepaid),
+    resourcesPaid: Boolean(progress.resourcesPaid || progress.legacyPrepaid)
   };
 }
 
@@ -1877,6 +2097,7 @@ function applyResourceDelta(state, key, rawDelta) {
   } else {
     state.resources[key] = Math.max(0, before + rawDelta);
   }
+  if (Math.abs(state.resources[key]) < RESOURCE_EPSILON) state.resources[key] = 0;
   return state.resources[key] - before;
 }
 
@@ -1890,6 +2111,7 @@ function applyResourceDeltaTo(resources, key, rawDelta, maxEnergy = ENERGY_MAX) 
   } else {
     resources[key] = Math.max(0, before + rawDelta);
   }
+  if (Math.abs(resources[key]) < RESOURCE_EPSILON) resources[key] = 0;
   return resources[key] - before;
 }
 
@@ -2079,10 +2301,32 @@ function settleActivity(state, activity, seconds, options = {}) {
 }
 
 function ensureProjectProgress(state, projectId) {
-  state.projectProgress[projectId] = state.projectProgress[projectId] || { workedSeconds: 0, resourcesPaid: false };
-  state.projectProgress[projectId].workedSeconds = Math.max(0, Number(state.projectProgress[projectId].workedSeconds) || 0);
-  state.projectProgress[projectId].resourcesPaid = Boolean(state.projectProgress[projectId].resourcesPaid);
-  return state.projectProgress[projectId];
+  const project = projectById(projectId);
+  const existing = state.projectProgress[projectId] || {};
+  const progress = createProjectProgressFromWorkedSeconds(project, existing, existing.workedSeconds || 0);
+  const stages = getProjectStages(project);
+  const existingStageIndex = Number(existing.stageIndex);
+  const existingStageWorkedSeconds = Number(existing.stageWorkedSeconds);
+  const existingWorkedSeconds = Number(existing.workedSeconds);
+  const hasStageFields = Number.isFinite(existingStageIndex) && Number.isFinite(existingStageWorkedSeconds);
+  const stageIndex = hasStageFields ? clamp(Math.floor(existingStageIndex || 0), 0, Math.max(0, stages.length - 1)) : 0;
+  const stageDerivedWorkedSeconds = hasStageFields
+    ? stages.slice(0, stageIndex).reduce((sum, item) => sum + getStageRequiredSeconds(item), 0) + Math.max(0, existingStageWorkedSeconds || 0)
+    : 0;
+  const shouldTrustStageFields = hasStageFields && (!Number.isFinite(existingWorkedSeconds) || existingWorkedSeconds <= 0 || Math.abs(existingWorkedSeconds - stageDerivedWorkedSeconds) < 0.000001);
+  if (shouldTrustStageFields) {
+    progress.stageIndex = stageIndex;
+  }
+  const stage = stages[progress.stageIndex];
+  progress.stageWorkedSeconds = Math.max(0, Math.min(getStageRequiredSeconds(stage), shouldTrustStageFields ? existingStageWorkedSeconds : progress.stageWorkedSeconds || 0));
+  progress.workedSeconds = stages
+    .slice(0, progress.stageIndex)
+    .reduce((sum, item) => sum + getStageRequiredSeconds(item), 0) + progress.stageWorkedSeconds;
+  if (!Number.isFinite(Number(progress.acceptedAtWorldMinute))) progress.acceptedAtWorldMinute = Math.max(0, Math.floor(Number(state.worldTimeMinutes) || WORLD_START_MINUTES));
+  Object.assign(existing, progress);
+  delete existing.resourcesPaid;
+  state.projectProgress[projectId] = existing;
+  return existing;
 }
 
 function clearProjectProgress(state, projectId) {
@@ -2154,73 +2398,195 @@ function settleSkillLearning(state, skill, seconds, options = {}) {
   return [message];
 }
 
+function scaleSkillExpRewards(rewards = {}, multiplier = 1) {
+  return Object.fromEntries(Object.entries(rewards || {}).map(([id, amount]) => [id, amount * multiplier]));
+}
+
 function applyProjectRewards(state, project, options = {}) {
+  const kind = project.kind || "milestone";
   const firstSuccess = !state.completedProjects.includes(project.id);
-  const rewardScale = firstSuccess ? 1 : 0.05;
+  const rewardScale = kind === "commission" || firstSuccess ? 1 : 0.05;
   const rewardMultiplier = options.rewardMultiplier || 1;
   const moneyReward = (project.rewards.money || 0) * rewardScale * rewardMultiplier;
   state.resources.money += moneyReward;
+  const reputationReward = kind === "commission" || firstSuccess ? project.rewards.reputation || 0 : 0;
+  state.resources.reputation += reputationReward;
   if (firstSuccess) {
-    state.resources.reputation += project.rewards.reputation || 0;
     state.completedProjects.push(project.id);
-    state.stats.totalProjects += 1;
-    applyAttributeExpRewards(state, project.attributeExp, { events: options.events });
   }
+  if (kind === "commission" || firstSuccess) {
+    state.stats.totalProjects += 1;
+  }
+  if (firstSuccess) applyAttributeExpRewards(state, project.attributeExp, { events: options.events });
   return {
     firstSuccess,
     rewards: {
       money: moneyReward,
-      reputation: firstSuccess ? project.rewards.reputation || 0 : 0
+      reputation: reputationReward
     },
-    skillExp: addSkillExp(state, project.skillExpRewards, options.skillExpMultiplier || 1)
+    skillExp: addSkillExp(state, scaleSkillExpRewards(project.skillExpRewards, rewardScale), options.skillExpMultiplier || 1)
   };
+}
+
+function getStageResourceCost(stage, stageRequiredSeconds, seconds) {
+  const ratio = stageRequiredSeconds > 0 ? Math.max(0, Number(seconds) || 0) / stageRequiredSeconds : 0;
+  return Object.fromEntries(Object.entries(stage.resources || {}).map(([key, value]) => [key, (Number(value) || 0) * ratio]));
+}
+
+function getAffordableProjectStageSeconds(state, progress, stage, stageRequiredSeconds, requestedSeconds) {
+  const requested = Math.max(0, Number(requestedSeconds) || 0);
+  if (requested <= 0 || progress.legacyPrepaid) return requested;
+  let affordable = requested;
+  for (const [key, total] of Object.entries(stage.resources || {})) {
+    const costPerSecond = (Number(total) || 0) / Math.max(1, stageRequiredSeconds);
+    if (costPerSecond <= 0) continue;
+    const available = Math.max(0, Number(state.resources[key]) || 0);
+    affordable = Math.min(affordable, available / costPerSecond);
+  }
+  return Math.max(0, affordable);
+}
+
+function consumeProjectStageResources(state, progress, stage, stageRequiredSeconds, seconds, deltas = null) {
+  if (progress.legacyPrepaid) return {};
+  const cost = getStageResourceCost(stage, stageRequiredSeconds, seconds);
+  const spent = {};
+  progress.spentResources = progress.spentResources || {};
+  for (const [key, value] of Object.entries(cost)) {
+    if (!value) continue;
+    const applied = applyResourceDelta(state, key, -value);
+    spent[key] = -applied;
+    progress.spentResources[key] = (progress.spentResources[key] || 0) + (-applied);
+    if (deltas && applied) deltas[key] = (deltas[key] || 0) + applied;
+  }
+  return spent;
+}
+
+function formatProjectMaterialShortfall(state, stage) {
+  return formatShortfall(state.resources, stage && stage.resources || {});
+}
+
+function getStageSuccessRate(state, project, stage) {
+  const maxSuccessRate = clamp(Number(project.maxSuccessRate) || 0.9, 0.15, 1);
+  return clamp(getProjectSuccessRate(state, project) + (Number(stage && stage.successModifier) || 0), 0.15, maxSuccessRate);
+}
+
+function applyProjectStageFailure(state, project, stage, progress, options = {}) {
+  progress.failureCount = Math.max(0, Number(progress.failureCount) || 0) + 1;
+  const deltas = stage.failureDeltas || PROJECT_FAILURE_DELTAS_BY_DIFFICULTY[clamp(Math.floor(Number(project.difficulty) || 1), 1, 5)] || {};
+  const appliedDeltas = {};
+  for (const [key, value] of Object.entries(deltas || {})) {
+    const applied = applyResourceDelta(state, key, value);
+    if (applied) {
+      appliedDeltas[key] = applied;
+      if (options.deltas) options.deltas[key] = (options.deltas[key] || 0) + applied;
+    }
+  }
+  const stageRatio = getStageRequiredSeconds(stage) / Math.max(1, getProjectRequiredSeconds(project));
+  const failedSkillExp = addSkillExp(state, scaleSkillExpRewards(project.skillExpRewards, stageRatio * 0.1), options.skillExpMultiplier || 1);
+  progress.stageWorkedSeconds = getStageRequiredSeconds(stage) * 0.5;
+  progress.workedSeconds = getProjectStages(project)
+    .slice(0, progress.stageIndex)
+    .reduce((sum, item) => sum + getStageRequiredSeconds(item), 0) + progress.stageWorkedSeconds;
+  return { appliedDeltas, failedSkillExp };
 }
 
 function settleProject(state, project, seconds, options = {}) {
   const progress = ensureProjectProgress(state, project.id);
-  progress.workedSeconds += seconds * (options.workMultiplier || 1);
-  const projectProgress = getProjectProgress(state, project);
+  ensureProjectDeadline(state, project);
+  let remainingWork = Math.max(0, Number(seconds) || 0) * (options.workMultiplier || 1);
+  let actualWorkedSeconds = 0;
   const messages = [];
-
-  if (projectProgress.workedSeconds < projectProgress.requiredSeconds) {
-    return messages;
-  }
-
-  const successRate = getProjectSuccessRate(state, project);
   const rng = options.rng || Math.random;
-  const roll = rng();
-  if (roll <= successRate) {
-    const feedback = formatProjectFeedback(project, true, rng);
-    const rewardResult = applyProjectRewards(state, project, {
-      rewardMultiplier: options.rewardMultiplier || 1,
-      skillExpMultiplier: options.skillExpMultiplier || 1,
-      events: options.events
-    });
-    clearProjectProgress(state, project.id);
+  let blocked = false;
+
+  while (remainingWork > 0 && state.projectProgress[project.id]) {
+    const stages = getProjectStages(project);
+    const stage = stages[progress.stageIndex];
+    if (!stage) break;
+    const stageRequiredSeconds = getStageRequiredSeconds(stage);
+    const stageRemaining = Math.max(0, stageRequiredSeconds - progress.stageWorkedSeconds);
+
+    if (stageRemaining > 0.000001) {
+      const requested = Math.min(remainingWork, stageRemaining);
+      const affordable = getAffordableProjectStageSeconds(state, progress, stage, stageRequiredSeconds, requested);
+
+      if (affordable <= 0.000001) {
+        blocked = true;
+        messages.push(formatLines([
+          `项目素材不足：${project.name} / ${stage.name} 无法继续推进。`,
+          formatProjectMaterialShortfall(state, stage),
+          formatNextAdvice(state)
+        ]));
+        break;
+      }
+
+      consumeProjectStageResources(state, progress, stage, stageRequiredSeconds, affordable, options.deltas);
+      progress.stageWorkedSeconds += affordable;
+      progress.workedSeconds += affordable;
+      actualWorkedSeconds += affordable;
+      remainingWork -= affordable;
+
+      if (affordable < requested - 0.000001) {
+        blocked = true;
+        messages.push(formatLines([
+          `项目素材不足：${project.name} / ${stage.name} 只推进了可负担部分。`,
+          formatProjectMaterialShortfall(state, stage),
+          formatNextAdvice(state)
+        ]));
+        break;
+      }
+
+      if (progress.stageWorkedSeconds < stageRequiredSeconds - 0.000001) continue;
+    } else {
+      remainingWork = Math.max(0, remainingWork - 0.000001);
+    }
+
+    const successRate = getStageSuccessRate(state, project, stage);
+    const roll = rng();
+    if (roll <= successRate) {
+      const lastStage = progress.stageIndex >= stages.length - 1;
+      if (!lastStage) {
+        messages.push(`项目 ${project.name} 阶段完成：${stage.name}（成功率 ${formatPercent(successRate)}），进入 ${stages[progress.stageIndex + 1].name}。`);
+        pushGameEvent(options.events, "project", `项目 ${project.name} 阶段完成：${stage.name}。`, "good");
+        progress.stageIndex += 1;
+        progress.stageWorkedSeconds = 0;
+        progress.workedSeconds = stages.slice(0, progress.stageIndex).reduce((sum, item) => sum + getStageRequiredSeconds(item), 0);
+        continue;
+      }
+
+      const feedback = formatProjectFeedback(project, true, rng);
+      const rewardResult = applyProjectRewards(state, project, {
+        rewardMultiplier: options.rewardMultiplier || 1,
+        skillExpMultiplier: options.skillExpMultiplier || 1,
+        events: options.events
+      });
+      clearProjectProgress(state, project.id);
+      messages.push(formatLines([
+        `项目 ${project.name} 最终交付：成功率 ${formatPercent(successRate)}，交付成功。`,
+        feedback,
+        `获得：${formatResourceList(rewardResult.rewards)}`,
+        rewardResult.firstSuccess ? formatAttributeExpRewards(project.attributeExp) : (project.kind === "commission" ? "委托交付：本次照常结算奖励。" : "重复交付：声望、属性经验和完成计数不重复获得。"),
+        formatSkillExpRewards(rewardResult.skillExp),
+        formatNextAdvice(state)
+      ]));
+      pushGameEvent(options.events, "project", `项目 ${project.name} 交付成功。${feedback} 获得：${formatResourceList(rewardResult.rewards)}。`, "good");
+      break;
+    }
+
+    const feedback = formatProjectFeedback(project, false, rng);
+    const failure = applyProjectStageFailure(state, project, stage, progress, options);
     messages.push(formatLines([
-      `项目 ${project.name} 工时达标：成功率 ${formatPercent(successRate)}，交付成功。`,
+      `项目 ${project.name} 阶段验收失败：${stage.name}（成功率 ${formatPercent(successRate)}），当前阶段回退到 50%。`,
       feedback,
-      `获得：${formatResourceList(rewardResult.rewards)}`,
-      rewardResult.firstSuccess ? formatAttributeExpRewards(project.attributeExp) : "重复交付：声望、属性经验和完成计数不重复获得。",
-      formatSkillExpRewards(rewardResult.skillExp),
+      `风险变化：${formatResourceList(failure.appliedDeltas)}`,
+      formatSkillExpRewards(failure.failedSkillExp),
       formatNextAdvice(state)
     ]));
-    pushGameEvent(options.events, "project", `项目 ${project.name} 交付成功。${feedback} 获得：${formatResourceList(rewardResult.rewards)}。`, "good");
-    return messages;
+    pushGameEvent(options.events, "project", `项目 ${project.name} 阶段失败：${stage.name}。${feedback}`, "danger");
+    break;
   }
 
-  const feedback = formatProjectFeedback(project, false, rng);
-  const failedSkillExp = addSkillExp(state, project.skillExpRewards, 0.4);
-  clearProjectProgress(state, project.id);
-  messages.push(formatLines([
-    `项目 ${project.name} 工时达标：成功率 ${formatPercent(successRate)}，交付失败。`,
-    feedback,
-    `投入资源全部损失：${formatProjectResourceList(project.requirements.resources || {})}`,
-    formatSkillExpRewards(failedSkillExp),
-    formatNextAdvice(state)
-  ]));
-  pushGameEvent(options.events, "project", `项目 ${project.name} 交付失败。${feedback} 投入资源全部损失。`, "danger");
-  return messages;
+  return { messages, workedSeconds: actualWorkedSeconds, blocked };
 }
 
 function getActiveMode(state) {
@@ -2363,7 +2729,6 @@ function getScheduleResourcePlan(state, slots) {
   const errors = [];
   const nextResources = { ...state.resources };
   const skillsToPay = new Set();
-  const projectsToPay = new Set();
 
   for (const phase of SCHEDULE_PHASES) {
     const slot = slots[phase.id];
@@ -2406,22 +2771,12 @@ function getScheduleResourcePlan(state, slots) {
         errors.push(`${phase.name} 项目不存在：${slot.id}。`);
         continue;
       }
-      const progress = ensureProjectProgress(state, project.id);
       const missing = missingProjectRequirements(state, project, { skipResources: true });
       if (missing.length) errors.push(`${phase.name} 项目 ${project.name} 条件不足：${missing.join("、")}。`);
-      if (!progress.resourcesPaid && !projectsToPay.has(project.id)) {
-        const cost = project.requirements.resources || {};
-        if (!canAfford(nextResources, cost)) {
-          errors.push(`${phase.name} 项目 ${project.name} 资源不足：${formatShortfall(nextResources, cost)}。`);
-        } else {
-          pay(nextResources, cost);
-          projectsToPay.add(project.id);
-        }
-      }
     }
   }
 
-  return { errors, nextResources, skillsToPay, projectsToPay };
+  return { errors, nextResources, skillsToPay };
 }
 
 function confirmSchedule(state) {
@@ -2435,11 +2790,6 @@ function confirmSchedule(state) {
 
   state.resources = plan.nextResources;
   for (const id of plan.skillsToPay) ensureSkillLearningProgress(state, id).resourcesPaid = true;
-  for (const id of plan.projectsToPay) {
-    const progress = ensureProjectProgress(state, id);
-    progress.resourcesPaid = true;
-    ensureProjectDeadline(state, projectById(id));
-  }
   state.lockedSchedule = normalizeSchedule({
     day: getScheduleDay(state),
     slots: state.scheduleDraft.slots,
@@ -2478,7 +2828,7 @@ function isScheduledSlotFinished(state, phaseId, slot) {
   if (slot.type === "none") return true;
   if (state.scheduleCompletedPhases.includes(phaseId)) return true;
   if (slot.type === "skill") return getSkillLevel(state, slot.id) > 0;
-  if (slot.type === "project") return Boolean(projectById(slot.id) && state.completedProjects.includes(slot.id) && !state.projectProgress[slot.id]);
+  if (slot.type === "project") return false;
   return false;
 }
 
@@ -2702,7 +3052,14 @@ function syncScheduledActiveMode(state) {
   clearActiveWork(state);
   if (slot.type === "activity") state.activeActivityId = slot.id;
   if (slot.type === "skill") state.activeSkillLearningId = slot.id;
-  if (slot.type === "project") state.activeProjectId = slot.id;
+  if (slot.type === "project") {
+    const project = projectById(slot.id);
+    if (project) {
+      ensureProjectProgress(state, project.id);
+      ensureProjectDeadline(state, project);
+    }
+    state.activeProjectId = slot.id;
+  }
   return { phase, slot };
 }
 
@@ -2824,44 +3181,58 @@ function applyWorldEventTriggers(state, fromDay, toDay, messages = [], events = 
 }
 
 function ensureProjectDeadline(state, project) {
+  if (!project) return null;
   state.activeProjectDeadlines = state.activeProjectDeadlines || {};
-  const existing = state.activeProjectDeadlines[project.id];
-  if (existing && Number.isFinite(Number(existing.dueWorldMinute))) return existing;
-  const progress = state.projectProgress[project.id];
+  const progress = ensureProjectProgress(state, project.id);
   if (progress && Number.isFinite(Number(progress.dueWorldMinute))) {
-    state.activeProjectDeadlines[project.id] = { dueWorldMinute: progress.dueWorldMinute, failed: false };
+    state.activeProjectDeadlines[project.id] = {
+      dueWorldMinute: progress.dueWorldMinute,
+      failed: false,
+      warned: Boolean(progress.deadlineWarned)
+    };
     return state.activeProjectDeadlines[project.id];
   }
-  const currentDay = getWorldCalendar(state.worldTimeMinutes).day;
+  const existing = state.activeProjectDeadlines[project.id];
+  if (existing && Number.isFinite(Number(existing.dueWorldMinute))) {
+    progress.dueWorldMinute = Math.max(0, Math.floor(Number(existing.dueWorldMinute)));
+    progress.deadlineWarned = Boolean(existing.warned);
+    return existing;
+  }
+  const acceptedAt = Number.isFinite(Number(progress.acceptedAtWorldMinute))
+    ? Math.floor(Number(progress.acceptedAtWorldMinute))
+    : Math.floor(Number(state.worldTimeMinutes) || WORLD_START_MINUTES);
+  const acceptedDay = getWorldCalendar(acceptedAt).day;
+  const deadlineDays = Math.max(2, Math.ceil(Number(project.deadlineDays) || (3 + Number(project.difficulty || 1) * 2)));
   const deadlineDay = Number.isFinite(Number(project.deadlineDay))
-    ? Math.max(currentDay, Math.floor(Number(project.deadlineDay)))
-    : currentDay + Math.max(2, Math.ceil(Number(project.deadlineDays) || (3 + Number(project.difficulty || 1) * 2)));
+    ? Math.max(acceptedDay, Math.floor(Number(project.deadlineDay)))
+    : acceptedDay + deadlineDays;
   const dueWorldMinute = (deadlineDay - 1) * MINUTES_PER_DAY + 18 * 60;
-  state.activeProjectDeadlines[project.id] = { dueWorldMinute, failed: false };
-  if (progress) progress.dueWorldMinute = dueWorldMinute;
+  state.activeProjectDeadlines[project.id] = { dueWorldMinute, failed: false, warned: false };
+  progress.dueWorldMinute = dueWorldMinute;
   return state.activeProjectDeadlines[project.id];
 }
 
 function checkProjectDeadlines(state, messages = [], events = []) {
   state.activeProjectDeadlines = state.activeProjectDeadlines || {};
-  for (const [id, deadline] of Object.entries(state.activeProjectDeadlines)) {
-    if (deadline.failed || !Number.isFinite(Number(deadline.dueWorldMinute))) continue;
+  for (const [id, progress] of Object.entries(state.projectProgress || {})) {
+    const dueWorldMinute = Number(progress && progress.dueWorldMinute);
+    if (!Number.isFinite(dueWorldMinute)) continue;
     const project = projectById(id);
     if (!project) continue;
-    if (state.completedProjects.includes(id)) {
+    if ((project.kind || "milestone") === "milestone" && state.completedProjects.includes(id) && !state.projectProgress[id]) {
       delete state.activeProjectDeadlines[id];
       continue;
     }
-    const overdueMinutes = state.worldTimeMinutes - deadline.dueWorldMinute;
+    const overdueMinutes = state.worldTimeMinutes - dueWorldMinute;
     if (overdueMinutes < 0) continue;
     const graceMinutes = 2 * MINUTES_PER_DAY;
-    if (!deadline.warned) {
-      deadline.warned = true;
+    if (!progress.deadlineWarned) {
+      progress.deadlineWarned = true;
+      state.activeProjectDeadlines[id] = { dueWorldMinute, failed: false, warned: true };
       applyResourceDelta(state, "pressure", 10);
-      pushMessageEvent(messages, events, "warning", `Deadline 逾期：${project.name} 已超过 D${getWorldCalendar(deadline.dueWorldMinute).day}，成功率和奖励将受惩罚。`, "warn");
+      pushMessageEvent(messages, events, "warning", `Deadline 逾期：${project.name} 已超过 D${getWorldCalendar(dueWorldMinute).day}，成功率和奖励将受惩罚。`, "warn");
     }
     if (overdueMinutes >= graceMinutes) {
-      deadline.failed = true;
       clearProjectProgress(state, id);
       state.resources.reputation = Math.max(0, state.resources.reputation - 2);
       applyResourceDelta(state, "pressure", 18);
@@ -2985,9 +3356,13 @@ function settleTime(state, now = Date.now(), options = {}) {
         result.activeName = `项目 ${mode.item.name}`;
         if (workSeconds > 0) {
           const modifiers = getWorkModifiers(state, "project", mode.item, overtime);
-          const energyDelta = consumeWorkEnergy(state, energyCostPerGameMinute, workSeconds);
+          const projectSegment = settleProject(state, mode.item, workSeconds, { ...options, ...modifiers, events, deltas: result.deltas });
+          const progressedSeconds = Math.max(0, projectSegment.workedSeconds || 0);
+          const actualWorkedSeconds = Math.min(workSeconds, progressedSeconds / Math.max(0.000001, modifiers.workMultiplier || 1));
+          const energyDelta = consumeWorkEnergy(state, energyCostPerGameMinute, actualWorkedSeconds);
           if (energyDelta) result.deltas.energy = (result.deltas.energy || 0) + energyDelta;
-          messages.push(...settleProject(state, mode.item, workSeconds, { ...options, ...modifiers, events }));
+          result.activeSeconds += actualWorkedSeconds - workSeconds;
+          messages.push(...(projectSegment.messages || []));
           if (scheduleContext && !state.activeProjectId && !state.projectProgress[mode.item.id]) markSchedulePhaseDone(state, scheduleContext.phase.id);
         }
       }
@@ -3510,7 +3885,7 @@ function formatState(state) {
     `当前事件：${activeEvents.length ? activeEvents.map((event) => event.name).join("，") : "暂无"}`,
     formatNearestDeadline(state),
     `当前活动：${active ? `${active.name} Lv.${getActivityLevel(state, active.id)}` : "无"}`,
-    `当前项目：${activeProject ? `${activeProject.name} 工时 ${projectProgress.progressPercent}%（成功率 ${formatPercent(getProjectSuccessRate(state, activeProject))}）` : "无"}`,
+    `当前项目：${activeProject ? `${activeProject.name} 阶段 ${projectProgress.stageIndex + 1}/${projectProgress.stageCount} ${projectProgress.stage ? projectProgress.stage.name : ""} ${projectProgress.stageProgressPercent}%（总进度 ${projectProgress.progressPercent}%，成功率 ${formatPercent(getProjectSuccessRate(state, activeProject))}）` : "无"}`,
     `当前学习：${activeSkill ? `${activeSkill.name} 学习 ${skillLearningProgress.progressPercent}%` : "无"}`,
     `代码：${formatNumber(state.resources.codeLines)}  金钱：${formatNumber(state.resources.money)}  知识：${formatNumber(state.resources.knowledge)}`,
     `测试：${formatNumber(state.resources.tests)}  文档：${formatNumber(state.resources.docs)}  架构：${formatNumber(state.resources.architecture)}  线索：${formatNumber(state.resources.leads)}`,
@@ -3549,7 +3924,8 @@ function helpText() {
     "  learn <id>             旧入口：提示改用 plan",
     "  upgrade <id>           消耗技能经验和资源升级技能",
     "  buy <id>               买工具",
-    "  project <id>           旧入口：提示改用 plan",
+    "  projects               查看当前委托板",
+    "  project <id>           接取或继续项目",
     "  promote                申请晋升",
     "  goals                  查看目标链",
     "  claim [id|all]         领取已完成目标奖励",
@@ -3568,6 +3944,21 @@ function helpText() {
   ].join("\n");
 }
 
+function formatProjectBoard(state) {
+  const board = ensureProjectBoard(state);
+  const projects = getProjectBoardProjects(state);
+  return formatLines([
+    `项目委托板：D${String(board.day).padStart(3, "0")} 09:00 刷新`,
+    ...projects.map((project) => {
+      const progress = getProjectProgress(state, project);
+      const inProgress = Boolean(state.projectProgress[project.id]);
+      const kind = project.kind === "commission" ? "委托" : "里程碑";
+      const stage = inProgress && progress.stage ? `，阶段 ${progress.stageIndex + 1}/${progress.stageCount} ${progress.stage.name} ${progress.stageProgressPercent}%` : "";
+      return `${project.id} - ${project.name} [${kind}] ${formatDifficultyLabel(project.difficulty)}${stage}`;
+    })
+  ]);
+}
+
 function listContent(type) {
   if (type === "cards") return formatCharacterCards();
   if (type === "skills") {
@@ -3582,7 +3973,7 @@ function listContent(type) {
   if (type === "projects") {
     return content.projects.map((project) => {
       const skills = project.requirements.skills?.length ? project.requirements.skills.join(", ") : "无";
-      return `${project.id} - ${project.name}，${formatDifficultyLabel(project.difficulty)}，最少工时 ${formatDuration(getProjectRequiredSeconds(project))}，最高成功率 ${formatPercent(project.maxSuccessRate)}，技能 ${skills}，投入 ${formatProjectResourceList(project.requirements.resources)}，活动 ${formatActivityRequirements({ activityLevels: project.requirements.activityLevels })}，奖励 ${formatSkillExpRewards(project.skillExpRewards)}。${project.description}`;
+      return `${project.id} - ${project.name}，${project.kind === "commission" ? "委托" : "里程碑"}，${formatDifficultyLabel(project.difficulty)}，最少工时 ${formatDuration(getProjectRequiredSeconds(project))}，最高成功率 ${formatPercent(project.maxSuccessRate)}，技能 ${skills}，素材预算 ${formatProjectResourceList(project.requirements.resources)}，活动 ${formatActivityRequirements({ activityLevels: project.requirements.activityLevels })}，奖励 ${formatSkillExpRewards(project.skillExpRewards)}。${project.description}`;
     }).join("\n");
   }
   return "可查看：list skills、list tools、list projects、list cards";
@@ -3704,7 +4095,7 @@ function getScheduleOptions(state) {
     {
       id: "confirm",
       name: "确认日程",
-      description: "确认后扣除学习/项目资源，今日不可再修改。",
+      description: "确认后扣除学习资源并锁定今日安排，项目素材会随阶段推进消耗。",
       status: state.lockedSchedule ? "已确认" : "待确认",
       command: state.lockedSchedule ? null : "plan confirm"
     },
@@ -3856,40 +4247,49 @@ function getManagementOptions(state, type) {
   }
 
   if (type === "projects") {
-    const projectOptions = content.projects.map((project) => {
+    const projectOptions = getProjectBoardProjects(state).map((project) => {
       const completed = state.completedProjects.includes(project.id);
       const progress = getProjectProgress(state, project);
       const active = state.activeProjectId === project.id;
-      const inProgress = progress.resourcesPaid;
-      const missing = missingProjectRequirements(state, project, { skipResources: progress.resourcesPaid });
+      const inProgress = Boolean(state.projectProgress[project.id]);
+      const missing = missingProjectRequirements(state, project, { skipResources: true });
       const successRate = getProjectSuccessRate(state, project);
-      const deadline = state.activeProjectDeadlines && state.activeProjectDeadlines[project.id];
-      const deadlineText = deadline && Number.isFinite(Number(deadline.dueWorldMinute))
-        ? `D${String(getWorldCalendar(deadline.dueWorldMinute).day).padStart(3, "0")}`
+      const deadlineText = Number.isFinite(Number(progress.dueWorldMinute))
+        ? `D${String(getWorldCalendar(progress.dueWorldMinute).day).padStart(3, "0")} ${getWorldCalendar(progress.dueWorldMinute).hhmm}`
         : "";
-      const deadlineCritical = deadline && Number(deadline.dueWorldMinute) < Number(state.worldTimeMinutes || WORLD_START_MINUTES);
+      const deadlineCritical = Number.isFinite(Number(progress.dueWorldMinute)) && Number(progress.dueWorldMinute) < Number(state.worldTimeMinutes || WORLD_START_MINUTES);
       return {
         id: project.id,
         name: project.name,
         description: project.description,
-        status: active ? "进行中" : inProgress ? "已暂停" : completed ? "已完成/可重复" : missing.length ? "条件不足" : "可开始",
+        kind: project.kind || "milestone",
+        kindLabel: project.kind === "commission" ? "委托" : "里程碑",
+        status: active ? "进行中" : inProgress ? "已暂停" : completed ? "已完成/可重复" : missing.length ? "条件不足" : project.kind === "commission" ? "可接委托" : "可开始",
         done: completed,
         available: missing.length === 0,
         rewards: formatSkillExpRewards(project.skillExpRewards),
-        cost: progress.resourcesPaid ? "已投入" : formatProjectResourceList(project.requirements.resources || {}),
-        effects: `工时 ${formatDuration(progress.workedSeconds)}/${formatDuration(progress.requiredSeconds)}（${progress.progressPercent}%）；成功率 ${formatPercent(successRate)} / 最高 ${formatPercent(project.maxSuccessRate)}`,
+        cost: `总素材 ${formatProjectResourceList(project.requirements.resources || {})}`,
+        spentResources: progress.spentResources,
+        spentResourcesText: formatProjectResourceList(progress.spentResources),
+        effects: `阶段 ${progress.stageIndex + 1}/${progress.stageCount} ${progress.stage ? progress.stage.name : ""} ${formatDuration(progress.stageWorkedSeconds)}/${formatDuration(progress.stageRequiredSeconds)}（${progress.stageProgressPercent}%）；总进度 ${progress.progressPercent}%；成功率 ${formatPercent(successRate)} / 最高 ${formatPercent(project.maxSuccessRate)}`,
         missing: missing.join("、"),
         difficulty: project.difficulty,
         difficultyLabel: formatDifficultyLabel(project.difficulty),
         maxSuccessRate: project.maxSuccessRate,
         successRate,
         minWorkHours: project.minWorkHours,
+        stageName: progress.stage ? progress.stage.name : "",
+        stageIndex: progress.stageIndex,
+        stageCount: progress.stageCount,
+        stageWorkedSeconds: progress.stageWorkedSeconds,
+        stageRequiredSeconds: progress.stageRequiredSeconds,
+        stageProgressPercent: progress.stageProgressPercent,
         workedSeconds: progress.workedSeconds,
         requiredSeconds: progress.requiredSeconds,
         progressPercent: progress.progressPercent,
-        progressLabel: "工时进度",
+        progressLabel: "阶段进度",
         progressActive: active,
-        progressText: `${formatGameDuration(progress.workedSeconds)}/${formatGameDuration(progress.requiredSeconds)}`,
+        progressText: `${formatGameDuration(progress.stageWorkedSeconds)}/${formatGameDuration(progress.stageRequiredSeconds)}`,
         resourcesPaid: progress.resourcesPaid,
         deadlineText,
         deadlineCritical,
@@ -4051,7 +4451,12 @@ function getGameViewModel(state) {
     activeProject: activeProject ? {
       id: activeProject.id,
       name: activeProject.name,
+      kind: activeProject.kind || "milestone",
       progressPercent: activeProjectProgress.progressPercent,
+      stageName: activeProjectProgress.stage ? activeProjectProgress.stage.name : "",
+      stageIndex: activeProjectProgress.stageIndex,
+      stageCount: activeProjectProgress.stageCount,
+      stageProgressPercent: activeProjectProgress.stageProgressPercent,
       workedSeconds: activeProjectProgress.workedSeconds,
       requiredSeconds: activeProjectProgress.requiredSeconds,
       successRate: getProjectSuccessRate(state, activeProject)
@@ -4406,21 +4811,12 @@ function processCompleteCommand(state, args) {
     if (type === "project") {
       const project = projectById(id);
       if (!project) return `没有这个项目：${id}`;
-      const missing = missingProjectRequirements(state, project);
+      const missing = missingProjectRequirements(state, project, { skipResources: true });
       if (missing.length) {
         return `项目 ${project.name} 条件不足：${missing.join("、")}`;
       }
-      const progress = state.projectProgress[id];
-      if (!progress || !progress.started) {
-        const requirements = project.requirements.resources || {};
-        pay(state.resources, requirements);
-        state.projectProgress[id] = {
-          started: true,
-          workedSeconds: 0,
-          investedResources: { ...requirements },
-          dueWorldMinute: ensureProjectDeadline(state, project).dueWorldMinute
-        };
-      }
+      ensureProjectProgress(state, id);
+      ensureProjectDeadline(state, project);
       state.activeProjectId = id;
       state.activeActivityId = null;
       state.activeSkillLearningId = null;
@@ -4642,30 +5038,26 @@ function submitProject(state, id) {
   const project = projectById(id);
   if (!project) return `没有这个项目：${id}`;
   const existingProgress = state.projectProgress[project.id];
-  const resourcesPaid = Boolean(existingProgress && existingProgress.resourcesPaid);
-  const missing = missingProjectRequirements(state, project, { skipResources: resourcesPaid });
+  const missing = missingProjectRequirements(state, project, { skipResources: true });
   if (missing.length) {
     return formatLines([
       `项目条件不足，还需要：${missing.join("、")}。`,
-      "建议：根据缺口切换 activities 积累对应产物。"
+      "建议：先补齐技能和活动等级，再回来接取。"
     ]);
   }
 
   const progress = ensureProjectProgress(state, project.id);
-  const wasPaid = progress.resourcesPaid;
-  if (!progress.resourcesPaid) {
-    pay(state.resources, project.requirements.resources);
-    progress.resourcesPaid = true;
-  }
+  const continuing = Boolean(existingProgress);
   state.activeProjectId = project.id;
   state.activeSkillLearningId = null;
   state.activeActivityId = null;
   const deadline = ensureProjectDeadline(state, project);
   const currentProgress = getProjectProgress(state, project);
   return formatLines([
-    `${wasPaid ? "继续项目" : state.completedProjects.includes(id) ? "重复项目" : "开始项目"}：${project.name}。`,
-    wasPaid ? "" : `投入：${formatProjectResourceList(Object.fromEntries(Object.entries(project.requirements.resources || {}).map(([key, value]) => [key, -value])))}`,
-    `进度：${formatDuration(currentProgress.workedSeconds)}/${formatDuration(currentProgress.requiredSeconds)}（${currentProgress.progressPercent}%）。`,
+    `${continuing ? "继续项目" : state.completedProjects.includes(id) ? "重复项目" : project.kind === "commission" ? "接受委托" : "开始项目"}：${project.name}。`,
+    `类型：${project.kind === "commission" ? "随机委托" : "里程碑"}；当前阶段 ${currentProgress.stageIndex + 1}/${currentProgress.stageCount} ${currentProgress.stage ? currentProgress.stage.name : ""}。`,
+    `阶段进度：${formatDuration(currentProgress.stageWorkedSeconds)}/${formatDuration(currentProgress.stageRequiredSeconds)}（${currentProgress.stageProgressPercent}%）。`,
+    `已消耗素材：${formatProjectResourceList(currentProgress.spentResources)}。`,
     `Deadline：D${String(getWorldCalendar(deadline.dueWorldMinute).day).padStart(3, "0")} ${getWorldCalendar(deadline.dueWorldMinute).hhmm}。`,
     `难度 ${project.difficulty}，当前成功率 ${formatPercent(getProjectSuccessRate(state, project))}，最高 ${formatPercent(project.maxSuccessRate)}。`,
     formatNextAdvice(state)
@@ -5039,8 +5431,11 @@ function processCommand(state, input, options = {}) {
     case "buy":
       messages.push(arg ? buyTool(state, arg) : "用法：buy <id>");
       break;
+    case "projects":
+      messages.push(formatProjectBoard(state));
+      break;
     case "project":
-      messages.push(arg ? `project 不再立即执行。请使用 plan morning project ${arg} 或 plan afternoon project ${arg} 安排项目。` : "用法：plan <morning|afternoon|evening> project <id>");
+      messages.push(arg ? submitProject(state, arg) : formatProjectBoard(state));
       break;
     case "promote":
       messages.push(promote(state));

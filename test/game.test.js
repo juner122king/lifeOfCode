@@ -64,7 +64,10 @@ function unlockSkill(state, id, level = 1, exp = 0) {
 function settleActiveProjectToCompletion(state, rng = () => 0) {
   const projectId = state.activeProjectId;
   const progress = getProjectProgress(state, projectId);
+  state.projectProgress[projectId].stageIndex = progress.stageCount - 1;
+  state.projectProgress[projectId].stageWorkedSeconds = getProjectProgress(state, projectId).stageRequiredSeconds;
   state.projectProgress[projectId].workedSeconds = progress.requiredSeconds;
+  state.projectProgress[projectId].legacyPrepaid = true;
   return settleTime(state, state.lastTick + 1000, { maxSeconds: 1, randomEvents: false, rng });
 }
 
@@ -469,6 +472,9 @@ test("内容不再包含全局经验资源、成本、倍率和奖励", () => {
 test("项目内容提供描述、长工时且不含基础经验奖励", () => {
   assert.ok(content.projects.every((project) => project.description && project.description.trim()));
   assert.ok(content.projects.every((project) => !Object.hasOwn(project.rewards, "exp")));
+  assert.ok(content.projects.every((project) => ["milestone", "commission"].includes(project.kind)));
+  assert.ok(content.projects.every((project) => Array.isArray(project.stages) && project.stages.length > 0));
+  assert.ok(content.projects.some((project) => project.kind === "commission"));
   assert.equal(content.projects.find((project) => project.id === "vanilla-widget").minWorkHours, 1);
   assert.equal(content.projects.find((project) => project.id === "typed-form").minWorkHours, 2);
   assert.equal(content.projects.find((project) => project.id === "component-library").minWorkHours, 4);
@@ -1293,7 +1299,7 @@ test("项目推进精力不足时只推进可负担工时且保留投入", () =>
   assert.ok(worked > 0);
   assert.ok(worked < 60);
   assert.equal(state.resources.energy, 0);
-  assert.equal(state.projectProgress.homepage.resourcesPaid, true);
+  assert.equal(state.projectProgress.homepage.legacyPrepaid, true);
 
   settleTime(state, now + 120_000, { randomEvents: false, rng: () => 0 });
   assert.equal(state.projectProgress.homepage.workedSeconds, worked);
@@ -1665,9 +1671,9 @@ test("新增项目组件库内卷可开始并在成功 RNG 下交付", () => {
 
   assert.match(message, /开始项目：组件库内卷/);
   assert.equal(state.activeProjectId, "component-library");
-  assert.equal(state.resources.codeLines, 158);
-  assert.equal(state.resources.docs, 19);
-  assert.equal(state.resources.tests, 17);
+  assert.equal(state.resources.codeLines, 600);
+  assert.equal(state.resources.docs, 50);
+  assert.equal(state.resources.tests, 60);
 
   const result = settleActiveProjectToCompletion(state, () => 0);
 
@@ -1707,7 +1713,7 @@ test("testing、documentation、freelancing、rest 分别产出对应资源", ()
   assert.equal(rest.resources.pressure, 26);
 });
 
-test("项目会检查条件，开始时投入资源并按工时推进", () => {
+test("项目会检查条件，开始不预扣资源并按阶段推进消耗素材", () => {
   const state = createNewState();
 
   assert.match(submitProject(state, "homepage"), /项目条件不足/);
@@ -1724,15 +1730,17 @@ test("项目会检查条件，开始时投入资源并按工时推进", () => {
   assert.match(message, /开始项目：个人主页/);
   assert.equal(state.activeProjectId, "homepage");
   assert.equal(state.activeActivityId, null);
-  assert.equal(state.projectProgress.homepage.resourcesPaid, true);
-  assert.equal(state.resources.codeLines, 16);
-  assert.equal(state.resources.docs, 1);
+  assert.equal(state.projectProgress.homepage.resourcesPaid, undefined);
+  assert.equal(state.resources.codeLines, 128);
+  assert.equal(state.resources.docs, 13);
   assert.equal(state.completedProjects.includes("homepage"), false);
 
   settleTime(state, state.lastTick + 300_000, { randomEvents: false });
   const progress = getProjectProgress(state, "homepage");
   assert.ok(progress.workedSeconds > 0);
   assert.ok(progress.progressPercent < 100);
+  assert.ok(state.resources.codeLines < 128);
+  assert.ok(progress.spentResources.codeLines > 0);
 });
 
 test("project activity level requirements are capped and training difficulty follows skill tier", () => {
@@ -1751,6 +1759,27 @@ test("project activity level requirements are capped and training difficulty fol
   assert.equal(vanilla.difficulty, 1);
   assert.equal(docker.difficulty, 2);
   assert.equal(llmAgent.difficulty, 3);
+});
+
+test("项目委托板同日稳定、次日刷新并保留主线和进行中项目", () => {
+  const boardText = (message) => message.slice(message.indexOf("项目委托板"));
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  const first = boardText(processCommand(state, "projects", { now, randomEvents: false }).messages.join("\n"));
+  const second = boardText(processCommand(state, "projects", { now, randomEvents: false }).messages.join("\n"));
+
+  assert.equal(first, second);
+  assert.match(first, /homepage - 个人主页 \[里程碑\]/);
+  assert.match(first, /\[委托\]/);
+
+  const commission = getManagementOptions(state, "projects").find((item) => item.kind === "commission");
+  state.projectProgress[commission.id] = { stageIndex: 0, stageWorkedSeconds: 1, workedSeconds: 1, spentResources: {} };
+  state.worldTimeMinutes += 24 * 60;
+  const next = boardText(processCommand(state, "projects", { now, randomEvents: false }).messages.join("\n"));
+
+  assert.notEqual(first, next);
+  assert.match(next, new RegExp(`${commission.id} - `));
+  assert.match(next, /homepage - 个人主页 \[里程碑\]/);
 });
 
 test("项目达标后会自动成功并发放奖励", () => {
@@ -1826,12 +1855,14 @@ test("新增训练项目可重复提供目标技能经验", () => {
   state.resources.tests += 13;
   assert.match(submitProject(state, "vanilla-widget"), /重复项目：原生 JS 小组件/);
   settleActiveProjectToCompletion(state, () => 0);
+  const repeatExp = getSkillProgress(state, "javascript").exp;
 
   assert.ok(firstExp >= 70);
-  assert.ok(getSkillProgress(state, "javascript").exp >= firstExp + 70);
+  assert.ok(repeatExp > firstExp);
+  assert.ok(repeatExp < firstExp + 70);
 });
 
-test("项目失败会清空进度且不返还已投入资源", () => {
+test("项目阶段失败会回退当前阶段且不返还已消耗素材", () => {
   const start = 1_700_000_000_000;
   const state = createNewState(start);
   state.resources.codeLines = 128;
@@ -1844,20 +1875,23 @@ test("项目失败会清空进度且不返还已投入资源", () => {
   state.activityLevels["feature-coding"] = 2;
   unlockSkill(state, "html-css");
   submitProject(state, "homepage");
-  const afterInvestment = { codeLines: state.resources.codeLines, docs: state.resources.docs };
+  state.projectProgress.homepage.stageWorkedSeconds = getProjectProgress(state, "homepage").stageRequiredSeconds;
+  state.projectProgress.homepage.workedSeconds = getProjectProgress(state, "homepage").stageRequiredSeconds;
+  const before = { codeLines: state.resources.codeLines, docs: state.resources.docs };
 
-  const result = settleActiveProjectToCompletion(state, () => 1);
+  const result = settleTime(state, state.lastTick + 1000, { maxSeconds: 1, randomEvents: false, rng: () => 1 });
   const eventLog = formatGameEvents(result.events).join("\n");
 
-  assert.match(result.messages.join("\n"), /交付失败/);
+  assert.match(result.messages.join("\n"), /阶段验收失败|阶段失败/);
   assert.match(result.messages.join("\n"), /客户反馈：|复盘记录：/);
-  assert.match(eventLog, /\[项目\] 项目 个人主页 交付失败/);
+  assert.match(eventLog, /\[项目\] 项目 个人主页 阶段失败/);
   assert.match(eventLog, /客户反馈：|复盘记录：/);
   assert.equal(state.completedProjects.includes("homepage"), false);
-  assert.equal(state.activeProjectId, null);
-  assert.equal(state.projectProgress.homepage, undefined);
-  assert.equal(state.resources.codeLines, afterInvestment.codeLines);
-  assert.equal(state.resources.docs, afterInvestment.docs);
+  assert.equal(state.activeProjectId, "homepage");
+  assert.ok(state.projectProgress.homepage);
+  assert.ok(state.projectProgress.homepage.stageWorkedSeconds > 0);
+  assert.ok(state.resources.codeLines <= before.codeLines);
+  assert.ok(state.resources.docs <= before.docs);
 });
 
 test("属性成长事件跨阈值只触发一次并支持人物卡成长节点", () => {
@@ -1880,7 +1914,7 @@ test("Deadline 首次逾期只返回一次警告事件", () => {
   const now = 1_700_000_000_000;
   const state = createNewState(now);
   state.worldTimeMinutes = 10 * 60;
-  state.activeProjectDeadlines.homepage = { dueWorldMinute: state.worldTimeMinutes - 1, failed: false };
+  state.projectProgress.homepage = { stageIndex: 0, stageWorkedSeconds: 1, workedSeconds: 1, dueWorldMinute: state.worldTimeMinutes - 1, spentResources: {} };
 
   const first = settleTime(state, now + 1000, { randomEvents: true, rng: () => 1 });
   const second = settleTime(state, state.lastTick + 1000, { randomEvents: true, rng: () => 1 });
@@ -1923,7 +1957,8 @@ test("项目会占用当前活动位，普通活动会暂停项目", () => {
   assert.match(message, /开始活动：系统学习/);
   assert.equal(state.activeProjectId, null);
   assert.equal(state.activeActivityId, "study");
-  assert.equal(state.projectProgress.homepage.resourcesPaid, true);
+  assert.ok(state.projectProgress.homepage);
+  assert.ok(Number.isFinite(state.projectProgress.homepage.dueWorldMinute));
 });
 
 test("stop 可以暂停当前项目并保留进度", () => {
@@ -1940,7 +1975,8 @@ test("stop 可以暂停当前项目并保留进度", () => {
 
   assert.match(message, /暂停项目：个人主页/);
   assert.equal(state.activeProjectId, null);
-  assert.equal(state.projectProgress.homepage.resourcesPaid, true);
+  assert.ok(state.projectProgress.homepage);
+  assert.ok(Number.isFinite(state.projectProgress.homepage.dueWorldMinute));
 });
 
 test("项目成功率会随 Bug、技术债和压力下降但受上下限约束", () => {
@@ -2298,7 +2334,8 @@ test("management options 标出技能、工具和项目动作状态", () => {
   assert.equal(project.command, "project homepage");
   assert.match(project.description, /个人品牌/);
   assert.match(project.rewards, /技能经验：HTML\/CSS \+80/);
-  assert.equal(project.cost, "代码 112，文档 12");
+  assert.equal(project.cost, "总素材 代码 112，文档 12");
+  assert.equal(project.kindLabel, "里程碑");
   assert.equal(project.difficultyLabel, "★☆☆☆☆（难度 1）");
   assert.doesNotMatch(project.effects, /难度 1/);
   assert.match(project.effects, /成功率/);
@@ -2344,10 +2381,11 @@ test("project options mark work progress and animate only the active project", (
 
   submitProject(state, "homepage");
   let project = getManagementOptions(state, "projects").find((item) => item.id === "homepage");
-  assert.equal(project.progressLabel, "工时进度");
+  assert.equal(project.progressLabel, "阶段进度");
   assert.equal(project.progressActive, true);
+  assert.equal(project.stageName, "需求校准");
 
-  assert.match(formatState(state), /当前项目：个人主页 工时 0%（成功率/);
+  assert.match(formatState(state), /当前项目：个人主页 阶段 1\/3 需求校准 0%/);
 
   stopActivity(state);
   project = getManagementOptions(state, "projects").find((item) => item.id === "homepage");
