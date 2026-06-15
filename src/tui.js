@@ -1792,7 +1792,6 @@ async function startTui() {
           return h(Box, { key: row.id, gap: 1 },
             h(Text, { color: THEME.title, bold: true }, trimText(row.text, textWidth)),
             h(Progress, { percent: row.progressPercent, width: progressBarWidth, animated: true }),
-            h(Text, { color: THEME.muted }, `${row.progressPercent}%`),
             row.progressText ? h(Text, { color: THEME.muted }, row.progressText) : null
           );
         }
