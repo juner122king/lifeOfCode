@@ -629,7 +629,7 @@ function getInfoCurrentRows(view, ticker = null, limit = 6) {
       ? [...contextRows.slice(0, insertIndex), ...statusRows, ...contextRows.slice(insertIndex)]
       : [...contextRows, ...statusRows]
   )
-    .filter((row) => !INFO_RESOURCE_PATTERN.test(String(row.text || "")));
+    .filter((row) => row.kind === "action" || !INFO_RESOURCE_PATTERN.test(String(row.text || "")));
   return selectInfoCurrentRows(candidates, safeLimit);
 }
 
