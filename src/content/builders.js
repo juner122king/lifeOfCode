@@ -1,4 +1,5 @@
-const PROJECT_RESOURCE_SCALE = { 1: 1.4, 2: 1.7, 3: 2, 4: 2.4, 5: 2.6 };
+const PROJECT_RESOURCE_SCALE = { 1: 1, 2: 1.25, 3: 1.5, 4: 2.4, 5: 2.6 };
+const PROJECT_REWARD_SCALE = { 1: 0.9, 2: 0.9, 3: 0.85, 4: 0.75, 5: 0.75 };
 
 function roundBalance(value) {
   return Math.round(value * 10000) / 10000;
@@ -29,9 +30,10 @@ function capProjectActivityLevels(activityLevels = {}, difficulty = 1) {
   return Object.fromEntries(Object.entries(activityLevels).map(([id, level]) => [id, Math.min(level, cap)]));
 }
 
-function scaleProjectRewards(rewards = {}) {
+function scaleProjectRewards(rewards = {}, difficulty = 1) {
+  const scale = PROJECT_REWARD_SCALE[difficulty] || 0.75;
   return {
-    ...(rewards.money ? { money: Math.ceil(rewards.money * 0.75) } : {}),
+    ...(rewards.money ? { money: Math.ceil(rewards.money * scale) } : {}),
     ...(rewards.reputation ? { reputation: rewards.reputation } : {})
   };
 }
@@ -133,6 +135,12 @@ const projectTemplates = {
   5: { resources: { codeLines: 1600, docs: 100, tests: 180, architecture: 140, leads: 10 }, minWorkHours: 30, maxSuccessRate: 0.8, rewards: { money: 1900, reputation: 13 } }
 };
 
+const trainingProjectResourceTemplates = {
+  1: { codeLines: 60, docs: 5, tests: 5 },
+  2: { codeLines: 80, docs: 8, tests: 10, architecture: 3 },
+  3: { codeLines: 100, docs: 12, tests: 14, architecture: 5 }
+};
+
 function splitSkillExp(skills, amount) {
   return Object.fromEntries(skills.map((id) => [id, Math.ceil(amount / skills.length)]));
 }
@@ -179,7 +187,7 @@ function project(config) {
       skills,
       activityLevels: capProjectActivityLevels(config.activityLevels || {}, config.difficulty)
     },
-    rewards: scaleProjectRewards(rewards),
+    rewards: scaleProjectRewards(rewards, config.difficulty),
     skillExpRewards: config.skillExpRewards || splitSkillExp(skills, config.skillExp || (config.difficulty * 90)),
     attributeExp: config.attributeExp || {},
     successFeedback: config.successFeedback || [],
@@ -190,12 +198,14 @@ function project(config) {
 function createTrainingProjectBuilder(skills) {
   return function trainingProject(id, name, skillId) {
     const skill = skills.find((item) => item.id === skillId);
+    const difficulty = Math.max(1, Math.min(3, Math.ceil(((skill && skill.tier) || 1) / 2)));
     return project({
       id,
       name,
       description: `围绕 ${skillId} 做专项演练，用小范围需求打通实现、验证和复盘，沉淀可复用的手感。`,
-      difficulty: Math.max(1, Math.min(3, Math.ceil(((skill && skill.tier) || 1) / 2))),
+      difficulty,
       minWorkHours: 1,
+      resources: trainingProjectResourceTemplates[difficulty],
       skills: [skillId],
       skillExpRewards: { [skillId]: 70 },
       activityLevels: { "feature-coding": 1 },

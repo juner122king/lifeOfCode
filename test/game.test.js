@@ -1761,6 +1761,40 @@ test("project activity level requirements are capped and training difficulty fol
   assert.equal(llmAgent.difficulty, 3);
 });
 
+test("项目前中期成本和金钱回报按难度优化，后期重量保持", () => {
+  const homepage = content.projects.find((item) => item.id === "homepage");
+  const todo = content.projects.find((item) => item.id === "todo");
+  const blog = content.projects.find((item) => item.id === "blog");
+  const admin = content.projects.find((item) => item.id === "admin");
+  const flashSale = content.projects.find((item) => item.id === "flash-sale");
+
+  assert.deepEqual(homepage.requirements.resources, { codeLines: 80, docs: 8 });
+  assert.equal(homepage.rewards.money, 72);
+  assert.equal(homepage.rewards.reputation, 2);
+  assert.deepEqual(todo.requirements.resources, { codeLines: 225, tests: 25 });
+  assert.equal(todo.rewards.money, 153);
+  assert.equal(blog.requirements.resources.codeLines, 630);
+  assert.equal(blog.requirements.resources.docs, 53);
+  assert.equal(blog.rewards.money, 357);
+  assert.deepEqual(admin.requirements.resources, { codeLines: 2160, tests: 216, architecture: 132, leads: 20 });
+  assert.equal(admin.rewards.money, 735);
+  assert.deepEqual(flashSale.requirements.resources, { codeLines: 4160, tests: 468, architecture: 312 });
+  assert.equal(flashSale.rewards.money, 1425);
+});
+
+test("训练项目使用轻量素材模板且难度仍由技能 tier 推导", () => {
+  const vanilla = content.projects.find((item) => item.id === "vanilla-widget");
+  const docker = content.projects.find((item) => item.id === "container-demo");
+  const llmAgent = content.projects.find((item) => item.id === "llm-prompt-bench");
+
+  assert.equal(vanilla.difficulty, 1);
+  assert.deepEqual(vanilla.requirements.resources, { codeLines: 60, docs: 5, tests: 5 });
+  assert.equal(docker.difficulty, 2);
+  assert.deepEqual(docker.requirements.resources, { codeLines: 100, docs: 10, tests: 13, architecture: 4 });
+  assert.equal(llmAgent.difficulty, 3);
+  assert.deepEqual(llmAgent.requirements.resources, { codeLines: 150, docs: 18, tests: 21, architecture: 8 });
+});
+
 test("项目委托板同日稳定、次日刷新并保留主线和进行中项目", () => {
   const boardText = (message) => message.slice(message.indexOf("项目委托板"));
   const now = 1_700_000_000_000;
@@ -2334,7 +2368,7 @@ test("management options 标出技能、工具和项目动作状态", () => {
   assert.equal(project.command, "project homepage");
   assert.match(project.description, /个人品牌/);
   assert.match(project.rewards, /技能经验：HTML\/CSS \+80/);
-  assert.equal(project.cost, "总素材 代码 112，文档 12");
+  assert.equal(project.cost, "总素材 代码 80，文档 8");
   assert.equal(project.kindLabel, "里程碑");
   assert.equal(project.difficultyLabel, "★☆☆☆☆（难度 1）");
   assert.doesNotMatch(project.effects, /难度 1/);
