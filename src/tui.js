@@ -328,11 +328,16 @@ function isInfoTickerRow(row) {
   const text = String(row && row.text || "").trim();
   if (!text) return false;
   if (INFO_TICKER_HIDDEN_PREFIXES.some((prefix) => text.startsWith(prefix))) return false;
-  return text.startsWith("[当前行动]") || text.startsWith("[当前状态]") || text.startsWith("[阶段转换]") || text.startsWith("[提前完成]") || text.startsWith("[一天结束]");
+  return text.startsWith("[当前状态]") || text.startsWith("[阶段转换]") || text.startsWith("[提前完成]") || text.startsWith("[一天结束]");
 }
 
 function sanitizeInfoTickerText(text) {
   const withoutInlineMeta = String(text || "").split(" | ")[0].trim();
+  if (withoutInlineMeta.startsWith("[当前状态]")) {
+    if (/^\[当前状态\]\s*活动\s+/.test(withoutInlineMeta)) return "[当前状态] 行动中";
+    if (/^\[当前状态\]\s*(学习|技能)\s+/.test(withoutInlineMeta)) return "[当前状态] 学习中";
+    if (/^\[当前状态\]\s*(项目|交付)\s+/.test(withoutInlineMeta)) return "[当前状态] 交付推进中";
+  }
   if (!INFO_RESOURCE_PATTERN.test(withoutInlineMeta)) return withoutInlineMeta;
   return withoutInlineMeta.split("：")[0].trim();
 }
@@ -363,6 +368,56 @@ function createInfoActivityLevelRow(view) {
   };
 }
 
+function createInfoCurrentActionProgressRow(view) {
+  if (!view) return null;
+  if (view.activeProject) {
+    const project = view.activeProject;
+    const percent = Math.max(0, Math.min(100, Math.floor(Number(project.stageProgressPercent ?? project.progressPercent) || 0)));
+    const stageIndex = Number.isFinite(Number(project.stageIndex)) ? Math.floor(Number(project.stageIndex)) + 1 : null;
+    const stageCount = Number.isFinite(Number(project.stageCount)) ? Math.floor(Number(project.stageCount)) : null;
+    const stageLabel = stageIndex && stageCount ? `阶段 ${stageIndex}/${stageCount}` : "阶段进度";
+    const stageName = project.stageName ? ` ${project.stageName}` : "";
+    const progressText = project.progressText ? ` ${project.progressText}` : "";
+    return {
+      id: "context-action-progress",
+      kind: "action",
+      text: `[项目] ${project.name} ${stageLabel}${stageName} ${formatInfoLevelProgressBar(percent)} ${percent}%${progressText}`,
+      priority: 2
+    };
+  }
+  if (view.activeSkillLearning) {
+    const skill = view.activeSkillLearning;
+    const percent = Math.max(0, Math.min(100, Math.floor(Number(skill.progressPercent) || 0)));
+    const label = skill.progressLabel || "学习进度";
+    const progressText = skill.progressText ? ` ${skill.progressText}` : "";
+    return {
+      id: "context-action-progress",
+      kind: "action",
+      text: `[技能] ${skill.name} ${label} ${formatInfoLevelProgressBar(percent)} ${percent}%${progressText}`,
+      priority: 2
+    };
+  }
+  if (view.activeActivity) {
+    const activity = view.activeActivity;
+    const fallbackLevel = Array.isArray(view.activityLevels)
+      ? view.activityLevels.find((entry) => entry && entry.id === activity.id)
+      : null;
+    const level = Math.max(1, Math.floor(Number(activity.level ?? fallbackLevel?.level) || 1));
+    const exp = Math.max(0, Math.floor(Number(activity.exp ?? fallbackLevel?.exp) || 0));
+    const nextExp = Math.max(0, Math.floor(Number(activity.nextExp ?? fallbackLevel?.nextExp) || 0));
+    if (!(nextExp > 0)) return null;
+    const percent = Math.max(0, Math.min(100, Math.floor(Number(activity.progressPercent) || exp / nextExp * 100)));
+    const progressText = activity.progressText || `${exp}/${nextExp}`;
+    return {
+      id: "context-action-progress",
+      kind: "action",
+      text: `[活动] ${activity.name} Lv.${level} ${formatInfoLevelProgressBar(percent)} ${percent}% ${progressText}`,
+      priority: 2
+    };
+  }
+  return null;
+}
+
 function getInfoResourceValue(view, id) {
   const resources = view && Array.isArray(view.resources) ? view.resources : [];
   const resource = resources.find((item) => item && item.id === id);
@@ -386,6 +441,7 @@ function createInfoMoodRow(view) {
     mood = "状态紧绷";
     rank = 1;
   }
+  if (rank === 0) return null;
   return {
     id: "context-mood",
     kind: "mood",
@@ -442,22 +498,6 @@ function createInfoIntentRow(view) {
   };
 }
 
-function createInfoCampaignRow(view) {
-  const slots = view && view.schedule && Array.isArray(view.schedule.slots) ? view.schedule.slots : [];
-  const completed = slots.filter((slot) => slot && slot.completed).length;
-  const total = slots.length || 3;
-  const stats = view && view.stats ? view.stats : {};
-  const activeSeconds = Math.max(0, Math.floor(Number(stats.totalActiveSeconds) || 0));
-  const hours = Math.floor(activeSeconds / 3600);
-  const minutes = Math.floor(activeSeconds % 3600 / 60);
-  return {
-    id: "context-campaign",
-    kind: "campaign",
-    text: `[战报] 今日 ${completed}/${total} 阶段 | 累计行动 ${hours}h${minutes}m，交付 ${Math.floor(Number(stats.totalProjects) || 0)} 项`,
-    priority: 7
-  };
-}
-
 function stripInfoEventPrefix(text) {
   return String(text || "").replace(/^(?:[[【][^\]】]+[\]】]\s*)+/, "");
 }
@@ -473,49 +513,30 @@ function formatInfoEventText(row) {
 
 function createInfoContextRows(view) {
   const rows = [];
-  const activityLevelRow = createInfoActivityLevelRow(view);
-  if (activityLevelRow) rows.push(activityLevelRow);
-  rows.push(createInfoIntentRow(view));
-  const schedule = view && view.schedule ? view.schedule : null;
-  if (schedule && (schedule.waiting || !schedule.confirmed)) {
+
+  // 第一行：[世界]
+  const worldEvent = view && Array.isArray(view.activeWorldEvents) ? view.activeWorldEvents[0] : null;
+  if (worldEvent) {
     rows.push({
-      id: "context-schedule",
+      id: "context-world",
       kind: "context",
-      text: "[日程] 等待安排并确认今日日程。",
-      priority: 4
+      text: `[世界] ${worldEvent.name}：${worldEvent.message}`,
+      priority: 1
     });
   }
 
-  if (view && view.activeProject) {
-    rows.push({
-      id: "context-project",
-      kind: "context",
-      text: `[项目] ${view.activeProject.name} ${Math.floor(Number(view.activeProject.progressPercent) || 0)}%`,
-      priority: 5
-    });
-  }
-  if (view && view.activeSkillLearning) {
-    rows.push({
-      id: "context-skill",
-      kind: "context",
-      text: `[学习] ${view.activeSkillLearning.name} ${Math.floor(Number(view.activeSkillLearning.progressPercent) || 0)}%`,
-      priority: 5
-    });
-  }
-
-  rows.push(createInfoMoodRow(view));
-  rows.push(createInfoCampaignRow(view));
-
+  // 第二行：[目标]
   const currentMain = view && view.goals && view.goals.currentMain;
   if (currentMain) {
     rows.push({
       id: "context-goal",
       kind: "context",
       text: `[目标] ${currentMain.name} ${currentMain.status} ${currentMain.progress}`,
-      priority: 3
+      priority: 2
     });
   }
 
+  // 第三行：[Deadline]
   const deadline = view && view.nearestDeadline;
   if (deadline) {
     const due = Number.isFinite(Number(deadline.dueDay)) ? `D${String(Math.floor(Number(deadline.dueDay))).padStart(3, "0")}` : "D---";
@@ -526,46 +547,78 @@ function createInfoContextRows(view) {
       id: "context-deadline",
       kind: "context",
       text: `[Deadline] ${deadline.name || "项目"} ${due}（${distance}）`,
-      priority: 6
+      priority: 3
     });
   }
 
-  const worldEvent = view && Array.isArray(view.activeWorldEvents) ? view.activeWorldEvents[0] : null;
-  if (worldEvent) {
+  // 第四行：[日程]（仅等待排程时显示）
+  const schedule = view && view.schedule ? view.schedule : null;
+  if (schedule && (schedule.waiting || !schedule.confirmed)) {
     rows.push({
-      id: "context-world",
+      id: "context-schedule",
       kind: "context",
-      text: `[世界] ${worldEvent.name}：${worldEvent.message}`,
-      priority: 2
+      text: "[日程] 等待安排并确认今日日程。",
+      priority: 4
     });
   }
+
+  // 第五行：[状态] 节奏紧张（仅在资源紧张时显示）
+  const moodRow = createInfoMoodRow(view);
+  if (moodRow) rows.push(moodRow);
+
+  // 最下方：当前行动进度（固定压在上下文区底部）
+  const actionProgressRow = createInfoCurrentActionProgressRow(view) || createInfoActivityLevelRow(view);
+  if (actionProgressRow) rows.push({ ...actionProgressRow, pinnedBottom: true });
 
   return rows;
 }
 
-function getInfoCurrentRows(view, ticker = null, limit = 6) {
-  const safeLimit = Math.max(0, Math.floor(Number(limit) || 0));
-  if (safeLimit <= 0) return [];
-  const tickerRows = normalizeTickerRows(ticker)
+function createInfoStatusRows(ticker) {
+  return normalizeTickerRows(ticker)
     .map((row, index) => ({
       ...row,
       id: index === 0 ? "current-status" : row.id,
       kind: "status",
       text: sanitizeInfoTickerText(row.text),
-      priority: 1
+      priority: 5
     }))
     .filter(isInfoTickerRow);
-  const candidates = [...tickerRows, ...createInfoContextRows(view)]
-    .filter((row) => !INFO_RESOURCE_PATTERN.test(String(row.text || "")));
+}
+
+function uniqueInfoRows(rows) {
   const selected = [];
   const selectedIds = new Set();
-  for (const row of candidates.sort((a, b) => (a.priority || 99) - (b.priority || 99))) {
-    if (selected.length >= safeLimit) break;
-    if (selectedIds.has(row.id)) continue;
+  for (const row of rows) {
+    if (!row || selectedIds.has(row.id)) continue;
     selected.push(row);
     selectedIds.add(row.id);
   }
   return selected;
+}
+
+function selectInfoCurrentRows(rows, limit) {
+  const safeLimit = Math.max(0, Math.floor(Number(limit) || 0));
+  if (safeLimit <= 0) return [];
+  if (rows.length <= safeLimit) return rows;
+  const pinned = rows.find((row) => row && row.pinnedBottom);
+  if (!pinned) return rows.slice(0, safeLimit);
+  const topRows = rows.filter((row) => row !== pinned).slice(0, Math.max(0, safeLimit - 1));
+  return [...topRows, pinned];
+}
+
+function getInfoCurrentRows(view, ticker = null, limit = 6) {
+  const safeLimit = Math.max(0, Math.floor(Number(limit) || 0));
+  if (safeLimit <= 0) return [];
+  const contextRows = createInfoContextRows(view);
+  const statusRows = createInfoStatusRows(ticker);
+  const insertIndex = contextRows.findIndex((row) => row && (row.id === "context-mood" || row.pinnedBottom));
+  const candidates = uniqueInfoRows(
+    insertIndex >= 0
+      ? [...contextRows.slice(0, insertIndex), ...statusRows, ...contextRows.slice(insertIndex)]
+      : [...contextRows, ...statusRows]
+  )
+    .filter((row) => !INFO_RESOURCE_PATTERN.test(String(row.text || "")));
+  return selectInfoCurrentRows(candidates, safeLimit);
 }
 
 function getInfoWindowRows(view, ticker = null, logs = [], availableHeight = 12) {
@@ -602,7 +655,7 @@ function getInfoWindowRows(view, ticker = null, logs = [], availableHeight = 12)
   }
   separatorRows = currentLimit > 0 && eventLimit > 0 && capacity - currentLimit - eventLimit > 0 ? 1 : 0;
 
-  const currentRows = currentPool.slice(0, currentLimit);
+  const currentRows = selectInfoCurrentRows(currentPool, currentLimit);
   const eventRows = eventPool.slice(-eventLimit);
 
   const rows = [
@@ -1731,6 +1784,8 @@ async function startTui() {
                 ? THEME.status.good
                 : row.kind === "mood"
                   ? row.moodRank >= 2 ? THEME.status.warn : THEME.status.info
+                  : row.kind === "action"
+                    ? THEME.title
                   : row.kind === "campaign"
                     ? THEME.title
                     : row.kind === "context"
@@ -1741,7 +1796,7 @@ async function startTui() {
         return h(Text, {
           key: row.id,
           color,
-          bold: row.kind === "status" || row.kind === "intent" || row.kind === "campaign" || (eventTone && eventTone.bold),
+          bold: row.kind === "status" || row.kind === "intent" || row.kind === "action" || row.kind === "campaign" || (eventTone && eventTone.bold),
           dimColor: eventTone ? eventTone.dim : false
         }, trimText(`${prefix}${text || " "}`, Math.max(16, width - 4)));
       })

@@ -410,7 +410,8 @@ test("getInfoWindowRows merges current status with event history in short panels
 
   assert.equal(rows.length <= 5, true);
   assert.equal(rows[0].source, "current");
-  assert.match(rows[0].text, /当前状态/);
+  // 新排序：第一行优先显示上下文信息（目标/日程/状态），而非必须是 [当前状态]
+  assert.ok(rows.some((row) => row.source === "current"));
   assert.ok(rows.some((row) => row.source === "event"));
   assert.match(rows.filter((row) => row.source === "event").at(-1)?.text, /已保存/);
 });
@@ -425,6 +426,7 @@ test("getInfoWindowRows omits ticker detail, advice, and resource status rows", 
   ], 0).entries;
 
   const rows = getInfoWindowRows(getGameViewModel(state), [
+    "[当前行动] 写功能 60 秒：进度推进。",
     "[当前状态] 活动 写功能。 | 已工作 1h",
     "[阶段进度] 上午 ███░░░░░░░ 30%",
     "[进度预览] 精力 12/100",
@@ -432,8 +434,9 @@ test("getInfoWindowRows omits ticker detail, advice, and resource status rows", 
   ], logs, 12);
   const text = rows.map((row) => row.text).join("\n");
 
-  assert.match(text, /活动 写功能/);
-  assert.doesNotMatch(text, /\[当前时间\]|\[阶段进度\]|\[进度预览\]/);
+  // 新排序：[当前状态] 会被简化并插入，但不是第一行
+  assert.match(text, /\[当前状态\] 行动中/);
+  assert.doesNotMatch(text, /\[当前行动\]|\[当前时间\]|\[阶段进度\]|\[进度预览\]/);
   assert.equal(rows.some((row) => row.kind === "advice"), false);
   assert.equal(rows.some((row) => row.kind === "resource"), false);
   assert.doesNotMatch(text, /建议|精力|压力|Bug|技术债/);
@@ -452,8 +455,16 @@ test("getInfoWindowRows enriches current info with non-resource context", () => 
       waiting: false,
       currentPhase: { id: "morning", name: "上午", timeRange: "09:00-12:00" }
     },
-    activeProject: { id: "homepage", name: "个人主页", progressPercent: 42 },
-    activeSkillLearning: { id: "typescript", name: "TypeScript", progressPercent: 30 },
+    activeProject: {
+      id: "homepage",
+      name: "个人主页",
+      progressPercent: 42,
+      stageProgressPercent: 42,
+      stageIndex: 0,
+      stageCount: 3,
+      stageName: "需求拆分",
+      progressText: "1h/2h"
+    },
     goals: {
       ...baseView.goals,
       currentMain: { id: "main", name: "找到第一份工作", status: "进行中", progress: "2/5" }
@@ -466,17 +477,16 @@ test("getInfoWindowRows enriches current info with non-resource context", () => 
   const text = rows.map((row) => row.text).join("\n");
 
   assert.doesNotMatch(text, /\[阶段\]/);
-  assert.match(text, /\[项目\] 个人主页 42%/);
-  assert.match(text, /\[学习\] TypeScript 30%/);
+  assert.match(text, /\[项目\] 个人主页 阶段 1\/3 需求拆分 \[[#=\-]{18}\] 42% 1h\/2h/);
   assert.match(text, /\[目标\] 找到第一份工作 进行中 2\/5/);
-  assert.match(text, /\[战报\] 今日/);
-  assert.doesNotMatch(rows.find((row) => row.id === "info-current-context-campaign")?.text || "", /找到第一份工作|2\/5|主线/);
+  assert.doesNotMatch(text, /\[战报\]/);
+  assert.doesNotMatch(rows.find((row) => row.id === "info-current-context-action-progress")?.text || "", /找到第一份工作|2\/5|主线/);
   assert.match(text, /\[Deadline\] 个人主页 D005/);
   assert.match(text, /\[世界\] AI 热潮/);
   assert.doesNotMatch(text, /精力|压力|Bug|技术债|建议/);
 });
 
-test("getInfoWindowRows does not repeat the main goal in campaign and goal rows", () => {
+test("getInfoWindowRows does not repeat the main goal in current action rows", () => {
   const state = createNewState(1_700_000_000_000);
   const baseView = getGameViewModel(state);
   const view = {
@@ -491,19 +501,20 @@ test("getInfoWindowRows does not repeat the main goal in campaign and goal rows"
         { id: "evening", completed: false }
       ]
     },
-    stats: { ...baseView.stats, totalActiveSeconds: 8040, totalProjects: 0 },
+    activeActivity: { id: "feature-coding", name: "写功能", level: 2, exp: 40, nextExp: 280, progressPercent: 14, progressText: "40/280" },
     goals: {
       ...baseView.goals,
       currentMain: { id: "learn-web-basics", name: "网页基础入门", status: "进行中", progress: "技能 html-css 0/1" }
     }
   };
   const rows = getInfoWindowRows(view, ["[当前状态] 活动 重构代码 1 秒：进度推进"], [], 10);
-  const campaign = rows.find((row) => row.id === "info-current-context-campaign")?.text || "";
+  const action = rows.find((row) => row.id === "info-current-context-action-progress")?.text || "";
   const goal = rows.find((row) => row.id === "info-current-context-goal")?.text || "";
 
-  assert.match(campaign, /\[战报\] 今日 1\/3 阶段 \| 累计行动 2h14m，交付 0 项/);
-  assert.doesNotMatch(campaign, /网页基础入门|html-css|主线/);
+  assert.match(action, /\[活动\] 写功能 Lv\.2 \[[#=\-]{18}\] 14% 40\/280/);
+  assert.doesNotMatch(action, /网页基础入门|html-css|主线/);
   assert.match(goal, /\[目标\] 网页基础入门 进行中 技能 html-css 0\/1/);
+  assert.doesNotMatch(rows.map((row) => row.text).join("\n"), /\[战报\]/);
 });
 
 test("getInfoWindowRows fills sparse panels with RPG summary rows", () => {
@@ -518,9 +529,10 @@ test("getInfoWindowRows fills sparse panels with RPG summary rows", () => {
   const rows = getInfoWindowRows(getGameViewModel(state), ["[当前状态] 活动 写功能。"], [], 10);
   const text = rows.map((row) => row.text).join("\n");
 
-  assert.match(text, /\[意图\] 推进功能切片/);
-  assert.match(text, /\[状态\] 节奏稳定/);
-  assert.match(text, /\[战报\] 今日/);
+  assert.doesNotMatch(text, /\[意图\]/);
+  assert.doesNotMatch(text, /\[状态\] 节奏稳定/);
+  assert.match(text, /\[活动\] 写功能 Lv\.1 \[[#=\-]{18}\] 0% 0\/200/);
+  assert.doesNotMatch(text, /\[战报\]/);
   assert.ok(rows.some((row) => row.source === "event" && row.empty));
   assert.doesNotMatch(text, /精力|压力|Bug|技术债|建议/);
 });
@@ -558,15 +570,45 @@ test("getInfoWindowRows shows active activity level progress after current statu
 
   const rows = getInfoWindowRows(view, ["[当前状态] 活动 写功能。"], [], 8);
   const currentIndex = rows.findIndex((row) => row.text.includes("[当前状态]"));
-  const progressIndex = rows.findIndex((row) => row.id === "info-current-context-activity-exp");
-  const intentIndex = rows.findIndex((row) => row.id === "info-current-context-intent");
+  const progressIndex = rows.findIndex((row) => row.id === "info-current-context-action-progress");
   const text = rows.map((row) => row.text).join("\n");
 
   assert.ok(currentIndex >= 0);
-  assert.equal(progressIndex, currentIndex + 1);
-  assert.equal(intentIndex > progressIndex, true);
-  assert.match(rows[progressIndex].text, /^\[Lv\.3\] \[[#=\-]{18}\] 77% 342\/440$/);
+  // 新排序：进度条固定在上下文区最底部，不再紧跟 [当前状态]
+  assert.ok(progressIndex >= 0);
+  assert.ok(progressIndex > currentIndex);
+  assert.match(rows[progressIndex].text, /^\[活动\] 写功能 Lv\.3 \[[#=\-]{18}\] 77% 342\/440$/);
   assert.doesNotMatch(text, /\[阶段\]/);
+  assert.doesNotMatch(text, /\[意图\]/);
+});
+
+test("getInfoWindowRows shows active skill learning progress after current status", () => {
+  const state = createNewState(1_700_000_000_000);
+  const baseView = getGameViewModel(state);
+  const view = {
+    ...baseView,
+    activeSkillLearning: {
+      id: "typescript",
+      name: "TypeScript",
+      progressPercent: 30,
+      progressLabel: "学习进度",
+      progressText: "3m/10m"
+    },
+    schedule: {
+      ...baseView.schedule,
+      confirmed: true,
+      waiting: false,
+      currentPhase: { id: "afternoon", name: "下午", timeRange: "14:00-18:00" }
+    }
+  };
+
+  const rows = getInfoWindowRows(view, ["[当前状态] 学习 TypeScript。"], [], 8);
+  const currentIndex = rows.findIndex((row) => row.text.includes("[当前状态]"));
+  const progressIndex = rows.findIndex((row) => row.id === "info-current-context-action-progress");
+
+  assert.ok(currentIndex >= 0);
+  assert.equal(progressIndex, currentIndex + 1);
+  assert.match(rows[progressIndex].text, /^\[技能\] TypeScript 学习进度 \[[#=\-]{18}\] 30% 3m\/10m$/);
 });
 
 test("getInfoWindowRows omits activity level progress without an active activity or next exp", () => {

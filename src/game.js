@@ -4359,6 +4359,7 @@ function getGameViewModel(state) {
   const active = activityById(state.activeActivityId);
   const activeProject = projectById(state.activeProjectId);
   const activeSkill = itemById(content.skills, state.activeSkillLearningId);
+  const activeActivityProgress = active ? getActivityProgress(state, active.id) : null;
   const activeProjectProgress = activeProject ? getProjectProgress(state, activeProject) : null;
   const activeSkillProgress = activeSkill ? getSkillLearningProgress(state, activeSkill) : null;
   const claimableGoals = getClaimableGoals(state);
@@ -4446,7 +4447,14 @@ function getGameViewModel(state) {
     activeActivity: active ? {
       id: active.id,
       name: active.name,
-      level: getActivityLevel(state, active.id),
+      level: activeActivityProgress.level,
+      exp: activeActivityProgress.exp,
+      nextExp: activeActivityProgress.next,
+      progressPercent: activeActivityProgress.next > 0
+        ? Math.min(100, Math.floor(activeActivityProgress.exp / activeActivityProgress.next * 100))
+        : 100,
+      progressLabel: "等级进度",
+      progressText: `${formatNumber(activeActivityProgress.exp)}/${formatNumber(activeActivityProgress.next)}`,
       attributeExpIds: Object.entries(active.attributeExpPerHour || {})
         .filter(([, value]) => Number(value) > 0)
         .map(([id]) => id)
@@ -4462,6 +4470,10 @@ function getGameViewModel(state) {
       stageProgressPercent: activeProjectProgress.stageProgressPercent,
       workedSeconds: activeProjectProgress.workedSeconds,
       requiredSeconds: activeProjectProgress.requiredSeconds,
+      stageWorkedSeconds: activeProjectProgress.stageWorkedSeconds,
+      stageRequiredSeconds: activeProjectProgress.stageRequiredSeconds,
+      progressLabel: "阶段进度",
+      progressText: `${formatGameDuration(activeProjectProgress.stageWorkedSeconds)}/${formatGameDuration(activeProjectProgress.stageRequiredSeconds)}`,
       successRate: getProjectSuccessRate(state, activeProject)
     } : null,
     activeSkillLearning: activeSkill ? {
@@ -4469,7 +4481,9 @@ function getGameViewModel(state) {
       name: activeSkill.name,
       progressPercent: activeSkillProgress.progressPercent,
       workedSeconds: activeSkillProgress.workedSeconds,
-      requiredSeconds: activeSkillProgress.requiredSeconds
+      requiredSeconds: activeSkillProgress.requiredSeconds,
+      progressLabel: "学习进度",
+      progressText: `${formatDuration(activeSkillProgress.workedSeconds)}/${formatDuration(activeSkillProgress.requiredSeconds)}`
     } : null,
     resources: getResourceEntries(state),
     attributes: getAttributeEntries(state),
