@@ -1866,8 +1866,8 @@ function createTuiTicker(state, result = null, changedResources = "") {
     ];
   }
 
-  // 检测提前完成状态
-  if (state.earlyCompletionPending) {
+  // 检测提前完成状态（只显示一次）
+  if (state.earlyCompletionPending && !state.earlyCompletionPending.displayed) {
     const pending = state.earlyCompletionPending;
     const phase = SCHEDULE_PHASE_BY_ID[pending.phaseId];
     const completedTaskName = pending.completedTask.type === "activity"
@@ -1879,6 +1879,9 @@ function createTuiTicker(state, result = null, changedResources = "") {
           : "任务";
     const remainingHours = Math.floor(pending.remainingMinutes / 60);
     const remainingMinutes = pending.remainingMinutes % 60;
+
+    // 标记为已显示，避免重复提示
+    state.earlyCompletionPending.displayed = true;
 
     return [
       `[提前完成] ${completedTaskName} 已完成！`,
