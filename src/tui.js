@@ -381,7 +381,10 @@ function createInfoCurrentActionProgressRow(view) {
     return {
       id: "context-action-progress",
       kind: "action",
-      text: `[项目] ${project.name} ${stageLabel}${stageName} ${formatInfoLevelProgressBar(percent)} ${percent}%${progressText}`,
+      text: `[项目] ${project.name} ${stageLabel}${stageName}`,
+      progressPercent: percent,
+      progressText,
+      animated: true,
       priority: 2
     };
   }
@@ -393,7 +396,10 @@ function createInfoCurrentActionProgressRow(view) {
     return {
       id: "context-action-progress",
       kind: "action",
-      text: `[技能] ${skill.name} ${label} ${formatInfoLevelProgressBar(percent)} ${percent}%${progressText}`,
+      text: `[技能] ${skill.name} ${label}`,
+      progressPercent: percent,
+      progressText,
+      animated: true,
       priority: 2
     };
   }
@@ -411,7 +417,10 @@ function createInfoCurrentActionProgressRow(view) {
     return {
       id: "context-action-progress",
       kind: "action",
-      text: `[活动] ${activity.name} Lv.${level} ${formatInfoLevelProgressBar(percent)} ${percent}% ${progressText}`,
+      text: `[活动] ${activity.name} Lv.${level}`,
+      progressPercent: percent,
+      progressText,
+      animated: true,
       priority: 2
     };
   }
@@ -1771,6 +1780,19 @@ async function startTui() {
         if (row.source === "separator") {
           return h(Text, { key: row.id, color: THEME.panel }, "─".repeat(Math.max(8, width - 4)));
         }
+
+        // 动态进度条渲染
+        if (row.animated && Number.isFinite(row.progressPercent)) {
+          const progressBarWidth = 18;
+          const availableWidth = Math.max(16, width - 4);
+          const textWidth = availableWidth - progressBarWidth - 10; // 预留空间给进度条、百分比和文本
+          return h(Box, { key: row.id, gap: 1 },
+            h(Text, { color: THEME.title, bold: true }, trimText(row.text, textWidth)),
+            h(Progress, { percent: row.progressPercent, width: progressBarWidth, animated: true }),
+            h(Text, { color: THEME.muted }, `${row.progressPercent}%${row.progressText || ""}`)
+          );
+        }
+
         const eventTone = row.source === "event"
           ? row.empty
             ? { color: THEME.muted, bold: false, dim: true }
