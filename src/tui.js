@@ -362,8 +362,11 @@ function createInfoActivityLevelRow(view) {
   const percent = Math.max(0, Math.min(100, Math.floor(exp / nextExp * 100)));
   return {
     id: "context-activity-exp",
-    kind: "context",
-    text: `[Lv.${level}] ${formatInfoLevelProgressBar(percent)} ${percent}% ${exp}/${nextExp}`,
+    kind: "action",
+    text: `[Lv.${level}]`,
+    progressPercent: percent,
+    progressText: ` ${exp}/${nextExp}`,
+    animated: true,
     priority: 2
   };
 }
