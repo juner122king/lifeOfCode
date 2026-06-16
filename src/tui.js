@@ -75,23 +75,25 @@ function isHiddenTuiCommandHint(text) {
 function normalizeLogMessages(messages, defaultCategory = null) {
   return messages.filter(Boolean).flatMap((message) => {
     if (typeof message === "object" && message !== null && "text" in message) {
-      return String(message.text || "")
+      const lines = String(message.text || "")
         .split("\n")
-        .filter((text) => text && !isHiddenTuiCommandHint(text))
-        .map((text) => ({
-          category: message.category || defaultCategory || null,
-          severity: message.severity || "info",
-          text
-        }));
-    }
-    return String(message)
-      .split("\n")
-      .filter((text) => text && !isHiddenTuiCommandHint(text))
-      .map((text) => ({
-        category: defaultCategory,
-        severity: defaultCategory ? "info" : null,
-        text
+        .filter((text) => text && !isHiddenTuiCommandHint(text));
+      return lines.map((text, index) => ({
+        category: message.category || defaultCategory || null,
+        severity: message.severity || "info",
+        text,
+        isFirstLine: index === 0
       }));
+    }
+    const lines = String(message)
+      .split("\n")
+      .filter((text) => text && !isHiddenTuiCommandHint(text));
+    return lines.map((text, index) => ({
+      category: defaultCategory,
+      severity: defaultCategory ? "info" : null,
+      text,
+      isFirstLine: index === 0
+    }));
   });
 }
 
@@ -105,7 +107,7 @@ function createLogEntries(messages, startId = 0, defaultCategory = null, options
   const entries = normalizeLogMessages(messages, defaultCategory).map((entry) => {
     const log = {
       id: nextId++,
-      text: entry.category ? formatGameEvent(entry) : entry.text
+      text: entry.category && entry.isFirstLine ? formatGameEvent(entry) : entry.text
     };
     if (entry.category) log.category = entry.category;
     if (entry.severity) log.severity = entry.severity;
