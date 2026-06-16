@@ -1487,3 +1487,37 @@ test("settleTime resets snapshot when crossing midnight", () => {
   assert.ok(state.hourlySummarySnapshot.worldMinute >= 1440, "Snapshot should be updated to new day");
   assert.strictEqual(state.hourlySummarySnapshot.resources.codeLines, state.resources.codeLines, "Snapshot should match current resources");
 });
+
+test("renderAttributeSummary renders all 6 attributes with progress bars", () => {
+  const state = createNewState(1_700_000_000_000);
+  state.attributes.logic = 42;
+  state.attributeExp.logic = 240;
+  state.attributes.focus = 38;
+  state.attributeExp.focus = 85;
+  state.attributes.learning = 50;
+  state.attributeExp.learning = 120;
+  state.attributes.communication = 30;
+  state.attributeExp.communication = 60;
+  state.attributes.resilience = 45;
+  state.attributeExp.resilience = 100;
+  state.attributes.creativity = 25;
+  state.attributeExp.creativity = 40;
+
+  const { renderAttributeSummary } = require("../src/tui");
+  const rows = renderAttributeSummary(state);
+
+  assert.ok(rows.length > 0);
+  const text = rows.join("\n");
+  assert.match(text, /========== 属性总览 ==========/);
+  assert.match(text, /逻辑 42/);
+  assert.match(text, /专注 38/);
+  assert.match(text, /学习 50/);
+  assert.match(text, /沟通 30/);
+  assert.match(text, /抗压 45/);
+  assert.match(text, /创造 25/);
+  assert.match(text, /\[████/);
+  assert.match(text, /经验 \d+\/\d+ \(\d+%\)/);
+  assert.match(text, /下一里程碑:/);
+  assert.match(text, /> 输入 attr <属性名> 查看详情/);
+  assert.match(text, /> 输入 attr milestones 查看所有里程碑总览/);
+});

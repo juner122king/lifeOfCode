@@ -133,6 +133,7 @@ const TUI_EXPORTS = [
   "pauseGameClock",
   "processTuiCommand",
   "profileDeleteUnavailableMessage",
+  "renderAttributeSummary",
   "resolveProfileDeleteKeypress",
   "resumeGameClock",
   "shouldExitProfileCreationMode",

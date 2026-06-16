@@ -1411,6 +1411,30 @@ function getCharacterCardRadarRows(attributeRows = []) {
   return grid.map((row) => row.join("").replace(/\s+$/, ""));
 }
 
+function renderAttributeSummary(state) {
+  const { getAttributeSummary } = require("./game");
+  const summary = getAttributeSummary(state);
+  const rows = [];
+
+  rows.push("========== 属性总览 ==========");
+  rows.push("");
+
+  for (const attr of summary) {
+    const expInfo = `经验 ${attr.currentExp}/${attr.nextLevelExp} (${attr.expPercent}%)`;
+    const milestoneInfo = attr.nextMilestone
+      ? `下一里程碑: Lv.${attr.nextMilestone.level} ${attr.nextMilestone.name}`
+      : "已达最高里程碑";
+
+    rows.push(`${attr.name} ${attr.currentLevel} ${attr.progressBar} ${attr.nextMilestone ? attr.nextMilestone.level : "MAX"}    ${expInfo}    ${milestoneInfo}`);
+  }
+
+  rows.push("");
+  rows.push("> 输入 attr <属性名> 查看详情 (如: attr logic 或 attr 逻辑)");
+  rows.push("> 输入 attr milestones 查看所有里程碑总览");
+
+  return rows;
+}
+
 async function startTui() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     if (!defaultProfileExists()) {
@@ -2286,6 +2310,7 @@ module.exports = {
   pauseGameClock,
   profileDeleteUnavailableMessage,
   processTuiCommand,
+  renderAttributeSummary,
   resumeGameClock,
   resolveProfileDeleteKeypress,
   shouldResetDailyPlannerPhase,
