@@ -1543,6 +1543,53 @@ function formatChangedResources(beforeResources, afterResources) {
   return entries.join("，");
 }
 
+function generateHourlySummary(state) {
+  const snapshot = state.hourlySummarySnapshot;
+  if (!snapshot) return null;
+
+  const lines = [];
+
+  // 1. 时间范围
+  const fromHour = Math.floor((snapshot.worldMinute % MINUTES_PER_DAY) / 60);
+  const toHour = Math.floor((state.worldTimeMinutes % MINUTES_PER_DAY) / 60);
+  const timeRange = `${String(fromHour).padStart(2, "0")}:00-${String(toHour).padStart(2, "0")}:00`;
+  lines.push(`[汇总] ${timeRange}`);
+
+  // 2. 资源变化
+  const resourceChanges = [];
+  for (const key of RESOURCE_ORDER) {
+    const before = Math.floor(Number(snapshot.resources[key]) || 0);
+    const after = Math.floor(Number(state.resources[key]) || 0);
+    const change = after - before;
+    if (change !== 0) {
+      const name = RESOURCE_NAMES[key] || key;
+      resourceChanges.push(`${name} ${change > 0 ? "+" : ""}${change}（${before}→${after}）`);
+    }
+  }
+  if (resourceChanges.length > 0) {
+    lines.push(`资源：${resourceChanges.join("，")}`);
+  } else {
+    lines.push("资源：无明显变化");
+  }
+
+  // 3. 属性经验
+  const attributeChanges = [];
+  for (const id of ATTRIBUTE_IDS) {
+    const before = Math.floor(Number(snapshot.attributeExp[id]) || 0);
+    const after = Math.floor(Number(state.attributeExp[id]) || 0);
+    const change = after - before;
+    if (change > 0) {
+      const name = ATTRIBUTE_NAMES[id] || id;
+      attributeChanges.push(`${name} +${change}`);
+    }
+  }
+  if (attributeChanges.length > 0) {
+    lines.push(`属性：${attributeChanges.join("，")}`);
+  }
+
+  return lines.join("\n");
+}
+
 function formatRestDeltaNumber(value) {
   const numeric = Number(value) || 0;
   const rounded = Math.round(numeric * 100) / 100;
@@ -5685,6 +5732,7 @@ module.exports = {
   formatActivities,
   formatCharacterCards,
   formatChangedResources,
+  generateHourlySummary,
   formatGameEvent,
   formatGameEvents,
   formatGoals,

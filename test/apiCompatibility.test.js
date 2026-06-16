@@ -47,6 +47,7 @@ const GAME_EXPORTS = [
   "formatState",
   "formatWorldCalendar",
   "formatWorldEvents",
+  "generateHourlySummary",
   "getActivityLevel",
   "getActivityOptions",
   "getActivityProgress",

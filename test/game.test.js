@@ -52,6 +52,7 @@ const {
   stopActivity,
   submitProject,
   updateHourlySummarySnapshot,
+  generateHourlySummary,
   loadProfile,
   upgradeSkill,
   writeLastProfileId
@@ -2483,4 +2484,40 @@ test("updateHourlySummarySnapshot updates snapshot correctly", () => {
   assert.strictEqual(state.hourlySummarySnapshot.activityLevels["bug-hunting"].exp, 150);
   assert.strictEqual(state.hourlySummarySnapshot.attributeExp.logic, 25);
   assert.strictEqual(state.hourlySummarySnapshot.worldMinute, 600);
+});
+
+test("generateHourlySummary generates complete report", () => {
+  const state = createNewState();
+
+  // 设置快照（上个小时的状态）
+  state.hourlySummarySnapshot.resources = {
+    energy: 100, pressure: 20, bugs: 15, techDebt: 10,
+    money: 30, reputation: 0, knowledge: 0
+  };
+  state.hourlySummarySnapshot.activityLevels = {
+    "bug-hunting": { level: 2, exp: 150 }
+  };
+  state.hourlySummarySnapshot.attributeExp = { logic: 10, resilience: 5 };
+  state.hourlySummarySnapshot.worldMinute = 540; // 9:00
+
+  // 设置当前状态（一小时后）
+  state.resources.energy = 85;
+  state.resources.pressure = 30;
+  state.resources.bugs = 13;
+  state.resources.money = 30;
+  state.activityLevels["bug-hunting"] = 3;
+  state.activityExp["bug-hunting"] = 200;
+  state.attributeExp.logic = 22;
+  state.attributeExp.resilience = 13;
+  state.worldTimeMinutes = 600; // 10:00
+
+  const summary = generateHourlySummary(state);
+
+  assert.ok(summary.includes("[汇总] 09:00-10:00"));
+  assert.ok(summary.includes("精力 -15"));
+  assert.ok(summary.includes("100→85"));
+  assert.ok(summary.includes("压力 +10"));
+  assert.ok(summary.includes("Bug -2"));
+  assert.ok(summary.includes("逻辑 +12"));
+  assert.ok(summary.includes("抗压 +8"));
 });
