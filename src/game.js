@@ -307,6 +307,13 @@ function createNewState(now = Date.now(), options = {}) {
     attributeExp: Object.fromEntries(ATTRIBUTE_IDS.map((id) => [id, 0])),
     currentRole: role.id,
     lastTick: now,
+    lastHourlySummaryHour: Math.floor((WORLD_START_MINUTES % MINUTES_PER_DAY) / 60),
+    hourlySummarySnapshot: {
+      resources: {},
+      activityLevels: {},
+      attributeExp: {},
+      worldMinute: WORLD_START_MINUTES
+    },
     stats: {
       totalCodeLines: 0,
       totalBugsFixed: 0,
@@ -315,6 +322,14 @@ function createNewState(now = Date.now(), options = {}) {
   };
   if (options.characterCardId) applyCharacterCard(state, options.characterCardId);
   state.dayStartResources = snapshotResources(state.resources);
+
+  // 初始化每小时汇总快照
+  state.hourlySummarySnapshot.resources = snapshotResources(state.resources);
+  state.hourlySummarySnapshot.activityLevels = Object.fromEntries(
+    Object.entries(state.activityLevels).map(([id, level]) => [id, { level, exp: state.activityExp[id] || 0 }])
+  );
+  state.hourlySummarySnapshot.attributeExp = { ...state.attributeExp };
+
   return state;
 }
 

@@ -2446,3 +2446,18 @@ test("profile options 为 TUI 提供新建、保存和切换动作", () => {
   assert.match(work.description, /破釜沉舟转行者/);
   assert.equal(options.some((item) => item.id.startsWith("create-")), false);
 });
+
+test("createNewState initializes hourly summary fields", () => {
+  const state = createNewState();
+
+  assert.strictEqual(typeof state.lastHourlySummaryHour, "number");
+  assert.ok(state.hourlySummarySnapshot);
+  assert.ok(state.hourlySummarySnapshot.resources);
+  assert.ok(state.hourlySummarySnapshot.activityLevels);
+  assert.ok(state.hourlySummarySnapshot.attributeExp);
+  assert.strictEqual(typeof state.hourlySummarySnapshot.worldMinute, "number");
+
+  // 验证快照初始值
+  assert.strictEqual(state.hourlySummarySnapshot.resources.energy, 100);
+  assert.strictEqual(state.hourlySummarySnapshot.worldMinute, 540); // 9:00
+});
