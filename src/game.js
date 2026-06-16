@@ -4392,6 +4392,9 @@ function helpText() {
     "  plan clear             清空未确认的日程草稿",
     "  activities             查看活动列表",
     "  events                 查看当前世界事件",
+    "  attr                   查看核心属性总览",
+    "  attr <id>              查看单个属性详情（如：attr logic 或 attr 逻辑）",
+    "  attr milestones        查看里程碑总览",
     "  start <id>             旧入口：提示改用 plan",
     "  stop                   暂停当前底层任务（调试用）",
     "  week <focus>           设置本周重点：learning|project|freelance|quality|balanced",
@@ -5872,6 +5875,52 @@ function processProfileCommand(state, args, options = {}) {
   }
 }
 
+function processAttrCommand(state, args) {
+  const {
+    renderAttributeSummary,
+    renderAttributeDetails,
+    renderMilestoneOverview
+  } = require("./tui");
+
+  // No args: show summary view
+  if (!args.length) {
+    const lines = renderAttributeSummary(state);
+    return Array.isArray(lines) ? lines.join("\n") : lines;
+  }
+
+  const subcommand = args[0].toLowerCase();
+
+  // Handle milestones subcommand
+  if (subcommand === "milestones") {
+    const lines = renderMilestoneOverview(state);
+    return Array.isArray(lines) ? lines.join("\n") : lines;
+  }
+
+  // Try to find attribute by English ID or Chinese name
+  let attrId = null;
+
+  // Check if it's a valid English ID
+  if (ATTRIBUTE_IDS.includes(subcommand)) {
+    attrId = subcommand;
+  } else {
+    // Check if it's a Chinese name
+    attrId = Object.keys(ATTRIBUTE_NAMES).find(
+      id => ATTRIBUTE_NAMES[id] === subcommand
+    );
+  }
+
+  // Show detail view if found
+  if (attrId) {
+    const details = getAttributeDetails(state, attrId);
+    const lines = renderAttributeDetails(details);
+    return Array.isArray(lines) ? lines.join("\n") : lines;
+  }
+
+  // Invalid attribute
+  const validNames = ATTRIBUTE_IDS.map(id => `${id} (${ATTRIBUTE_NAMES[id]})`).join("、");
+  return `未知属性「${args[0]}」。可用属性：${validNames}`;
+}
+
 function processCommand(state, input, options = {}) {
   const now = options.now ?? Date.now();
   const messages = [];
@@ -5895,6 +5944,10 @@ function processCommand(state, input, options = {}) {
       break;
     case "events":
       messages.push(formatWorldEvents(state));
+      break;
+    case "attr":
+    case "attributes":
+      messages.push(processAttrCommand(state, args));
       break;
     case "plan":
       messages.push(processPlanCommand(state, args));

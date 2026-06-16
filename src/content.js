@@ -331,6 +331,24 @@ const activities = [
     attributeExpPerHour: { resilience: 27, logic: 15, focus: 15 }
   }),
   activity({
+    id: "moyu",
+    name: "摸鱼",
+    description: "低强度游离在主线之外，可能刷到线索，也可能把上下文切碎。",
+    tier: 1,
+    primaryAttribute: "creativity",
+    energyCostPerHour: 0.8,
+    activityExpPerHour: 20,
+    outputsPerHour: { energy: 2.5, knowledge: 3, leads: 0.4 },
+    mitigationPerHour: { pressure: 8 },
+    risksPerHour: { pressure: 1.2, techDebt: 0.45, bugs: 0.25 },
+    attributeExpPerHour: { creativity: 18, communication: 9, resilience: 6 },
+    narrativeStages: [
+      { seconds: 60, texts: ["你把注意力从主线挪开一点，脑子暂时从密集上下文里喘出来。"] },
+      { seconds: 180, texts: ["信息流里闪过一篇技术文章，你顺手记下一条可能以后用得上的思路。"] },
+      { seconds: 420, texts: ["短暂放空让状态回了一点，但原来的工作上下文也变得松散了。"] }
+    ]
+  }),
+  activity({
     id: "rest",
     name: "休息恢复",
     description: "恢复精力，是所有产出活动的机会成本。",
@@ -1215,6 +1233,50 @@ const ambientEvents = [
       "告警还在闪，但处理顺序终于排清楚了。"
     ],
     effects: { resources: { bugs: -2, pressure: 2, reputation: 1 }, activityExp: 6, attributeExp: { resilience: 3 } }
+  },
+  {
+    id: "moyu-tech-article",
+    name: "技术文章",
+    tags: ["activity", "moyu", "recovery"],
+    weight: 4,
+    messages: [
+      "你刷到一篇正好相关的技术文章，零散知识被接上一小段。",
+      "信息流里混进一篇有用长文，你把关键句记进脑内缓存。"
+    ],
+    effects: { resources: { knowledge: 3, pressure: -1 }, activityExp: 4, attributeExp: { creativity: 2 } }
+  },
+  {
+    id: "moyu-side-lead",
+    name: "副业线索",
+    tags: ["activity", "moyu", "recovery"],
+    weight: 3,
+    messages: [
+      "你顺手看了一个需求帖，里面藏着一条可能变现的线索。",
+      "群里有人随口提到一个小需求，你把它记成未来可试的机会。"
+    ],
+    effects: { resources: { leads: 1, pressure: -1 }, activityExp: 4, attributeExp: { communication: 2 } }
+  },
+  {
+    id: "moyu-message-pullback",
+    name: "消息抓回",
+    tags: ["activity", "moyu", "work"],
+    weight: 3,
+    messages: [
+      "一条消息突然把你抓回现实，刚刚放松下来的节奏被打断。",
+      "通知栏亮了一下，你意识到自己还欠一个上下文切换的账。"
+    ],
+    effects: { resources: { pressure: 2, techDebt: 1 }, activityExp: 3, attributeExp: { resilience: 2 } }
+  },
+  {
+    id: "moyu-context-miss",
+    name: "错过上下文",
+    tags: ["activity", "moyu", "work"],
+    weight: 2,
+    messages: [
+      "你回来时发现刚才的思路断了一截，返工风险小幅增加。",
+      "主线任务的细节变得模糊，你需要重新摸一遍边界。"
+    ],
+    effects: { resources: { bugs: 1, pressure: 1, reputation: -1, money: -2 }, activityExp: 2, attributeExp: { resilience: 1 } }
   },
   {
     id: "skill-example-click",

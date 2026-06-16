@@ -1144,6 +1144,7 @@ test("activities 展示活动列表、等级、锁定状态和当前状态", () 
   assert.match(message, /产出：收益\/游戏小时：代码 \+35\.98/);
   assert.match(message, /风险\/游戏小时：Bug \+1\.21/);
   assert.match(message, /architecture - 架构设计 \[未解锁\]/);
+  assert.match(message, /moyu - 摸鱼/);
   assert.match(message, /rest - 休息恢复/);
 });
 
@@ -1154,6 +1155,10 @@ test("activity options 按游戏小时展示收益、风险、改善和精力", 
   const featureCoding = options.find((item) => item.id === "feature-coding");
   const bugHunting = options.find((item) => item.id === "bug-hunting");
   const rest = options.find((item) => item.id === "rest");
+  const recoveryState = createNewState();
+  recoveryState.resources.energy = 50;
+  recoveryState.resources.pressure = 50;
+  const moyu = getActivityOptions(recoveryState).find((item) => item.id === "moyu");
 
   // With default focus=24, output activity bonus is (24-20)*0.003=0.012, so 35.55 * 1.012 = 35.98
   assert.equal(
@@ -1176,6 +1181,16 @@ test("activity options 按游戏小时展示收益、风险、改善和精力", 
     bugHunting.output,
     "收益/游戏小时：测试 +1.33；精力消耗/游戏小时：精力 -11.2"
   );
+  assert.equal(moyu.detailKind, "activity");
+  assert.equal(moyu.roleSummary, "风险摸鱼");
+  assert.match(moyu.output, /收益\/游戏小时：精力 \+/);
+  assert.match(moyu.output, /知识 \+/);
+  assert.match(moyu.output, /线索 \+/);
+  assert.match(moyu.output, /改善\/游戏小时：压力 -/);
+  assert.match(moyu.output, /风险\/游戏小时：/);
+  assert.match(moyu.output, /Bug \+/);
+  assert.match(moyu.output, /技术债 \+/);
+  assert.match(moyu.useCase, /返工、暴露和上下文切换风险/);
   assert.equal(rest.output, "当前无可见变化");
   assert.equal(rest.roleSummary, "恢复节奏");
   assert.deepEqual(rest.rateSections, {
@@ -1203,6 +1218,7 @@ test("activity energy costs and quality mitigation match balance targets", () =>
     architecture: 14,
     "performance-tuning": 14,
     "incident-response": 16.8,
+    moyu: 0.8,
     rest: 0
   };
   const expectedMitigation = {
@@ -1213,7 +1229,8 @@ test("activity energy costs and quality mitigation match balance targets", () =>
     architecture: { techDebt: 2.28 },
     "code-review": { bugs: 3.64, techDebt: 2.28 },
     "performance-tuning": { techDebt: 1.37 },
-    "incident-response": { bugs: 5.46 }
+    "incident-response": { bugs: 5.46 },
+    moyu: { pressure: 8 }
   };
 
   for (const [id, cost] of Object.entries(expectedEnergyCosts)) {
@@ -1384,6 +1401,28 @@ test("bug-hunting 降低 Bug 并产出测试", () => {
   assert.ok(state.stats.totalBugsFixed > 0);
 });
 
+test("moyu 作为投机恢复活动产出线索知识并带来返工风险", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  state.resources.energy = 50;
+  state.resources.pressure = 50;
+  state.resources.bugs = 0;
+  state.resources.techDebt = 0;
+
+  assert.match(startActivity(state, "moyu"), /开始活动：摸鱼/);
+  const before = { ...state.resources };
+  settleTime(state, now + 60_000, { randomEvents: false });
+
+  assert.ok(state.resources.energy > before.energy);
+  assert.ok(state.resources.knowledge > before.knowledge);
+  assert.ok(state.resources.leads > before.leads);
+  assert.ok(state.resources.pressure < before.pressure);
+  assert.ok(state.resources.bugs > before.bugs);
+  assert.ok(state.resources.techDebt > before.techDebt);
+  assert.ok(state.activityExp.moyu > 0);
+  assert.ok(state.attributeExp.creativity > 0);
+});
+
 test("refactoring 降低技术债并产出架构资产", () => {
   const now = 1_700_000_000_000;
   const state = createNewState(now);
@@ -1469,6 +1508,7 @@ test("activity attribute growth follows skill-route balance and global exp resou
     "performance-tuning": { logic: 27, focus: 15, resilience: 15 },
     "prompt-engineering": { creativity: 27, learning: 27 },
     "incident-response": { resilience: 27, logic: 15, focus: 15 },
+    moyu: { creativity: 18, communication: 9, resilience: 6 },
     rest: { resilience: 18 }
   };
 
@@ -1639,6 +1679,40 @@ test("活动阶段叙事跨阈值触发且同日同阶段不重复", () => {
 
   assert.match(eventLog, /\[随机事件\] 活动片段：写功能/);
   assert.doesNotMatch(formatGameEvents(repeat.events).join("\n"), /活动片段：写功能/);
+});
+
+test("moyu ambient 事件可匹配并应用正负资源变化", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  state.worldTimeMinutes = 10 * 60;
+  state.resources.energy = 100;
+  state.resources.money = 10;
+  state.resources.reputation = 2;
+  startActivity(state, "moyu");
+  const before = { ...state.resources };
+  const moyuEvents = content.ambientEvents.filter((item) => Array.isArray(item.tags) && item.tags.includes("moyu"));
+  const positive = moyuEvents.find((item) => item.id === "moyu-tech-article");
+  const negative = moyuEvents.find((item) => item.id === "moyu-context-miss");
+
+  assert.ok(positive);
+  assert.ok(negative);
+  assert.ok(moyuEvents.some((item) => Object.values(item.effects.resources || {}).some((value) => value > 0)));
+  assert.ok(moyuEvents.some((item) => Object.values(item.effects.resources || {}).some((value) => value < 0)));
+
+  const rngValues = [0.99, 0, 0];
+  const rng = () => rngValues.shift() ?? 0;
+  const result = settleTime(state, now + 8 * 60_000, { randomEvents: true, rng });
+  const eventLog = formatGameEvents(result.events).join("\n");
+
+  assert.match(eventLog, /\[随机事件\] 工作插曲：/);
+  assert.ok(
+    state.resources.knowledge > before.knowledge ||
+    state.resources.leads > before.leads ||
+    state.resources.bugs > before.bugs ||
+    state.resources.techDebt > before.techDebt ||
+    state.resources.money < before.money ||
+    state.resources.reputation < before.reputation
+  );
 });
 
 test("新增技能 TypeScript 满足属性和资源后进入学习队列", () => {
