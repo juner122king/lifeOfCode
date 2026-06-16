@@ -519,11 +519,16 @@ function stripInfoEventPrefix(text) {
 
 function formatInfoEventText(row) {
   if (!row || row.empty) return row && row.text || "";
+  const text = String(row.text || "");
+  // 对于汇总事件的后续行（category是hourly_summary但文本无标签），保持原样
+  if (row.category === "hourly_summary" && !/^[[【][^\]】]+[\]】]/.test(text)) {
+    return text;
+  }
   const label = INFO_EVENT_LABELS[row.category] || "情报";
   const time = INFO_TIMED_EVENT_CATEGORIES.has(row.category) && isValidGameTimeLabel(row.gameTimeLabel)
     ? `${row.gameTimeLabel} `
     : "";
-  return `[${label}] ${time}${stripInfoEventPrefix(row.text)}`;
+  return `[${label}] ${time}${stripInfoEventPrefix(text)}`;
 }
 
 function createInfoContextRows(view) {
@@ -647,7 +652,7 @@ function getInfoWindowRows(view, ticker = null, logs = [], availableHeight = 12)
   const reserveSeparator = capacity >= 4 ? 1 : 0;
   const currentPool = getInfoCurrentRows(view, ticker, capacity);
   const eventPool = getLogRows(logs, Math.max(MAX_LOGS, capacity))
-    .filter((row) => !row.empty && !INFO_RESOURCE_PATTERN.test(String(row.text || "")))
+    .filter((row) => !row.empty && (row.category === "hourly_summary" || !INFO_RESOURCE_PATTERN.test(String(row.text || ""))))
     .map((row) => ({ ...row, displayText: formatInfoEventText(row) }));
   if (!eventPool.length) eventPool.push({ id: "empty-message", text: "暂无日志。", empty: true });
 
