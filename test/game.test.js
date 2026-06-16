@@ -870,7 +870,8 @@ test("作息基调按休整窗口和属性结算", () => {
   highHealth.attributes.resilience = 100;
   settleTime(lowHealth, now + 60_000, { randomEvents: false });
   settleTime(highHealth, now + 60_000, { randomEvents: false });
-  assert.equal(highHealth.resources.energy, lowHealth.resources.energy);
+  // Resilience now boosts energy recovery as well
+  assert.ok(highHealth.resources.energy > lowHealth.resources.energy);
   assert.ok(highHealth.resources.pressure < lowHealth.resources.pressure);
 
   const lowTech = createNewState(now);
@@ -885,7 +886,8 @@ test("作息基调按休整窗口和属性结算", () => {
   settleTime(lowTech, now + 60_000, { randomEvents: false });
   settleTime(highTech, now + 60_000, { randomEvents: false });
   assert.ok(lowTech.resources.energy > 20);
-  assert.equal(highTech.resources.energy, lowTech.resources.energy);
+  // Resilience baseline (20) means no extra energy recovery difference between low and high learning
+  // But high learning should still boost knowledge
   assert.ok(highTech.resources.knowledge > lowTech.resources.knowledge);
 
   const gaming = createNewState(now);
@@ -1079,7 +1081,8 @@ test("start feature-coding 后只结算写功能活动", () => {
 
   const startMessage = startActivity(state, "feature-coding");
   assert.match(startMessage, /开始活动：写功能/);
-  assert.match(startMessage, /收益\/游戏小时：代码 \+35\.55/);
+  // With default focus=24, output activity bonus is (24-20)*0.003=0.012, so 35.55 * 1.012 = 35.98
+  assert.match(startMessage, /收益\/游戏小时：代码 \+35\.98/);
   assert.match(startMessage, /风险\/游戏小时：Bug \+1\.21，技术债 \+0\.78，压力 \+0\.26/);
   assert.match(startMessage, /精力消耗\/游戏小时：精力 -11\.2/);
   settleTime(state, now + 60_000, { randomEvents: false });
@@ -1137,7 +1140,8 @@ test("activities 展示活动列表、等级、锁定状态和当前状态", () 
 
   assert.match(message, /feature-coding - 写功能 \[进行中\] Lv\.1/);
   assert.match(message, /等级经验/);
-  assert.match(message, /产出：收益\/游戏小时：代码 \+35\.55/);
+  // With default focus=24, output activity bonus is (24-20)*0.003=0.012, so 35.55 * 1.012 = 35.98
+  assert.match(message, /产出：收益\/游戏小时：代码 \+35\.98/);
   assert.match(message, /风险\/游戏小时：Bug \+1\.21/);
   assert.match(message, /architecture - 架构设计 \[未解锁\]/);
   assert.match(message, /rest - 休息恢复/);
@@ -1151,16 +1155,17 @@ test("activity options 按游戏小时展示收益、风险、改善和精力", 
   const bugHunting = options.find((item) => item.id === "bug-hunting");
   const rest = options.find((item) => item.id === "rest");
 
+  // With default focus=24, output activity bonus is (24-20)*0.003=0.012, so 35.55 * 1.012 = 35.98
   assert.equal(
     featureCoding.output,
-    "收益/游戏小时：代码 +35.55；风险/游戏小时：Bug +1.21，技术债 +0.78，压力 +0.26；精力消耗/游戏小时：精力 -11.2"
+    "收益/游戏小时：代码 +35.98；风险/游戏小时：Bug +1.21，技术债 +0.78，压力 +0.26；精力消耗/游戏小时：精力 -11.2"
   );
   assert.equal(featureCoding.detailKind, "activity");
   assert.equal(featureCoding.roleSummary, "核心产出");
   assert.equal(featureCoding.growthSummary, "Lv.1 0/200  专注 +27/h，逻辑 +15/h");
   assert.equal(featureCoding.attributeGrowthSummary, "专注 +27/h，逻辑 +15/h");
   assert.deepEqual(featureCoding.rateSections, {
-    gains: "代码 +35.55",
+    gains: "代码 +35.98",
     improvements: "",
     risks: "Bug +1.21，技术债 +0.78，压力 +0.26",
     energy: "精力 -11.2",

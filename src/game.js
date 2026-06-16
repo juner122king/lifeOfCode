@@ -823,8 +823,9 @@ function settleLifestyleRest(state, windowId, seconds) {
   if (!stance || !windowId || duration <= 0) return deltas;
   const baseRecoveryPerGameMinute = perHourToPerGameMinute(REST_RECOVERY_PER_HOUR[windowId] || 0);
   const pressureRecoveryMultiplier = getPressureRecoveryMultiplier(state);
+  const resilienceRecoveryBonus = 1 + attributeBonus(state, "resilience", 0.003, 0.2);
   const applyRecovery = (multiplier = 1) => {
-    const energyDelta = baseRecoveryPerGameMinute * Math.max(0, multiplier) * pressureRecoveryMultiplier * duration;
+    const energyDelta = baseRecoveryPerGameMinute * Math.max(0, multiplier) * pressureRecoveryMultiplier * resilienceRecoveryBonus * duration;
     if (energyDelta > 0) deltas.energy = applyResourceDelta(state, "energy", energyDelta);
   };
 
@@ -2279,6 +2280,18 @@ function getActivityRateContext(state, activity, options = {}) {
   const qualityFactor = focus.id === "quality" && QUALITY_ACTIVITY_IDS.has(activity.id) ? focus.quality : 1;
   const productivityFactor = activity.id === "rest" ? 1 : energyStatus.productivityMultiplier;
   const maintenanceFactor = getMaintenanceActivityFactor(state, activity);
+
+  // New attribute-specific activity bonuses
+  const qualityActivityBonus = QUALITY_ACTIVITY_IDS.has(activity.id) ? attributeBonus(state, "logic", 0.003, 0.22) : 0;
+  const outputActivityBonus = ["feature-coding", "testing", "documentation", "architecture"].includes(activity.id)
+    ? attributeBonus(state, "focus", 0.003, 0.22) : 0;
+  const collaborationBonus = ["freelancing", "open-source", "documentation", "code-review"].includes(activity.id)
+    ? attributeBonus(state, "communication", 0.003, 0.22) : 0;
+  const highPressureBonus = ["incident-response", "performance-tuning", "freelancing"].includes(activity.id)
+    ? attributeBonus(state, "resilience", 0.003, 0.22) : 0;
+  const creativeBonus = ["architecture", "prompt-engineering", "open-source"].includes(activity.id)
+    ? attributeBonus(state, "creativity", 0.003, 0.22) : 0;
+
   return {
     activityMultiplier,
     attributeMultiplier,
@@ -2291,6 +2304,11 @@ function getActivityRateContext(state, activity, options = {}) {
     maintenanceFactor,
     overtimeFactor,
     qualityFactor,
+    qualityActivityBonus,
+    outputActivityBonus,
+    collaborationBonus,
+    highPressureBonus,
+    creativeBonus,
     pressureRecoveryMultiplier: getPressureRecoveryMultiplier(state),
     risk: getProductionRisk(state)
   };
@@ -2318,10 +2336,23 @@ function calculateActivityDeltaEntries(state, activity, gameMinutes, options = {
   const duration = Math.max(0, Number(gameMinutes) || 0);
   if (energyCostPerGameMinute > 0) entries.push(["energy", -energyCostPerGameMinute * duration]);
 
+  // Calculate combined activity type bonus
+  const activityTypeBonus = 1 + context.qualityActivityBonus + context.outputActivityBonus +
+    context.collaborationBonus + context.highPressureBonus + context.creativeBonus;
+
   for (const [key, rate] of Object.entries(activity.outputsPerHour || {})) {
     let delta = activityRateToDelta(rate, duration);
     if (key === "energy" && activity.id === "rest") delta *= context.pressureRecoveryMultiplier;
     else delta *= context.outputFactor;
+
+    // Apply activity type bonus to all outputs
+    if (delta > 0 && key !== "energy") delta *= activityTypeBonus;
+
+    // Apply resource-specific bonuses
+    if (key === "knowledge" && delta > 0) delta *= 1 + attributeBonus(state, "learning", 0.0035, 0.25);
+    if (key === "money" && delta > 0) delta *= 1 + attributeBonus(state, "communication", 0.0025, 0.18);
+    if (key === "leads" && delta > 0) delta *= 1 + attributeBonus(state, "creativity", 0.0035, 0.25);
+
     if (key === "codeLines" && delta > 0) delta *= context.multipliers.code * context.risk.codeEfficiency;
     if (key === "money" && delta > 0) delta *= context.multipliers.money;
     if (key === "money" && delta > 0 && context.focus.id === "freelance") delta *= context.focus.money;
@@ -2437,7 +2468,7 @@ function getSkillLearningProgress(state, skillOrId) {
   const id = skill && skill.id;
   const progress = id && state.skillLearningProgress[id] ? state.skillLearningProgress[id] : {};
   const workedSeconds = Math.max(0, Number(progress.workedSeconds) || 0);
-  const learningRelief = attributeBonus(state, "learning", 0.0025, 0.2);
+  const learningRelief = attributeBonus(state, "learning", 0.0035, 0.25);
   const requiredSeconds = Math.max(1, Math.round((Number(skill && skill.learningSeconds) || 600) * (1 - learningRelief)));
   return {
     workedSeconds,
