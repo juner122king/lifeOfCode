@@ -520,9 +520,9 @@ function stripInfoEventPrefix(text) {
 function formatInfoEventText(row) {
   if (!row || row.empty) return row && row.text || "";
   const text = String(row.text || "");
-  // 对于汇总事件的后续行（category是hourly_summary但文本无标签），保持原样
+  // 对于汇总事件的后续行（category是hourly_summary但文本无标签），添加缩进
   if (row.category === "hourly_summary" && !/^[[【][^\]】]+[\]】]/.test(text)) {
-    return text;
+    return `  ${text}`;
   }
   const label = INFO_EVENT_LABELS[row.category] || "情报";
   const time = INFO_TIMED_EVENT_CATEGORIES.has(row.category) && isValidGameTimeLabel(row.gameTimeLabel)
