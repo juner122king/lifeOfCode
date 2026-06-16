@@ -1131,6 +1131,81 @@ function getAttributeSummary(state) {
   return summary;
 }
 
+function getAttributeDetails(state, attrId) {
+  if (!ATTRIBUTE_IDS.includes(attrId)) {
+    throw new Error(`Invalid attribute ID: ${attrId}`);
+  }
+
+  const { ATTRIBUTE_MILESTONES } = require("./core/attributes");
+  const milestones = ATTRIBUTE_MILESTONES[attrId] || [];
+
+  const currentLevel = getBaseAttribute(state, attrId);
+  const currentExp = Math.floor(state.attributeExp[attrId] || 0);
+  const nextLevelExp = getAttributeUpgradeCost(currentLevel);
+  const expPercent = Math.floor((currentExp / nextLevelExp) * 100);
+  const effectiveValue = getEffectiveAttribute(state, attrId);
+  const baseValue = currentLevel;
+  const breakthroughBonus = getBreakthrough(state, attrId);
+
+  // Unlocked milestones
+  const unlockedLevels = (state.unlockedMilestones && state.unlockedMilestones[attrId]) || [];
+  const unlockedMilestones = milestones
+    .filter(m => unlockedLevels.includes(m.level))
+    .map(m => ({
+      level: m.level,
+      name: m.name,
+      effect: m.effect,
+      value: m.value,
+      description: m.description,
+      narrative: m.narrative
+    }));
+
+  // Next milestone
+  const nextMilestone = findNextMilestone(attrId, currentLevel);
+  let nextMilestoneData = null;
+  if (nextMilestone) {
+    const pointsNeeded = nextMilestone.level - currentLevel;
+    let expNeeded = 0;
+    for (let lvl = currentLevel; lvl < nextMilestone.level; lvl++) {
+      expNeeded += getAttributeUpgradeCost(lvl);
+    }
+    expNeeded -= currentExp; // Subtract current progress
+
+    nextMilestoneData = {
+      level: nextMilestone.level,
+      name: nextMilestone.name,
+      pointsNeeded,
+      expNeeded: Math.max(0, expNeeded),
+      description: nextMilestone.description,
+      narrative: nextMilestone.narrative
+    };
+  }
+
+  // Future milestones
+  const futureMilestones = milestones
+    .filter(m => nextMilestone && m.level > nextMilestone.level)
+    .map(m => ({
+      level: m.level,
+      name: m.name,
+      description: m.description
+    }));
+
+  return {
+    id: attrId,
+    name: ATTRIBUTE_NAMES[attrId],
+    currentLevel,
+    currentExp,
+    nextLevelExp,
+    expPercent,
+    effectiveValue,
+    baseValue,
+    breakthroughBonus,
+    unlockedMilestones,
+    nextMilestone: nextMilestoneData,
+    futureMilestones
+  };
+}
+
 function addAttributeExp(state, attr, amount, options = {}) {
   if (!ATTRIBUTE_IDS.includes(attr) || amount <= 0) return 0;
   let gained = 0;
@@ -6072,6 +6147,7 @@ module.exports = {
   getWorldCalendar,
   getAdviceList,
   getAttributeSummary,
+  getAttributeDetails,
   formatAdviceList,
   helpText,
   learnSkill,
