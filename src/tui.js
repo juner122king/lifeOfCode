@@ -51,7 +51,7 @@ const PANELS = [
 ];
 
 const MAX_LOGS = 80;
-const EVENT_LOG_CATEGORIES = new Set(["project", "skill", "career", "warning", "focus", "world", "random", "system"]);
+const EVENT_LOG_CATEGORIES = new Set(["project", "skill", "career", "warning", "focus", "world", "random", "system", "hourly_summary"]);
 const CURRENT_RESOURCE_IDS = ["energy", "pressure", "bugs", "techDebt"];
 const TUI_SETTLE_TICK_MS = 1000;
 const TOP_RESOURCE_SUMMARY_IDS = ["codeLines", "money", "knowledge", "tests", "docs", "architecture", "leads", "reputation", "bugs", "techDebt"];
