@@ -1157,8 +1157,8 @@ test("activity options 按游戏小时展示收益、风险、改善和精力", 
   );
   assert.equal(featureCoding.detailKind, "activity");
   assert.equal(featureCoding.roleSummary, "核心产出");
-  assert.equal(featureCoding.growthSummary, "Lv.1 0/200  专注 +9/h，逻辑 +5/h");
-  assert.equal(featureCoding.attributeGrowthSummary, "专注 +9/h，逻辑 +5/h");
+  assert.equal(featureCoding.growthSummary, "Lv.1 0/200  专注 +27/h，逻辑 +15/h");
+  assert.equal(featureCoding.attributeGrowthSummary, "专注 +27/h，逻辑 +15/h");
   assert.deepEqual(featureCoding.rateSections, {
     gains: "代码 +35.55",
     improvements: "",
@@ -1434,22 +1434,37 @@ test("architecture outproduces refactoring and unlocks at refactoring Lv4 plus s
   assert.deepEqual(architecture.requirements, { skills: ["sql"], activityLevels: { refactoring: 4 } });
 });
 
+test("activities should give 3x attribute exp", () => {
+  const now = 1_700_000_000_000;
+  const state = createNewState(now);
+  state.attributes.focus = 20;
+  state.attributeExp.focus = 0;
+  state.attributeExp.logic = 0;
+
+  startActivity(state, "feature-coding");
+  settleTime(state, now + 60_000, { randomEvents: false }); // 60 real seconds = 60 game minutes = 1 game hour
+
+  // feature-coding 新经验: focus: 27, logic: 15
+  assert.strictEqual(state.attributeExp.focus, 27);
+  assert.strictEqual(state.attributeExp.logic, 15);
+});
+
 test("activity attribute growth follows skill-route balance and global exp resource is absent", () => {
   const expected = {
-    "feature-coding": { focus: 9, logic: 5 },
-    "bug-hunting": { logic: 9, resilience: 5 },
-    refactoring: { logic: 9, focus: 5 },
-    study: { learning: 14 },
-    testing: { focus: 9, logic: 5 },
-    documentation: { learning: 9, communication: 5 },
-    freelancing: { communication: 9, resilience: 5 },
-    "open-source": { communication: 9, creativity: 5 },
-    architecture: { logic: 9, learning: 5, creativity: 5 },
-    "code-review": { logic: 5, communication: 5, learning: 5 },
-    "performance-tuning": { logic: 9, focus: 5, resilience: 5 },
-    "prompt-engineering": { creativity: 9, learning: 9 },
-    "incident-response": { resilience: 9, logic: 5, focus: 5 },
-    rest: { resilience: 6 }
+    "feature-coding": { focus: 27, logic: 15 },
+    "bug-hunting": { logic: 27, resilience: 15 },
+    refactoring: { logic: 27, focus: 15 },
+    study: { learning: 42 },
+    testing: { focus: 27, logic: 15 },
+    documentation: { learning: 27, communication: 15 },
+    freelancing: { communication: 27, resilience: 15 },
+    "open-source": { communication: 27, creativity: 15 },
+    architecture: { logic: 27, learning: 15, creativity: 15 },
+    "code-review": { logic: 15, communication: 15, learning: 15 },
+    "performance-tuning": { logic: 27, focus: 15, resilience: 15 },
+    "prompt-engineering": { creativity: 27, learning: 27 },
+    "incident-response": { resilience: 27, logic: 15, focus: 15 },
+    rest: { resilience: 18 }
   };
 
   for (const activity of content.activities) {
