@@ -1521,6 +1521,15 @@ function snapshotResources(resources) {
   return Object.fromEntries(RESOURCE_ORDER.map((key) => [key, Math.floor(Number(resources[key]) || 0)]));
 }
 
+function updateHourlySummarySnapshot(state) {
+  state.hourlySummarySnapshot.resources = snapshotResources(state.resources);
+  state.hourlySummarySnapshot.activityLevels = Object.fromEntries(
+    Object.entries(state.activityLevels).map(([id, level]) => [id, { level, exp: state.activityExp[id] || 0 }])
+  );
+  state.hourlySummarySnapshot.attributeExp = { ...state.attributeExp };
+  state.hourlySummarySnapshot.worldMinute = state.worldTimeMinutes;
+}
+
 function formatChangedResources(beforeResources, afterResources) {
   const entries = RESOURCE_ORDER
     .map((key) => {
@@ -5735,6 +5744,7 @@ module.exports = {
   startActivity,
   stopActivity,
   submitProject,
+  updateHourlySummarySnapshot,
   upgradeSkill,
   writeLastProfileId
 };

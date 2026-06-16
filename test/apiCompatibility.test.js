@@ -92,6 +92,7 @@ const GAME_EXPORTS = [
   "startActivity",
   "stopActivity",
   "submitProject",
+  "updateHourlySummarySnapshot",
   "upgradeSkill",
   "writeLastProfileId"
 ];

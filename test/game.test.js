@@ -51,6 +51,7 @@ const {
   startActivity,
   stopActivity,
   submitProject,
+  updateHourlySummarySnapshot,
   loadProfile,
   upgradeSkill,
   writeLastProfileId
@@ -2460,4 +2461,26 @@ test("createNewState initializes hourly summary fields", () => {
   // 验证快照初始值
   assert.strictEqual(state.hourlySummarySnapshot.resources.energy, 100);
   assert.strictEqual(state.hourlySummarySnapshot.worldMinute, 540); // 9:00
+});
+
+test("updateHourlySummarySnapshot updates snapshot correctly", () => {
+  const state = createNewState();
+
+  // 修改当前状态
+  state.resources.energy = 50;
+  state.resources.pressure = 30;
+  state.activityLevels["bug-hunting"] = 3;
+  state.activityExp["bug-hunting"] = 150;
+  state.attributeExp.logic = 25;
+  state.worldTimeMinutes = 600; // 10:00
+
+  updateHourlySummarySnapshot(state);
+
+  // 验证快照已更新
+  assert.strictEqual(state.hourlySummarySnapshot.resources.energy, 50);
+  assert.strictEqual(state.hourlySummarySnapshot.resources.pressure, 30);
+  assert.strictEqual(state.hourlySummarySnapshot.activityLevels["bug-hunting"].level, 3);
+  assert.strictEqual(state.hourlySummarySnapshot.activityLevels["bug-hunting"].exp, 150);
+  assert.strictEqual(state.hourlySummarySnapshot.attributeExp.logic, 25);
+  assert.strictEqual(state.hourlySummarySnapshot.worldMinute, 600);
 });
