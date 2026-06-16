@@ -270,3 +270,37 @@ describe("Attribute panel - getAttributeSummary", () => {
     assert.strictEqual(learning.recentlyUnlocked.name, "快速学习");
   });
 });
+
+describe("Attribute panel - getAttributeDetails", () => {
+  test("should return complete details for single attribute", () => {
+    const state = createNewState();
+    state.attributes.logic = 42;
+    state.attributeExp.logic = 240;
+    state.unlockedMilestones = { logic: [25, 40] };
+
+    const { getAttributeDetails } = require("../src/game");
+    const details = getAttributeDetails(state, "logic");
+
+    assert.strictEqual(details.id, "logic");
+    assert.strictEqual(details.name, "逻辑");
+    assert.strictEqual(details.currentLevel, 42);
+    assert.strictEqual(details.currentExp, 240);
+    assert.strictEqual(details.nextLevelExp, 156);
+    assert.strictEqual(details.effectiveValue, 42.0);
+
+    // Unlocked milestones
+    assert.strictEqual(details.unlockedMilestones.length, 2);
+    assert.strictEqual(details.unlockedMilestones[0].level, 25);
+    assert.strictEqual(details.unlockedMilestones[0].name, "代码直觉觉醒");
+
+    // Next milestone
+    assert.strictEqual(details.nextMilestone.level, 55);
+    assert.strictEqual(details.nextMilestone.pointsNeeded, 13);
+    assert.ok(details.nextMilestone.expNeeded > 0);
+
+    // Future milestones
+    assert.strictEqual(details.futureMilestones.length, 2);
+    assert.strictEqual(details.futureMilestones[0].level, 70);
+    assert.strictEqual(details.futureMilestones[1].level, 85);
+  });
+});
