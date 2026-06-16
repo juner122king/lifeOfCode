@@ -251,7 +251,7 @@ describe("Attribute panel - getAttributeSummary", () => {
     assert.strictEqual(logic.nextMilestone.level, 55);
     assert.strictEqual(logic.nextMilestone.name, "质量守护者");
     assert.strictEqual(logic.nextMilestone.pointsNeeded, 13);
-    assert.strictEqual(logic.progressBar, "[████████░░]"); // 42 of 55 filled
+    assert.strictEqual(logic.progressBar, "[███████░░░]"); // 42 of 55: 42/55 = 0.76, floor(0.76*10) = 7
   });
 
   test("should handle recently unlocked milestones", () => {

@@ -1070,6 +1070,67 @@ function getEffectiveAttribute(state, attr) {
   return getBaseAttribute(state, attr) + getBreakthrough(state, attr) * 0.2;
 }
 
+function getAttributeUpgradeCost(level) {
+  return 30 + level * 3;
+}
+
+function findNextMilestone(attrId, currentLevel) {
+  const { ATTRIBUTE_MILESTONES } = require("./core/attributes");
+  const milestones = ATTRIBUTE_MILESTONES[attrId] || [];
+  return milestones.find(m => m.level > currentLevel) || null;
+}
+
+function calculateProgressBar(current, target, barLength = 10) {
+  const filled = Math.floor((current / target) * barLength);
+  const empty = barLength - filled;
+  return "[" + "█".repeat(filled) + "░".repeat(empty) + "]";
+}
+
+function getAttributeSummary(state) {
+  const summary = [];
+
+  for (const attrId of ATTRIBUTE_IDS) {
+    const currentLevel = getBaseAttribute(state, attrId);
+    const currentExp = Math.floor(state.attributeExp[attrId] || 0);
+    const nextLevelExp = getAttributeUpgradeCost(currentLevel);
+    const expPercent = Math.floor((currentExp / nextLevelExp) * 100);
+
+    const nextMilestone = findNextMilestone(attrId, currentLevel);
+    const progressBar = nextMilestone
+      ? calculateProgressBar(currentLevel, nextMilestone.level)
+      : "[██████████]";
+
+    // Check for recently unlocked milestones
+    let recentlyUnlocked = null;
+    const recentLevel = state.recentMilestoneUnlocks && state.recentMilestoneUnlocks[attrId];
+    if (recentLevel) {
+      const { ATTRIBUTE_MILESTONES } = require("./core/attributes");
+      const milestone = (ATTRIBUTE_MILESTONES[attrId] || []).find(m => m.level === recentLevel);
+      if (milestone) {
+        recentlyUnlocked = { level: milestone.level, name: milestone.name };
+      }
+    }
+
+    summary.push({
+      id: attrId,
+      name: ATTRIBUTE_NAMES[attrId],
+      currentLevel,
+      currentExp,
+      nextLevelExp,
+      expPercent,
+      nextMilestone: nextMilestone ? {
+        level: nextMilestone.level,
+        name: nextMilestone.name,
+        pointsNeeded: nextMilestone.level - currentLevel
+      } : null,
+      progressBar,
+      recentlyUnlocked
+    });
+  }
+
+  return summary;
+}
+
 function addAttributeExp(state, attr, amount, options = {}) {
   if (!ATTRIBUTE_IDS.includes(attr) || amount <= 0) return 0;
   let gained = 0;
@@ -1451,6 +1512,7 @@ function getActivityRoleSummary(activity) {
     "performance-tuning": "性能攻坚",
     "prompt-engineering": "AI 协作",
     "incident-response": "事故止血",
+    moyu: "风险摸鱼",
     rest: "恢复节奏"
   };
   return roles[activity && activity.id] || "行动推进";
@@ -1471,6 +1533,7 @@ function getActivityUseCase(activity) {
     "performance-tuning": "适合性能指标拖累交付时使用。",
     "prompt-engineering": "适合把模糊需求整理成可执行上下文。",
     "incident-response": "适合线上局面失控时先止血。",
+    moyu: "适合压力偏高但愿意承担返工、暴露和上下文切换风险时使用。",
     rest: "适合状态下滑时恢复行动节奏。"
   };
   return useCases[activity && activity.id] || "适合在当前阶段推进这类行动。";
@@ -6008,6 +6071,7 @@ module.exports = {
   getSkillProgress,
   getWorldCalendar,
   getAdviceList,
+  getAttributeSummary,
   formatAdviceList,
   helpText,
   learnSkill,
