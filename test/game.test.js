@@ -1345,6 +1345,27 @@ test("活动升级但资源没有可见变化时仍显示升级消息", () => {
   assert.deepEqual(result.messages, ["休息恢复提升到 Lv.2。"]);
 });
 
+test("settleTime triggers hourly summary at 整点", () => {
+  const state = createNewState();
+  state.worldTimeMinutes = 590; // 9:50
+  state.lockedSchedule = {
+    day: 1,
+    slots: { morning: { type: "activity", id: "bug-hunting" }, afternoon: null, evening: null },
+    confirmedAtWorldMinute: 540
+  };
+  state.activeActivityId = "bug-hunting";
+  state.waitingForSchedule = false;
+
+  // 推进 20 游戏分钟（从 9:50 到 10:10，跨过 10:00 整点）
+  const result = settleTime(state, Date.now() + 20 * 1000, { maxSeconds: 20 });
+
+  // 验证生成了汇总事件
+  const summaryEvent = result.events.find(e => e.category === "hourly_summary");
+  assert.ok(summaryEvent, "Should generate hourly summary event");
+  assert.ok(summaryEvent.text.includes("[汇总] 09:00-10:00"));
+  assert.strictEqual(state.lastHourlySummaryHour, 10);
+});
+
 test("bug-hunting 降低 Bug 并产出测试", () => {
   const now = 1_700_000_000_000;
   const state = createNewState(now);
@@ -2520,4 +2541,25 @@ test("generateHourlySummary generates complete report", () => {
   assert.ok(summary.includes("Bug -2"));
   assert.ok(summary.includes("逻辑 +12"));
   assert.ok(summary.includes("抗压 +8"));
+});
+
+test("settleTime triggers hourly summary at整点", () => {
+  const state = createNewState();
+  state.worldTimeMinutes = 590; // 9:50
+  state.lockedSchedule = {
+    day: 1,
+    slots: { morning: { type: "activity", id: "bug-hunting" }, afternoon: null, evening: null },
+    confirmedAtWorldMinute: 540
+  };
+  state.activeActivityId = "bug-hunting";
+  state.waitingForSchedule = false;
+
+  // 推进到 10:10（跨过 10:00 整点）
+  const result = settleTime(state, Date.now() + 20 * 60 * 1000, { maxSeconds: 20 * 60 });
+
+  // 验证生成了汇总事件
+  const summaryEvent = result.events.find(e => e.category === "hourly_summary");
+  assert.ok(summaryEvent, "Should generate hourly summary event");
+  assert.ok(summaryEvent.text.includes("[汇总] 09:00-10:00"));
+  assert.strictEqual(state.lastHourlySummaryHour, 10);
 });

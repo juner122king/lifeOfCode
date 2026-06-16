@@ -49,6 +49,7 @@ const EVENT_LABELS = {
   focus: "周重点",
   world: "世界大势",
   random: "随机事件",
+  hourly_summary: "汇总",
   system: "系统"
 };
 

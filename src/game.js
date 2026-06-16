@@ -3453,6 +3453,22 @@ function settleTime(state, now = Date.now(), options = {}) {
     remainingMinutes -= segmentMinutes;
     processedSeconds += segmentMinutes;
 
+    // 检测整点触发每小时汇总
+    const currentHour = Math.floor((state.worldTimeMinutes % MINUTES_PER_DAY) / 60);
+    const shouldTriggerSummary =
+      state.lastHourlySummaryHour !== null &&
+      currentHour !== state.lastHourlySummaryHour &&
+      currentHour !== 0; // 跳过 00:00（有日终总结）
+
+    if (shouldTriggerSummary) {
+      const summary = generateHourlySummary(state);
+      if (summary) {
+        pushGameEvent(events, "hourly_summary", summary, "info");
+      }
+      state.lastHourlySummaryHour = currentHour;
+      updateHourlySummarySnapshot(state);
+    }
+
     checkPressureOverload(
       state,
       messages,
