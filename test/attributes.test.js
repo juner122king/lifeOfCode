@@ -118,3 +118,66 @@ describe("Attribute benefits expansion", () => {
     assert.match(msg, /线索/);
   });
 });
+
+describe("Skill learning attribute exp", () => {
+  test("should give attribute exp during learning", () => {
+    const state = createNewState();
+    const content = require("../src/content");
+    const skill = content.skills.find(s => s.id === "javascript");  // tier 1, logic: 22, learning: 24
+
+    state.attributes.logic = 22;
+    state.attributes.learning = 24;
+    state.attributeExp.logic = 0;
+    state.attributeExp.learning = 0;
+    state.resources.knowledge = 1000;
+    state.resources.money = 1000;
+    state.resources.energy = 100;  // Ensure enough energy
+
+    const { learnSkill, settleTime } = require("../src/game");
+    learnSkill(state, skill.id);
+
+    // 学习 1 游戏小时 (60 分钟 = 3600 游戏秒 = 60 现实秒)
+    const beforeLogic = state.attributeExp.logic;
+    const beforeLearning = state.attributeExp.learning;
+
+    settleTime(state, state.lastTick + 60_000, { randomEvents: false });
+
+    // tier 1 每小时给 8 点，learning 为主属性(70%)，logic 为次属性(30%)
+    // learning 应该获得 5.6，logic 应该获得 2.4
+    const logicGained = state.attributeExp.logic - beforeLogic;
+    const learningGained = state.attributeExp.learning - beforeLearning;
+
+    assert.ok(learningGained >= 5 && learningGained <= 6, `learning exp should be 5-6, got ${learningGained}`);
+    assert.ok(logicGained >= 2 && logicGained <= 3, `logic exp should be 2-3, got ${logicGained}`);
+  });
+
+  test("should give bonus exp on completion", () => {
+    const state = createNewState();
+    const content = require("../src/content");
+    const skill = content.skills.find(s => s.id === "html-css");  // tier 1
+
+    state.attributes.creativity = 20;
+    state.attributes.learning = 25;
+    state.resources.knowledge = 1000;
+    state.resources.money = 1000;
+    state.resources.energy = 100;  // Ensure enough energy
+    state.attributeExp.creativity = 0;
+    state.attributeExp.learning = 0;
+
+    const { learnSkill, settleTime } = require("../src/game");
+    learnSkill(state, skill.id);
+
+    // 完成学习需要约 240 游戏分钟 = 4 游戏小时
+    const beforeCreativity = state.attributeExp.creativity;
+    const beforeLearning = state.attributeExp.learning;
+
+    settleTime(state, state.lastTick + 600_000, { randomEvents: false });
+
+    // 过程经验：~4 小时 * 8 点/小时 = ~32 点
+    // 完成奖励：tier 1 = 20 点
+    // 总计应该有约 52 点经验分配到 creativity 和 learning
+    const totalGained = (state.attributeExp.creativity - beforeCreativity) +
+                        (state.attributeExp.learning - beforeLearning);
+    assert.ok(totalGained >= 50 && totalGained <= 56, `total exp should be 50-56, got ${totalGained}`);
+  });
+});

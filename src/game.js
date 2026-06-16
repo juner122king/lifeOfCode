@@ -2502,8 +2502,38 @@ function settleSkillLearning(state, skill, seconds, options = {}) {
   const beforeSeconds = Number(progress.workedSeconds) || 0;
   progress.workedSeconds += seconds * (options.workMultiplier || 1);
   const currentProgress = getSkillLearningProgress(state, skill);
+
+  // 学习过程中给属性经验
+  // Note: 'seconds' parameter is actually game minutes (confusing legacy naming)
+  const gameMinutes = seconds;
+  const gameHours = gameMinutes / 60;
+  const skillTier = skill.tier || 1;
+  const expPerHour = 6 + skillTier * 2;  // tier 1-5 对应 8-16
+  const expGained = expPerHour * gameHours;
+
+  const attrRequirements = skill.attributeRequirements || {};
+  const attrs = Object.keys(attrRequirements).sort((a, b) =>
+    (attrRequirements[b] || 0) - (attrRequirements[a] || 0)
+  );
+
+  if (attrs.length === 1) {
+    addAttributeExp(state, attrs[0], expGained, options);
+  } else if (attrs.length === 2) {
+    addAttributeExp(state, attrs[0], expGained * 0.7, options);  // 主属性 70%
+    addAttributeExp(state, attrs[1], expGained * 0.3, options);  // 次属性 30%
+  }
+
   pushSkillLearningLogEvents(state, skill, beforeSeconds, currentProgress, options.events, options);
   if (currentProgress.workedSeconds < currentProgress.requiredSeconds) return [];
+
+  // 学习完成时给奖励经验
+  const bonusExp = 18 + skillTier * 4;  // tier 1-5 对应 20-60
+  if (attrs.length === 1) {
+    addAttributeExp(state, attrs[0], bonusExp, options);
+  } else if (attrs.length === 2) {
+    addAttributeExp(state, attrs[0], bonusExp * 0.7, options);
+    addAttributeExp(state, attrs[1], bonusExp * 0.3, options);
+  }
 
   const skillProgress = ensureSkillProgress(state, skill.id);
   skillProgress.level = Math.max(skillProgress.level, 1);
