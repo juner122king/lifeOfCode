@@ -1069,7 +1069,7 @@ function addAttributeExp(state, attr, amount, options = {}) {
 
   while (getBaseAttribute(state, attr) < 100) {
     const current = getBaseAttribute(state, attr);
-    const cost = 50 + current * 5;
+    const cost = 30 + current * 3;
     if (state.attributeExp[attr] < cost) break;
     state.attributeExp[attr] -= cost;
     state.attributes[attr] = current + 1;
