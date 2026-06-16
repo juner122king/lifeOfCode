@@ -1521,3 +1521,49 @@ test("renderAttributeSummary renders all 6 attributes with progress bars", () =>
   assert.match(text, /> 输入 attr <属性名> 查看详情/);
   assert.match(text, /> 输入 attr milestones 查看所有里程碑总览/);
 });
+
+test("renderAttributeDetails should format complete details", () => {
+  const details = {
+    id: "logic",
+    name: "逻辑",
+    currentLevel: 42,
+    currentExp: 240,
+    nextLevelExp: 156,
+    expPercent: 153,
+    effectiveValue: 42.0,
+    baseValue: 42,
+    breakthroughBonus: 0,
+    unlockedMilestones: [
+      {
+        level: 25,
+        name: "代码直觉觉醒",
+        description: "Bug 风险额外 -5%",
+        narrative: "你开始能预见代码中潜伏的问题。"
+      }
+    ],
+    nextMilestone: {
+      level: 55,
+      name: "质量守护者",
+      pointsNeeded: 13,
+      expNeeded: 1170,
+      description: "项目成功率额外 +8%",
+      narrative: "质量不再是事后补救。"
+    },
+    futureMilestones: [
+      { level: 70, name: "系统思维", description: "所有质量活动效率额外 +15%" }
+    ]
+  };
+
+  const { renderAttributeDetails } = require("../src/tui");
+  const output = renderAttributeDetails(details);
+
+  assert.ok(output.includes("逻辑 详情"));
+  assert.ok(output.includes("当前等级：42/100"));
+  assert.ok(output.includes("【已解锁里程碑】"));
+  assert.ok(output.includes("代码直觉觉醒"));
+  assert.ok(output.includes("【下一里程碑】"));
+  assert.ok(output.includes("质量守护者"));
+  assert.ok(output.includes("还需：13 属性点"));
+  assert.ok(output.includes("【未来里程碑】"));
+  assert.ok(output.includes("系统思维"));
+});
