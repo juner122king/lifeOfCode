@@ -1478,6 +1478,35 @@ function renderAttributeDetails(details) {
   return lines.join("\n");
 }
 
+function renderMilestoneOverview(state) {
+  const { getMilestoneOverview } = require("./game");
+  const { ATTRIBUTE_NAMES } = require("./core/constants");
+  const overview = getMilestoneOverview(state);
+  const rows = [];
+
+  rows.push("========== 属性里程碑总览 ==========");
+  rows.push("");
+
+  for (const attrId of ["logic", "focus", "learning", "communication", "resilience", "creativity"]) {
+    const data = overview[attrId];
+    if (!data) continue;
+
+    rows.push(`${ATTRIBUTE_NAMES[attrId]} (${data.currentLevel}/100):`);
+
+    for (const m of data.milestones) {
+      const icon = m.unlocked ? "✓" : "⬜";
+      const suffix = m.unlocked ? "" : ` (还需 ${m.pointsNeeded} 点)`;
+      rows.push(`  ${icon} Lv.${m.level} ${m.name} - ${m.description}${suffix}`);
+    }
+
+    rows.push("");
+  }
+
+  rows.push("> 输入 attr <属性名> 查看详细信息和当前收益");
+
+  return rows;
+}
+
 async function startTui() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     if (!defaultProfileExists()) {
@@ -2355,6 +2384,7 @@ module.exports = {
   processTuiCommand,
   renderAttributeSummary,
   renderAttributeDetails,
+  renderMilestoneOverview,
   resumeGameClock,
   resolveProfileDeleteKeypress,
   shouldResetDailyPlannerPhase,

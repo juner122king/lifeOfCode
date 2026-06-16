@@ -1567,3 +1567,40 @@ test("renderAttributeDetails should format complete details", () => {
   assert.ok(output.includes("【未来里程碑】"));
   assert.ok(output.includes("系统思维"));
 });
+
+test("renderMilestoneOverview renders all milestones across 6 attributes", () => {
+  const state = createNewState(1_700_000_000_000);
+  state.attributes.logic = 42;
+  state.attributes.focus = 38;
+  state.unlockedMilestones = {
+    logic: [25, 40],
+    focus: []
+  };
+
+  const { renderMilestoneOverview } = require("../src/tui");
+  const rows = renderMilestoneOverview(state);
+
+  assert.ok(rows.length > 0);
+  const text = rows.join("\n");
+
+  // Header
+  assert.match(text, /========== 属性里程碑总览 ==========/);
+
+  // All 6 attributes should appear
+  assert.match(text, /逻辑 \(42\/100\):/);
+  assert.match(text, /专注 \(38\/100\):/);
+  assert.match(text, /学习 \(\d+\/100\):/);
+  assert.match(text, /沟通 \(\d+\/100\):/);
+  assert.match(text, /抗压 \(\d+\/100\):/);
+  assert.match(text, /创造 \(\d+\/100\):/);
+
+  // Unlocked milestone (logic has 25, 40 unlocked)
+  assert.match(text, /✓ Lv\.25/);
+  assert.match(text, /✓ Lv\.40/);
+
+  // Locked milestone with points needed
+  assert.match(text, /⬜ Lv\.\d+ .+ - .+ \(还需 \d+ 点\)/);
+
+  // Footer
+  assert.match(text, /> 输入 attr <属性名> 查看详细信息和当前收益/);
+});
