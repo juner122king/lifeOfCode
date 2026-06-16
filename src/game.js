@@ -1206,6 +1206,30 @@ function getAttributeDetails(state, attrId) {
   };
 }
 
+function getMilestoneOverview(state) {
+  const { ATTRIBUTE_MILESTONES } = require("./core/attributes");
+  const overview = {};
+
+  for (const attrId of ATTRIBUTE_IDS) {
+    const currentLevel = getBaseAttribute(state, attrId);
+    const milestones = ATTRIBUTE_MILESTONES[attrId] || [];
+    const unlockedLevels = (state.unlockedMilestones && state.unlockedMilestones[attrId]) || [];
+
+    overview[attrId] = {
+      currentLevel,
+      milestones: milestones.map(m => ({
+        level: m.level,
+        unlocked: unlockedLevels.includes(m.level),
+        name: m.name,
+        description: m.description,
+        pointsNeeded: Math.max(0, m.level - currentLevel)
+      }))
+    };
+  }
+
+  return overview;
+}
+
 function addAttributeExp(state, attr, amount, options = {}) {
   if (!ATTRIBUTE_IDS.includes(attr) || amount <= 0) return 0;
   let gained = 0;
@@ -6148,6 +6172,7 @@ module.exports = {
   getAdviceList,
   getAttributeSummary,
   getAttributeDetails,
+  getMilestoneOverview,
   formatAdviceList,
   helpText,
   learnSkill,
