@@ -1227,11 +1227,20 @@ function getMultipliers(state) {
 }
 
 function getProductionRisk(state) {
+  const { getMilestoneBonus } = require("./core/attributes");
+
   const pressureRelief = attributeBonus(state, "resilience", 0.003, 0.2);
   const pressurePenalty = clamp((state.resources.pressure || 0) / 100 * 0.35 * (1 - pressureRelief), 0, 0.35);
-  const debtPenalty = clamp((state.resources.techDebt || 0) / 240 * 0.25, 0, 0.25);
+
+  // logic 40: debt_efficiency_penalty (-0.1, reduces debt's impact on efficiency)
+  const logicDebtMilestone = getMilestoneBonus(state, "logic", "debt_efficiency_penalty");
+  const debtPenalty = clamp((state.resources.techDebt || 0) / 240 * 0.25 * (1 + logicDebtMilestone), 0, 0.25);
+
   const logicBugRelief = attributeBonus(state, "logic", 0.003, 0.22);
-  const bugDebtBoost = 1 + clamp((state.resources.techDebt || 0) / 240 * 0.5 * (1 - logicBugRelief), 0, 0.5);
+
+  // logic 25: bug_risk_extra (-0.05, reduces bug risk from tech debt)
+  const logicBugMilestone = getMilestoneBonus(state, "logic", "bug_risk_extra");
+  const bugDebtBoost = 1 + clamp((state.resources.techDebt || 0) / 240 * 0.5 * (1 - logicBugRelief) * (1 + logicBugMilestone), 0, 0.5);
 
   const thresholdEffects = getPressureThresholdEffects(state);
 
@@ -1253,11 +1262,18 @@ function getProjectRiskScore(state) {
 }
 
 function getProjectSuccessRate(state, projectOrId) {
+  const { getMilestoneBonus } = require("./core/attributes");
+
   const project = typeof projectOrId === "string" ? projectById(projectOrId) : projectOrId;
   if (!project) return 0;
   const maxSuccessRate = clamp(Number(project.maxSuccessRate) || 0.9, 0.15, 1);
   const difficulty = clamp(Number(project.difficulty) || 1, 1, 5);
   let rate = maxSuccessRate - getProjectRiskScore(state) * difficulty * 0.12;
+
+  // logic 55: project_success_rate (+0.08)
+  const logicProjectMilestone = getMilestoneBonus(state, "logic", "project_success_rate");
+  rate += logicProjectMilestone;
+
   const progress = state.projectProgress && state.projectProgress[project.id];
   const dueWorldMinute = Number(progress && progress.dueWorldMinute);
   if (Number.isFinite(dueWorldMinute) && dueWorldMinute < Number(state.worldTimeMinutes || WORLD_START_MINUTES)) {
@@ -2251,13 +2267,19 @@ function getActivityEnergyCostPerHour(activity) {
   return Number(activity.energyCostPerHour ?? ACTIVITY_ENERGY_COST_PER_HOUR[activity.id] ?? 8) || 0;
 }
 
-function getWorkEnergyCostPerGameMinute(mode, overtime = false) {
+function getWorkEnergyCostPerGameMinute(state, mode, overtime = false) {
+  const { getMilestoneBonus } = require("./core/attributes");
+
   if (!mode || !mode.item) return 0;
   let perHour = 0;
   if (mode.type === "activity") perHour = getActivityEnergyCostPerHour(mode.item);
   if (mode.type === "skill") perHour = SKILL_ENERGY_COST_PER_HOUR;
   if (mode.type === "project") perHour = getProjectEnergyCostPerHour(mode.item);
-  return perHourToPerGameMinute(perHour) * (overtime ? 1.25 : 1);
+
+  // focus 70: energy_cost_reduction (-0.1, reduces all energy costs)
+  const costReduction = 1 + getMilestoneBonus(state, "focus", "energy_cost_reduction");
+
+  return perHourToPerGameMinute(perHour * costReduction) * (overtime ? 1.25 : 1);
 }
 
 function getAffordableWorkSeconds(state, costPerGameMinute, seconds) {
@@ -2275,12 +2297,17 @@ function consumeWorkEnergy(state, costPerGameMinute, seconds) {
 }
 
 function getActivityRateContext(state, activity, options = {}) {
+  const { getMilestoneBonus } = require("./core/attributes");
   const energyStatus = getEnergyStatus(state);
   const level = getActivityLevel(state, activity.id);
   const activityMultiplier = 1 + (level - 1) * 0.08;
   const attributeMultiplier = 1 + attributeBonus(state, activity.primaryAttribute, 0.0025, 0.22);
   const overtimeRelief = options.overtime ? attributeBonus(state, "focus", 0.003, 0.24) : 0;
-  const overtimeFactor = options.overtime ? 0.45 + overtimeRelief * 0.5 : 1;
+
+  // focus 40: overtime_efficiency_relief (+0.1, reduces overtime penalty)
+  const overtimeMilestone = options.overtime ? getMilestoneBonus(state, "focus", "overtime_efficiency_relief") : 0;
+  const overtimeFactor = options.overtime ? 0.45 + (overtimeRelief + overtimeMilestone) * 0.5 : 1;
+
   const focus = getWeeklyFocus(state);
   const learningFocusFactor = focus.id === "learning" && activity.id === "study" ? focus.learning : 1;
   const qualityFactor = focus.id === "quality" && QUALITY_ACTIVITY_IDS.has(activity.id) ? focus.quality : 1;
@@ -2336,6 +2363,7 @@ function activityRateToDelta(ratePerHour, gameMinutes) {
 }
 
 function calculateActivityDeltaEntries(state, activity, gameMinutes, options = {}) {
+  const { getMilestoneBonus } = require("./core/attributes");
   const context = getActivityRateContext(state, activity, options);
   const entries = [];
   const energyCostPerGameMinute = Number(options.energyCostPerGameMinute) || 0;
@@ -2346,6 +2374,16 @@ function calculateActivityDeltaEntries(state, activity, gameMinutes, options = {
   const activityTypeBonus = 1 + context.qualityActivityBonus + context.outputActivityBonus +
     context.collaborationBonus + context.highPressureBonus + context.creativeBonus;
 
+  // logic 70: quality_activity_efficiency (+0.15 for quality activities)
+  const logicQualityMilestone = QUALITY_ACTIVITY_IDS.has(activity.id)
+    ? 1 + getMilestoneBonus(state, "logic", "quality_activity_efficiency")
+    : 1;
+
+  // focus 55: output_activity_efficiency (+0.12 for output activities)
+  const focusOutputMilestone = ["feature-coding", "testing", "documentation", "architecture"].includes(activity.id)
+    ? 1 + getMilestoneBonus(state, "focus", "output_activity_efficiency")
+    : 1;
+
   for (const [key, rate] of Object.entries(activity.outputsPerHour || {})) {
     let delta = activityRateToDelta(rate, duration);
     if (key === "energy" && activity.id === "rest") delta *= context.pressureRecoveryMultiplier;
@@ -2353,6 +2391,11 @@ function calculateActivityDeltaEntries(state, activity, gameMinutes, options = {
 
     // Apply activity type bonus to all outputs
     if (delta > 0 && key !== "energy") delta *= activityTypeBonus;
+
+    // Apply milestone bonuses
+    if (delta > 0 && key !== "energy") {
+      delta *= logicQualityMilestone * focusOutputMilestone;
+    }
 
     // Apply resource-specific bonuses
     if (key === "knowledge" && delta > 0) delta *= 1 + attributeBonus(state, "learning", 0.0035, 0.25);
@@ -2372,8 +2415,17 @@ function calculateActivityDeltaEntries(state, activity, gameMinutes, options = {
     if (key === "bugs") delta *= 1 + attributeBonus(state, "logic", 0.004, 0.32);
     if (key === "techDebt") delta *= 1 + attributeBonus(state, "logic", 0.003, 0.24);
     if (key === "pressure") delta *= 1 + attributeBonus(state, "resilience", 0.004, 0.32);
+
+    // Apply quality activity milestone to mitigation (makes quality activities more effective)
+    delta *= logicQualityMilestone;
+
     entries.push([key, delta]);
   }
+
+  // logic 85: overtime_quality_risk (-0.2, reduces bug/debt risk during overtime)
+  const logicOvertimeMilestone = options.overtime
+    ? 1 + getMilestoneBonus(state, "logic", "overtime_quality_risk")
+    : 1;
 
   for (const [key, rate] of Object.entries(activity.risksPerHour || {})) {
     let delta = activityRateToDelta(rate, duration);
@@ -2382,7 +2434,9 @@ function calculateActivityDeltaEntries(state, activity, gameMinutes, options = {
     if (key === "pressure") delta *= context.multipliers.pressure;
     if (RISK_RESOURCE_IDS.has(key)) delta *= context.energyStatus.riskMultiplier;
     if (key === "pressure" && context.focus.id === "freelance") delta *= context.focus.pressure;
-    if (options.overtime && (key === "bugs" || key === "techDebt")) delta *= 1.8 * (1 - attributeBonus(state, "logic", 0.004, 0.3));
+    if (options.overtime && (key === "bugs" || key === "techDebt")) {
+      delta *= 1.8 * (1 - attributeBonus(state, "logic", 0.004, 0.3)) * logicOvertimeMilestone;
+    }
     if (options.overtime && key === "pressure") delta *= 1.5 * (1 - attributeBonus(state, "resilience", 0.004, 0.3));
     entries.push([key, delta]);
   }
@@ -3503,7 +3557,7 @@ function settleTime(state, now = Date.now(), options = {}) {
     const overtime = Boolean(scheduleContext && scheduleContext.phase && scheduleContext.phase.overtime && hasActiveWork);
     if (hasActiveWork) {
       result.overtime = result.overtime || overtime;
-      const energyCostPerGameMinute = getWorkEnergyCostPerGameMinute(mode, overtime);
+      const energyCostPerGameMinute = getWorkEnergyCostPerGameMinute(state, mode, overtime);
       const workSeconds = getAffordableWorkSeconds(state, energyCostPerGameMinute, segmentMinutes);
       if (energyCostPerGameMinute > 0 && workSeconds < segmentMinutes) result.lowEnergy = true;
       if (workSeconds > 0) result.activeSeconds += workSeconds;

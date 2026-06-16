@@ -37,3 +37,32 @@ describe("Milestone system", () => {
     assert.strictEqual(debtBonus, -0.1);
   });
 });
+
+describe("Milestone effects application", () => {
+  test("logic milestone should reduce bug risk", () => {
+    const state = createNewState();
+    state.attributes.logic = 25;
+    state.unlockedMilestones = { logic: [25] };
+
+    // This is a smoke test - just verify the function runs without error
+    // and that having the milestone doesn't break calculations
+    const { getProductionRisk } = require("../src/game");
+    const risk = getProductionRisk(state);
+
+    assert.ok(typeof risk === 'object');
+    assert.ok(typeof risk.bugDebtBoost === 'number');
+  });
+
+  test("focus milestone should boost high energy production", () => {
+    const state = createNewState();
+    state.attributes.focus = 25;
+    state.resources.energy = 95;
+    state.unlockedMilestones = { focus: [25] };
+
+    const { getEnergyStatus } = require("../src/core/energy");
+    const status = getEnergyStatus(state);
+
+    // 精力充沛时应该从 1.1 提升到 1.15
+    assert.ok(status.productivityMultiplier >= 1.14);
+  });
+});
