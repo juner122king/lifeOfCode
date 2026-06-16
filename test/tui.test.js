@@ -1462,5 +1462,5 @@ test("generateHourlySummary handles no resource changes", () => {
   const summary = generateHourlySummary(state);
 
   assert.ok(summary.includes("资源：无明显变化"));
-  assert.ok(summary.includes("[汇总] 09:00-10:00"));
+  assert.ok(summary.includes("09:00-10:00"));
 });

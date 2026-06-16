@@ -1362,7 +1362,7 @@ test("settleTime triggers hourly summary at 整点", () => {
   // 验证生成了汇总事件
   const summaryEvent = result.events.find(e => e.category === "hourly_summary");
   assert.ok(summaryEvent, "Should generate hourly summary event");
-  assert.ok(summaryEvent.text.includes("[汇总] 09:00-10:00"));
+  assert.ok(summaryEvent.text.includes("09:00-10:00"));
   assert.strictEqual(state.lastHourlySummaryHour, 10);
 });
 
@@ -2534,7 +2534,7 @@ test("generateHourlySummary generates complete report", () => {
 
   const summary = generateHourlySummary(state);
 
-  assert.ok(summary.includes("[汇总] 09:00-10:00"));
+  assert.ok(summary.includes("09:00-10:00"));
   assert.ok(summary.includes("精力 -15"));
   assert.ok(summary.includes("100→85"));
   assert.ok(summary.includes("压力 +10"));

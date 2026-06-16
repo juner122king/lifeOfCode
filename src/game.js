@@ -1553,7 +1553,7 @@ function generateHourlySummary(state) {
   const fromHour = Math.floor((snapshot.worldMinute % MINUTES_PER_DAY) / 60);
   const toHour = Math.floor((state.worldTimeMinutes % MINUTES_PER_DAY) / 60);
   const timeRange = `${String(fromHour).padStart(2, "0")}:00-${String(toHour).padStart(2, "0")}:00`;
-  lines.push(`[汇总] ${timeRange}`);
+  lines.push(timeRange);
 
   // 2. 资源变化
   const resourceChanges = [];
