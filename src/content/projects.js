@@ -3,6 +3,26 @@ const {
   project
 } = require("./builders");
 
+function getDefaultStageAttributes(stageIndex, stageName) {
+  // 根据阶段名称或索引推断属性
+  const name = (stageName || "").toLowerCase();
+  if (name.includes("需求") || name.includes("校准")) return ["communication"];
+  if (name.includes("设计") || name.includes("架构")) return ["logic", "creativity"];
+  if (name.includes("实现") || name.includes("推进")) return ["focus"];
+  if (name.includes("测试") || name.includes("验收")) return ["logic", "focus"];
+  if (name.includes("部署") || name.includes("上线")) return ["resilience"];
+
+  // 默认按索引
+  const mapping = {
+    0: ["communication"],
+    1: ["logic", "creativity"],
+    2: ["focus"],
+    3: ["logic", "focus"],
+    4: ["resilience"]
+  };
+  return mapping[stageIndex] || ["focus"];
+}
+
 function createProjects(skills) {
   const trainingProject = createTrainingProjectBuilder(skills);
 
@@ -79,5 +99,6 @@ function createProjects(skills) {
 }
 
 module.exports = {
-  createProjects
+  createProjects,
+  getDefaultStageAttributes
 };

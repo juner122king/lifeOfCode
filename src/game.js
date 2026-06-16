@@ -2671,6 +2671,22 @@ function settleProject(state, project, seconds, options = {}) {
         break;
       }
 
+      // 新增：阶段推进给属性经验
+      // Note: 'affordable' (from 'seconds' parameter) is actually game minutes (confusing legacy naming)
+      const difficulty = project.difficulty || 1;
+      const expPerHour = 8 + difficulty * 2;  // 难度 1-5 对应 10-26
+      const gameMinutes = affordable;
+      const expGained = (expPerHour / 60) * gameMinutes;
+
+      // 从阶段获取属性
+      const { getDefaultStageAttributes } = require("./content/projects");
+      const stageAttributes = stage.attributes || getDefaultStageAttributes(progress.stageIndex, stage.name);
+      const expPerAttr = expGained / stageAttributes.length;
+
+      for (const attr of stageAttributes) {
+        addAttributeExp(state, attr, expPerAttr, options);
+      }
+
       consumeProjectStageResources(state, progress, stage, stageRequiredSeconds, affordable, options.deltas);
       progress.stageWorkedSeconds += affordable;
       progress.workedSeconds += affordable;

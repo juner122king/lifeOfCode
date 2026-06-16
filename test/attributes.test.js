@@ -181,3 +181,48 @@ describe("Skill learning attribute exp", () => {
     assert.ok(totalGained >= 50 && totalGained <= 56, `total exp should be 50-56, got ${totalGained}`);
   });
 });
+
+describe("Project progression attribute exp", () => {
+  test("should give attribute exp during stage progression", () => {
+    const state = createNewState();
+    const content = require("../src/content");
+    const project = content.projects.find(p => p.id === "homepage");  // 难度 1
+
+    state.attributes.communication = 20;
+    state.attributes.creativity = 20;
+    state.attributeExp.communication = 0;
+    state.attributeExp.creativity = 0;
+
+    // 准备充足的项目资源和活动等级
+    state.resources.codeLines = 10000;
+    state.resources.docs = 10000;
+    state.resources.energy = 100;
+    state.activityLevels["feature-coding"] = 10;
+    state.activityLevels.documentation = 10;
+
+    // 解锁技能
+    if (!state.unlockedSkills.includes("html-css")) {
+      state.unlockedSkills.push("html-css");
+    }
+    state.skillProgress["html-css"] = { level: 10, exp: 0 };
+
+    const { submitProject, settleTime } = require("../src/game");
+    submitProject(state, project.id);
+
+    // 设置项目为当前工作，这样 settleTime 会调用 settleProject
+    state.activeProjectId = project.id;
+
+    // 推进项目 2 游戏小时 (120 现实秒 = 120 游戏分钟 = 2 游戏小时)
+    // homepage minWorkHours 是 2，所以 2 小时应该能完成大部分
+    const beforeCommunication = state.attributeExp.communication;
+    const beforeCreativity = state.attributeExp.creativity;
+
+    settleTime(state, state.lastTick + 120_000, { randomEvents: false });
+
+    // 难度 1 项目每小时给 10 点属性经验
+    // 2 小时应该给约 20 点总经验
+    const totalExp = (state.attributeExp.communication - beforeCommunication) +
+                     (state.attributeExp.creativity - beforeCreativity);
+    assert.ok(totalExp >= 18 && totalExp <= 24, `total exp should be 18-24, got ${totalExp}`);
+  });
+});
