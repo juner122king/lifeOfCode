@@ -65,4 +65,11 @@ describe("Milestone effects application", () => {
     // 精力充沛时应该从 1.1 提升到 1.15
     assert.ok(status.productivityMultiplier >= 1.14);
   });
+
+  test("all 6 attributes should have 5 milestones each", () => {
+    const attrs = ["logic", "focus", "learning", "communication", "resilience", "creativity"];
+    for (const attr of attrs) {
+      assert.strictEqual(ATTRIBUTE_MILESTONES[attr].length, 5, `${attr} should have 5 milestones`);
+    }
+  });
 });

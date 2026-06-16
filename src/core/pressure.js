@@ -5,17 +5,34 @@ function clamp(value, min, max) {
 }
 
 function getPressureRecoveryMultiplier(state) {
+  const { getMilestoneBonus } = require("./attributes");
   const pressure = Number(state.resources?.pressure) || 0;
-  return clamp(1 - pressure / 125, 0.2, 1);
+  const baseMultiplier = clamp(1 - pressure / 125, 0.2, 1);
+
+  // resilience 25: pressure_recovery (+0.2)
+  const resilienceMilestone = 1 + getMilestoneBonus(state, "resilience", "pressure_recovery");
+
+  return baseMultiplier * resilienceMilestone;
 }
 
 function getPressureThresholdEffects(state) {
+  const { getMilestoneBonus } = require("./attributes");
   const pressure = Number(state.resources?.pressure) || 0;
+
+  let codeEfficiencyPenalty = pressure < 51 ? 0 : pressure < 76 ? 0.1 : 0.15;
+  let bugRiskIncrease = pressure < 51 ? 0 : pressure < 76 ? 0.15 : 0.3;
+
+  // resilience 40: high_pressure_efficiency (0.5, reduces penalty when pressure > 70)
+  if (pressure > 70) {
+    const highPressureRelief = getMilestoneBonus(state, "resilience", "high_pressure_efficiency");
+    codeEfficiencyPenalty *= (1 - highPressureRelief);
+    bugRiskIncrease *= (1 - highPressureRelief);
+  }
 
   return {
     level: pressure < 26 ? "normal" : pressure < 51 ? "tense" : pressure < 76 ? "anxious" : "critical",
-    codeEfficiencyPenalty: pressure < 51 ? 0 : pressure < 76 ? 0.1 : 0.15,
-    bugRiskIncrease: pressure < 51 ? 0 : pressure < 76 ? 0.15 : 0.3
+    codeEfficiencyPenalty,
+    bugRiskIncrease
   };
 }
 

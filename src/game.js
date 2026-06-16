@@ -853,6 +853,7 @@ function settleLifestyleRest(state, windowId, seconds) {
   }
 
   if (stance.id === "side_hustle" && windowId === "rest_night") {
+    const { getMilestoneBonus } = require("./core/attributes");
     const creativityBoost = 1 + attributeBonus(state, "creativity", 0.004, 0.32);
     const communicationBoost = 1 + attributeBonus(state, "communication", 0.003, 0.24);
     const resilienceRelief = attributeBonus(state, "resilience", 0.004, 0.3);
@@ -860,8 +861,15 @@ function settleLifestyleRest(state, windowId, seconds) {
     const workSeconds = getAffordableWorkSeconds(state, energyCostPerGameMinute, duration);
     if (workSeconds <= 0) return deltas;
     deltas.energy = consumeWorkEnergy(state, energyCostPerGameMinute, workSeconds);
-    deltas.money = applyResourceDelta(state, "money", workSeconds * 0.035 * creativityBoost);
-    deltas.reputation = applyResourceDelta(state, "reputation", workSeconds * 0.0008 * communicationBoost);
+
+    // creativity 70: side_hustle_money (+0.4)
+    const creativityMoneyMilestone = 1 + getMilestoneBonus(state, "creativity", "side_hustle_money");
+    deltas.money = applyResourceDelta(state, "money", workSeconds * 0.035 * creativityBoost * creativityMoneyMilestone);
+
+    // communication 70: reputation_gain (+0.25)
+    const reputationMilestone = 1 + getMilestoneBonus(state, "communication", "reputation_gain");
+    deltas.reputation = applyResourceDelta(state, "reputation", workSeconds * 0.0008 * communicationBoost * reputationMilestone);
+
     deltas.pressure = applyResourceDelta(state, "pressure", workSeconds * 0.018 * (1 - resilienceRelief));
     return deltas;
   }
@@ -1254,10 +1262,15 @@ function getProductionRisk(state) {
 }
 
 function getProjectRiskScore(state) {
+  const { getMilestoneBonus } = require("./core/attributes");
   const bugRisk = clamp((state.resources.bugs || 0) / 100, 0, 1) * 0.4;
   const debtRisk = clamp((state.resources.techDebt || 0) / 180, 0, 1) * 0.35;
   const communicationRelief = attributeBonus(state, "communication", 0.003, 0.22);
-  const pressureRisk = clamp((state.resources.pressure || 0) / 100, 0, 1) * 0.25 * (1 - communicationRelief);
+
+  // communication 25: project_pressure_relief (-0.08)
+  const communicationPressureMilestone = getMilestoneBonus(state, "communication", "project_pressure_relief");
+  const pressureRisk = clamp((state.resources.pressure || 0) / 100, 0, 1) * 0.25 * (1 - communicationRelief) * (1 + communicationPressureMilestone);
+
   return bugRisk + debtRisk + pressureRisk;
 }
 
@@ -1273,6 +1286,10 @@ function getProjectSuccessRate(state, projectOrId) {
   // logic 55: project_success_rate (+0.08)
   const logicProjectMilestone = getMilestoneBonus(state, "logic", "project_success_rate");
   rate += logicProjectMilestone;
+
+  // creativity 40: project_innovation_bonus (+0.05)
+  const creativityInnovationMilestone = getMilestoneBonus(state, "creativity", "project_innovation_bonus");
+  rate += creativityInnovationMilestone;
 
   const progress = state.projectProgress && state.projectProgress[project.id];
   const dueWorldMinute = Number(progress && progress.dueWorldMinute);
@@ -2384,6 +2401,21 @@ function calculateActivityDeltaEntries(state, activity, gameMinutes, options = {
     ? 1 + getMilestoneBonus(state, "focus", "output_activity_efficiency")
     : 1;
 
+  // resilience 55: incident_efficiency (+0.18 for incident-response and performance-tuning)
+  const resilienceIncidentMilestone = ["incident-response", "performance-tuning"].includes(activity.id)
+    ? 1 + getMilestoneBonus(state, "resilience", "incident_efficiency")
+    : 1;
+
+  // creativity 25: creative_activity_efficiency (+0.12 for creative activities)
+  const creativityMilestone = ["architecture", "documentation", "prompt-engineering"].includes(activity.id)
+    ? 1 + getMilestoneBonus(state, "creativity", "creative_activity_efficiency")
+    : 1;
+
+  // communication 40: collaboration_efficiency (+0.15 for collaboration activities)
+  const communicationCollabMilestone = ["freelancing", "open-source", "documentation", "code-review"].includes(activity.id)
+    ? 1 + getMilestoneBonus(state, "communication", "collaboration_efficiency")
+    : 1;
+
   for (const [key, rate] of Object.entries(activity.outputsPerHour || {})) {
     let delta = activityRateToDelta(rate, duration);
     if (key === "energy" && activity.id === "rest") delta *= context.pressureRecoveryMultiplier;
@@ -2394,13 +2426,30 @@ function calculateActivityDeltaEntries(state, activity, gameMinutes, options = {
 
     // Apply milestone bonuses
     if (delta > 0 && key !== "energy") {
-      delta *= logicQualityMilestone * focusOutputMilestone;
+      delta *= logicQualityMilestone * focusOutputMilestone * resilienceIncidentMilestone * creativityMilestone * communicationCollabMilestone;
     }
 
     // Apply resource-specific bonuses
-    if (key === "knowledge" && delta > 0) delta *= 1 + attributeBonus(state, "learning", 0.0035, 0.25);
-    if (key === "money" && delta > 0) delta *= 1 + attributeBonus(state, "communication", 0.0025, 0.18);
-    if (key === "leads" && delta > 0) delta *= 1 + attributeBonus(state, "creativity", 0.0035, 0.25);
+    if (key === "knowledge" && delta > 0) {
+      delta *= 1 + attributeBonus(state, "learning", 0.0035, 0.25);
+      // learning 40: knowledge_output (+0.2)
+      const learningKnowledgeMilestone = 1 + getMilestoneBonus(state, "learning", "knowledge_output");
+      delta *= learningKnowledgeMilestone;
+    }
+    if (key === "money" && delta > 0) {
+      delta *= 1 + attributeBonus(state, "communication", 0.0025, 0.18);
+      // communication 55: freelance_money (+0.2 for freelancing)
+      if (activity.id === "freelancing") {
+        const freelanceMilestone = 1 + getMilestoneBonus(state, "communication", "freelance_money");
+        delta *= freelanceMilestone;
+      }
+    }
+    if (key === "leads" && delta > 0) {
+      delta *= 1 + attributeBonus(state, "creativity", 0.0035, 0.25);
+      // creativity 55: leads_output (+0.3)
+      const leadsCreativityMilestone = 1 + getMilestoneBonus(state, "creativity", "leads_output");
+      delta *= leadsCreativityMilestone;
+    }
 
     if (key === "codeLines" && delta > 0) delta *= context.multipliers.code * context.risk.codeEfficiency;
     if (key === "money" && delta > 0) delta *= context.multipliers.money;
@@ -2524,12 +2573,18 @@ function ensureSkillLearningProgress(state, skillId) {
 }
 
 function getSkillLearningProgress(state, skillOrId) {
+  const { getMilestoneBonus } = require("./core/attributes");
   const skill = typeof skillOrId === "string" ? itemById(content.skills, skillOrId) : skillOrId;
   const id = skill && skill.id;
   const progress = id && state.skillLearningProgress[id] ? state.skillLearningProgress[id] : {};
   const workedSeconds = Math.max(0, Number(progress.workedSeconds) || 0);
   const learningRelief = attributeBonus(state, "learning", 0.0035, 0.25);
-  const requiredSeconds = Math.max(1, Math.round((Number(skill && skill.learningSeconds) || 600) * (1 - learningRelief)));
+
+  // learning 25: skill_learning_speed (+0.1)
+  const learningMilestone = getMilestoneBonus(state, "learning", "skill_learning_speed");
+  const totalRelief = Math.min(0.35, learningRelief + learningMilestone);
+
+  const requiredSeconds = Math.max(1, Math.round((Number(skill && skill.learningSeconds) || 600) * (1 - totalRelief)));
   return {
     workedSeconds,
     requiredSeconds,
