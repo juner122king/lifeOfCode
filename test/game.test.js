@@ -1345,9 +1345,9 @@ test("活动升级但资源没有可见变化时仍显示升级消息", () => {
   assert.deepEqual(result.messages, ["休息恢复提升到 Lv.2。"]);
 });
 
-test("settleTime triggers hourly summary at 整点", () => {
+test("settleTime triggers summary at phase end", () => {
   const state = createNewState();
-  state.worldTimeMinutes = 590; // 9:50
+  state.worldTimeMinutes = 710; // 11:50 (上午阶段快结束)
   state.lockedSchedule = {
     day: 1,
     slots: { morning: { type: "activity", id: "bug-hunting" }, afternoon: null, evening: null },
@@ -1356,14 +1356,14 @@ test("settleTime triggers hourly summary at 整点", () => {
   state.activeActivityId = "bug-hunting";
   state.waitingForSchedule = false;
 
-  // 推进 20 游戏分钟（从 9:50 到 10:10，跨过 10:00 整点）
+  // 推进到 12:10（跨过上午阶段结束 12:00）
   const result = settleTime(state, Date.now() + 20 * 1000, { maxSeconds: 20 });
 
   // 验证生成了汇总事件
   const summaryEvent = result.events.find(e => e.category === "hourly_summary");
-  assert.ok(summaryEvent, "Should generate hourly summary event");
-  assert.ok(summaryEvent.text.includes("09:00-10:00"));
-  assert.strictEqual(state.lastHourlySummaryHour, 10);
+  assert.ok(summaryEvent, "Should generate phase summary event");
+  assert.ok(summaryEvent.text.includes("上午"));
+  assert.strictEqual(state.lastPhaseSummary, "morning");
 });
 
 test("bug-hunting 降低 Bug 并产出测试", () => {
@@ -2470,10 +2470,10 @@ test("profile options 为 TUI 提供新建、保存和切换动作", () => {
   assert.equal(options.some((item) => item.id.startsWith("create-")), false);
 });
 
-test("createNewState initializes hourly summary fields", () => {
+test("createNewState initializes phase summary fields", () => {
   const state = createNewState();
 
-  assert.strictEqual(typeof state.lastHourlySummaryHour, "number");
+  assert.strictEqual(state.lastPhaseSummary, null);
   assert.ok(state.hourlySummarySnapshot);
   assert.ok(state.hourlySummarySnapshot.resources);
   assert.ok(state.hourlySummarySnapshot.activityLevels);

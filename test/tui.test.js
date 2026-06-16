@@ -1410,7 +1410,7 @@ test("profile delete keypress reports why an option cannot be deleted", () => {
   assert.match(profileDeleteUnavailableMessage({ id: "work", current: true }), /不能删除当前/);
 });
 
-test("settleTime skips hourly summary at 00:00", () => {
+test("settleTime skips summary at 00:00", () => {
   const state = createNewState();
   state.worldTimeMinutes = 1430; // 23:50
   state.lockedSchedule = {
@@ -1420,17 +1420,17 @@ test("settleTime skips hourly summary at 00:00", () => {
   };
   state.activeActivityId = "rest";
   state.waitingForSchedule = false;
-  state.lastHourlySummaryHour = 23;
+  state.lastPhaseSummary = "evening";
 
   // 推进到 00:10（跨过 00:00）
   const result = settleTime(state, Date.now() + 20 * 60 * 1000, { maxSeconds: 20 * 60, randomEvents: false });
 
   // 验证没有生成汇总事件（但可能有日终总结）
   const summaryEvent = result.events.find(e => e.category === "hourly_summary");
-  assert.strictEqual(summaryEvent, undefined, "Should NOT generate hourly summary at 00:00");
+  assert.strictEqual(summaryEvent, undefined, "Should NOT generate summary at 00:00");
 });
 
-test("settleTime does not trigger summary on first启动", () => {
+test("settleTime triggers summary at phase end", () => {
   const state = createNewState();
   state.worldTimeMinutes = 540; // 9:00
   state.lockedSchedule = {
@@ -1441,12 +1441,13 @@ test("settleTime does not trigger summary on first启动", () => {
   state.activeActivityId = "bug-hunting";
   state.waitingForSchedule = false;
 
-  // 推进到 10:00
-  const result = settleTime(state, Date.now() + 60 * 60 * 1000, { maxSeconds: 60 * 60, randomEvents: false });
+  // 推进到 12:10（跨过上午阶段结束）
+  const result = settleTime(state, Date.now() + 3 * 60 * 60 * 1000, { maxSeconds: 3 * 60 * 60, randomEvents: false });
 
-  // 验证生成了汇总（因为是从 9:00 推进到 10:00）
+  // 验证生成了汇总（因为跨过了上午阶段结束）
   const summaryEvent = result.events.find(e => e.category === "hourly_summary");
-  assert.ok(summaryEvent, "Should generate summary when crossing hour boundary");
+  assert.ok(summaryEvent, "Should generate summary when crossing phase boundary");
+  assert.ok(summaryEvent.text.includes("上午"));
 });
 
 test("generateHourlySummary handles no resource changes", () => {

@@ -307,7 +307,7 @@ function createNewState(now = Date.now(), options = {}) {
     attributeExp: Object.fromEntries(ATTRIBUTE_IDS.map((id) => [id, 0])),
     currentRole: role.id,
     lastTick: now,
-    lastHourlySummaryHour: Math.floor((WORLD_START_MINUTES % MINUTES_PER_DAY) / 60),
+    lastPhaseSummary: null, // 追踪上次汇总的阶段（morning/afternoon/evening）
     hourlySummarySnapshot: {
       resources: {},
       activityLevels: {},
@@ -1549,11 +1549,27 @@ function generateHourlySummary(state) {
 
   const lines = [];
 
-  // 1. 时间范围
-  const fromHour = Math.floor((snapshot.worldMinute % MINUTES_PER_DAY) / 60);
-  const toHour = Math.floor((state.worldTimeMinutes % MINUTES_PER_DAY) / 60);
-  const timeRange = `${String(fromHour).padStart(2, "0")}:00-${String(toHour).padStart(2, "0")}:00`;
-  lines.push(timeRange);
+  // 1. 阶段和时间范围
+  const currentMinute = state.worldTimeMinutes % MINUTES_PER_DAY;
+  const fromMinute = snapshot.worldMinute % MINUTES_PER_DAY;
+
+  // 找出当前完成的阶段
+  let completedPhase = null;
+  for (const phase of SCHEDULE_PHASES) {
+    if (currentMinute >= phase.end && fromMinute < phase.end) {
+      completedPhase = phase;
+      break;
+    }
+  }
+
+  const fromHour = Math.floor(fromMinute / 60);
+  const fromMin = fromMinute % 60;
+  const toHour = Math.floor(currentMinute / 60);
+  const toMin = currentMinute % 60;
+  const timeRange = `${String(fromHour).padStart(2, "0")}:${String(fromMin).padStart(2, "0")}-${String(toHour).padStart(2, "0")}:${String(toMin).padStart(2, "0")}`;
+
+  const phaseName = completedPhase ? completedPhase.name : "";
+  lines.push(phaseName ? `${phaseName} ${timeRange}` : timeRange);
 
   // 2. 资源变化
   const resourceChanges = [];
@@ -3453,20 +3469,34 @@ function settleTime(state, now = Date.now(), options = {}) {
     remainingMinutes -= segmentMinutes;
     processedSeconds += segmentMinutes;
 
-    // 检测整点触发每小时汇总
-    const currentHour = Math.floor((state.worldTimeMinutes % MINUTES_PER_DAY) / 60);
-    const shouldTriggerSummary =
-      state.lastHourlySummaryHour !== null &&
-      currentHour !== state.lastHourlySummaryHour &&
-      currentHour !== 0; // 跳过 00:00（有日终总结）
+    // 检测阶段结束触发汇总
+    const previousMinute = (state.worldTimeMinutes - segmentMinutes) % MINUTES_PER_DAY;
+    const currentMinute = state.worldTimeMinutes % MINUTES_PER_DAY;
+    let completedPhase = null;
 
-    if (shouldTriggerSummary) {
+    // 检查是否刚刚跨过某个阶段的结束时间
+    for (const phase of SCHEDULE_PHASES) {
+      if (previousMinute < phase.end && currentMinute >= phase.end && state.lastPhaseSummary !== phase.id) {
+        completedPhase = phase;
+        break;
+      }
+    }
+
+    // 跳过 24:00（有日终总结）
+    const is24Hour = currentMinute === 0 || currentMinute >= MINUTES_PER_DAY - 1;
+
+    if (completedPhase && !is24Hour) {
       const summary = generateHourlySummary(state);
       if (summary) {
         pushGameEvent(events, "hourly_summary", summary, "info");
       }
-      state.lastHourlySummaryHour = currentHour;
+      state.lastPhaseSummary = completedPhase.id;
       updateHourlySummarySnapshot(state);
+    }
+
+    // 新的一天开始时重置（检测是否跨过 0:00）
+    if (previousMinute > currentMinute && state.lastPhaseSummary !== null) {
+      state.lastPhaseSummary = null;
     }
 
     checkPressureOverload(
