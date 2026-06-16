@@ -1077,7 +1077,13 @@ function addAttributeExp(state, attr, amount, options = {}) {
     gained += 1;
   }
 
-  if (gained > 0) collectAttributeGrowthEvents(state, attr, beforeValue, getBaseAttribute(state, attr), options.events);
+  if (gained > 0) {
+    collectAttributeGrowthEvents(state, attr, beforeValue, getBaseAttribute(state, attr), options.events);
+
+    // 检查并解锁里程碑
+    const { checkAndUnlockMilestones } = require("./core/attributes");
+    checkAndUnlockMilestones(state, attr, beforeValue, getBaseAttribute(state, attr), options.events);
+  }
   return gained;
 }
 
