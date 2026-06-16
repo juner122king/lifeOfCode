@@ -226,3 +226,47 @@ describe("Project progression attribute exp", () => {
     assert.ok(totalExp >= 18 && totalExp <= 24, `total exp should be 18-24, got ${totalExp}`);
   });
 });
+
+describe("Attribute panel - getAttributeSummary", () => {
+  test("should return summary for all 6 attributes", () => {
+    const state = createNewState();
+    state.attributes.logic = 42;
+    state.attributeExp.logic = 240;
+    state.attributes.focus = 38;
+    state.attributeExp.focus = 85;
+    state.attributes.learning = 25;
+    state.attributeExp.learning = 12;
+
+    const { getAttributeSummary } = require("../src/game");
+    const summary = getAttributeSummary(state);
+
+    assert.strictEqual(summary.length, 6, "should return 6 attributes");
+
+    const logic = summary.find(s => s.id === "logic");
+    assert.strictEqual(logic.name, "逻辑");
+    assert.strictEqual(logic.currentLevel, 42);
+    assert.strictEqual(logic.currentExp, 240);
+    assert.strictEqual(logic.nextLevelExp, 156); // 30 + 42 * 3
+    assert.strictEqual(logic.expPercent, Math.floor(240 / 156 * 100));
+    assert.strictEqual(logic.nextMilestone.level, 55);
+    assert.strictEqual(logic.nextMilestone.name, "质量守护者");
+    assert.strictEqual(logic.nextMilestone.pointsNeeded, 13);
+    assert.strictEqual(logic.progressBar, "[████████░░]"); // 42 of 55 filled
+  });
+
+  test("should handle recently unlocked milestones", () => {
+    const state = createNewState();
+    state.attributes.learning = 25;
+    state.unlockedMilestones = state.unlockedMilestones || {};
+    state.unlockedMilestones.learning = [25];
+    state.recentMilestoneUnlocks = state.recentMilestoneUnlocks || {};
+    state.recentMilestoneUnlocks.learning = 25;
+
+    const { getAttributeSummary } = require("../src/game");
+    const summary = getAttributeSummary(state);
+    const learning = summary.find(s => s.id === "learning");
+
+    assert.strictEqual(learning.recentlyUnlocked.level, 25);
+    assert.strictEqual(learning.recentlyUnlocked.name, "快速学习");
+  });
+});
