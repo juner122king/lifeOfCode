@@ -1435,6 +1435,49 @@ function renderAttributeSummary(state) {
   return rows;
 }
 
+function renderAttributeDetails(details) {
+  const lines = [`========== ${details.name} 详情 ==========`, ""];
+
+  // Basic info
+  lines.push(`当前等级：${details.currentLevel}/100`);
+  lines.push(`经验进度：${details.currentExp}/${details.nextLevelExp} (${details.expPercent}%) 到 Lv.${details.currentLevel + 1}`);
+  lines.push(`有效属性：${details.effectiveValue.toFixed(1)} (基础 ${details.baseValue} + 突破 ${details.breakthroughBonus})`);
+  lines.push("");
+
+  // Unlocked milestones
+  if (details.unlockedMilestones.length > 0) {
+    lines.push("【已解锁里程碑】");
+    for (const m of details.unlockedMilestones) {
+      lines.push(`  ✓ Lv.${m.level} ${m.name}`);
+      lines.push(`     ${m.description}`);
+      lines.push(`     ${m.narrative}`);
+      lines.push("");
+    }
+  }
+
+  // Next milestone
+  if (details.nextMilestone) {
+    lines.push("【下一里程碑】");
+    lines.push(`  Lv.${details.nextMilestone.level} ${details.nextMilestone.name} - ${details.nextMilestone.description}`);
+    lines.push(`  还需：${details.nextMilestone.pointsNeeded} 属性点 (约 ${details.nextMilestone.expNeeded} 经验)`);
+    lines.push(`  预计：${details.nextMilestone.narrative}`);
+    lines.push("");
+  }
+
+  // Future milestones
+  if (details.futureMilestones.length > 0) {
+    lines.push("【未来里程碑】");
+    for (const m of details.futureMilestones) {
+      lines.push(`  Lv.${m.level} ${m.name} - ${m.description}`);
+    }
+    lines.push("");
+  }
+
+  lines.push("> 输入 attr 返回属性总览");
+
+  return lines.join("\n");
+}
+
 async function startTui() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     if (!defaultProfileExists()) {
@@ -2311,6 +2354,7 @@ module.exports = {
   profileDeleteUnavailableMessage,
   processTuiCommand,
   renderAttributeSummary,
+  renderAttributeDetails,
   resumeGameClock,
   resolveProfileDeleteKeypress,
   shouldResetDailyPlannerPhase,
