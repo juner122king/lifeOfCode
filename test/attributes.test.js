@@ -304,3 +304,31 @@ describe("Attribute panel - getAttributeDetails", () => {
     assert.strictEqual(details.futureMilestones[1].level, 85);
   });
 });
+
+describe("Attribute panel - getMilestoneOverview", () => {
+  test("should return milestone overview for all attributes", () => {
+    const state = createNewState();
+    state.attributes.logic = 42;
+    state.attributes.focus = 38;
+    state.unlockedMilestones = {
+      logic: [25, 40],
+      focus: [25]
+    };
+
+    const { getMilestoneOverview } = require("../src/game");
+    const overview = getMilestoneOverview(state);
+
+    assert.ok(overview.logic);
+    assert.strictEqual(overview.logic.currentLevel, 42);
+    assert.strictEqual(overview.logic.milestones.length, 5);
+
+    const logicM25 = overview.logic.milestones.find(m => m.level === 25);
+    assert.strictEqual(logicM25.unlocked, true);
+    assert.strictEqual(logicM25.pointsNeeded, 0);
+
+    const logicM55 = overview.logic.milestones.find(m => m.level === 55);
+    assert.strictEqual(logicM55.unlocked, false);
+    assert.strictEqual(logicM55.pointsNeeded, 13);
+    assert.strictEqual(logicM55.name, "质量守护者");
+  });
+});
