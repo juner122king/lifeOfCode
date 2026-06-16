@@ -1465,3 +1465,25 @@ test("generateHourlySummary handles no resource changes", () => {
   assert.ok(summary.includes("资源：无明显变化"));
   assert.ok(summary.includes("09:00-10:00"));
 });
+
+test("settleTime resets snapshot when crossing midnight", () => {
+  const state = createNewState();
+  state.worldTimeMinutes = 1380; // 23:00
+  state.resources.codeLines = 1715;
+  state.lockedSchedule = {
+    day: 1,
+    slots: { morning: null, afternoon: null, evening: { type: "activity", id: "rest" } },
+    confirmedAtWorldMinute: 540
+  };
+  state.activeActivityId = "rest";
+  state.waitingForSchedule = false;
+  state.lastPhaseSummary = "evening";
+
+  // 推进到第二天 09:30（跨过午夜）
+  settleTime(state, Date.now() + 10.5 * 60 * 60 * 1000, { maxSeconds: 10.5 * 60 * 60, randomEvents: false });
+
+  // 验证跨天后快照被更新
+  assert.strictEqual(state.lastPhaseSummary, null, "lastPhaseSummary should be reset");
+  assert.ok(state.hourlySummarySnapshot.worldMinute >= 1440, "Snapshot should be updated to new day");
+  assert.strictEqual(state.hourlySummarySnapshot.resources.codeLines, state.resources.codeLines, "Snapshot should match current resources");
+});

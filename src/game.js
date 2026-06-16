@@ -3497,6 +3497,7 @@ function settleTime(state, now = Date.now(), options = {}) {
     // 新的一天开始时重置（检测是否跨过 0:00）
     if (previousMinute > currentMinute && state.lastPhaseSummary !== null) {
       state.lastPhaseSummary = null;
+      updateHourlySummarySnapshot(state); // 重置快照到新一天的起点
     }
 
     checkPressureOverload(
