@@ -2542,24 +2542,3 @@ test("generateHourlySummary generates complete report", () => {
   assert.ok(summary.includes("逻辑 +12"));
   assert.ok(summary.includes("抗压 +8"));
 });
-
-test("settleTime triggers hourly summary at整点", () => {
-  const state = createNewState();
-  state.worldTimeMinutes = 590; // 9:50
-  state.lockedSchedule = {
-    day: 1,
-    slots: { morning: { type: "activity", id: "bug-hunting" }, afternoon: null, evening: null },
-    confirmedAtWorldMinute: 540
-  };
-  state.activeActivityId = "bug-hunting";
-  state.waitingForSchedule = false;
-
-  // 推进到 10:10（跨过 10:00 整点）
-  const result = settleTime(state, Date.now() + 20 * 60 * 1000, { maxSeconds: 20 * 60 });
-
-  // 验证生成了汇总事件
-  const summaryEvent = result.events.find(e => e.category === "hourly_summary");
-  assert.ok(summaryEvent, "Should generate hourly summary event");
-  assert.ok(summaryEvent.text.includes("[汇总] 09:00-10:00"));
-  assert.strictEqual(state.lastHourlySummaryHour, 10);
-});

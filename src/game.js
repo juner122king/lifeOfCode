@@ -5805,6 +5805,7 @@ module.exports = {
   saveGame,
   saveProfile,
   settleTime,
+  snapshotResources,
   startActivity,
   stopActivity,
   submitProject,

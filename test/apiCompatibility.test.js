@@ -90,6 +90,7 @@ const GAME_EXPORTS = [
   "saveGame",
   "saveProfile",
   "settleTime",
+  "snapshotResources",
   "startActivity",
   "stopActivity",
   "submitProject",

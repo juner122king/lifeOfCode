@@ -320,7 +320,8 @@ const INFO_EVENT_LABELS = {
   warning: "警戒",
   focus: "方针",
   world: "大势",
-  system: "系统"
+  system: "系统",
+  hourly_summary: "汇总"
 };
 const INFO_TIMED_EVENT_CATEGORIES = new Set(["random", "project", "skill", "career", "warning", "focus", "world"]);
 

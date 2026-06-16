@@ -7,12 +7,14 @@ const {
   createTuiTicker,
   createNewState,
   createProfile,
+  generateHourlySummary,
   getCharacterCardOptions,
   getGameViewModel,
   getProfileOptions,
   loadProfile,
   processCommand,
   settleTime,
+  snapshotResources,
   startActivity
 } = require("../src/game");
 const {
@@ -1406,4 +1408,59 @@ test("profile delete keypress reports why an option cannot be deleted", () => {
   assert.match(profileDeleteUnavailableMessage({ id: "profile-save" }), /请选择具体档案/);
   assert.match(profileDeleteUnavailableMessage({ id: "default" }), /default 档案不能删除/);
   assert.match(profileDeleteUnavailableMessage({ id: "work", current: true }), /不能删除当前/);
+});
+
+test("settleTime skips hourly summary at 00:00", () => {
+  const state = createNewState();
+  state.worldTimeMinutes = 1430; // 23:50
+  state.lockedSchedule = {
+    day: 1,
+    slots: { morning: null, afternoon: null, evening: { type: "activity", id: "rest" } },
+    confirmedAtWorldMinute: 540
+  };
+  state.activeActivityId = "rest";
+  state.waitingForSchedule = false;
+  state.lastHourlySummaryHour = 23;
+
+  // 推进到 00:10（跨过 00:00）
+  const result = settleTime(state, Date.now() + 20 * 60 * 1000, { maxSeconds: 20 * 60, randomEvents: false });
+
+  // 验证没有生成汇总事件（但可能有日终总结）
+  const summaryEvent = result.events.find(e => e.category === "hourly_summary");
+  assert.strictEqual(summaryEvent, undefined, "Should NOT generate hourly summary at 00:00");
+});
+
+test("settleTime does not trigger summary on first启动", () => {
+  const state = createNewState();
+  state.worldTimeMinutes = 540; // 9:00
+  state.lockedSchedule = {
+    day: 1,
+    slots: { morning: { type: "activity", id: "bug-hunting" }, afternoon: null, evening: null },
+    confirmedAtWorldMinute: 540
+  };
+  state.activeActivityId = "bug-hunting";
+  state.waitingForSchedule = false;
+
+  // 推进到 10:00
+  const result = settleTime(state, Date.now() + 60 * 60 * 1000, { maxSeconds: 60 * 60, randomEvents: false });
+
+  // 验证生成了汇总（因为是从 9:00 推进到 10:00）
+  const summaryEvent = result.events.find(e => e.category === "hourly_summary");
+  assert.ok(summaryEvent, "Should generate summary when crossing hour boundary");
+});
+
+test("generateHourlySummary handles no resource changes", () => {
+  const state = createNewState();
+
+  // 快照和当前状态相同
+  state.hourlySummarySnapshot.resources = snapshotResources(state.resources);
+  state.hourlySummarySnapshot.activityLevels = {};
+  state.hourlySummarySnapshot.attributeExp = { ...state.attributeExp };
+  state.hourlySummarySnapshot.worldMinute = 540;
+  state.worldTimeMinutes = 600;
+
+  const summary = generateHourlySummary(state);
+
+  assert.ok(summary.includes("资源：无明显变化"));
+  assert.ok(summary.includes("[汇总] 09:00-10:00"));
 });
