@@ -5,6 +5,7 @@ const {
   defaultProfileExists,
   formatGameEvent,
   getActivityOptions,
+  getAttributeDetails,
   getCharacterCardOptions,
   getGameViewModel,
   getGoalOptions,
@@ -1319,7 +1320,20 @@ function getAttributeUpgradeRequired(currentValue) {
   return value >= 100 ? 0 : 50 + value * 5;
 }
 
-function getCharacterCardAttributeRows(view) {
+function calculateMilestoneProgressBar(currentLevel, nextMilestoneLevel, width = 12) {
+  if (!nextMilestoneLevel || nextMilestoneLevel <= currentLevel) {
+    return "MAX";
+  }
+  const safeWidth = Math.max(4, Math.floor(Number(width) || 12));
+  const progress = currentLevel;
+  const target = nextMilestoneLevel;
+  const percent = Math.min(100, Math.floor((progress / target) * 100));
+  const filled = Math.round((percent / 100) * safeWidth);
+  const empty = Math.max(0, safeWidth - filled);
+  return `[${"#".repeat(filled)}${"-".repeat(empty)}]`;
+}
+
+function getCharacterCardAttributeRows(view, state) {
   const initialAttributes = new Map(
     ((view && view.characterCard && view.characterCard.initialAttributes) || [])
       .map((attr) => [attr.id, attr])
@@ -1344,6 +1358,23 @@ function getCharacterCardAttributeRows(view) {
     const growthPercent = Math.max(0, totalPercent - initialPercent);
     const upgradeRequired = getAttributeUpgradeRequired(currentValue);
     const upgradePercent = upgradeRequired > 0 ? clampProgressPercent(exp / upgradeRequired * 100) : 100;
+
+    // Get milestone data from getAttributeDetails
+    let milestoneData = { unlockedCount: 0, nextMilestone: null, progressBar: "" };
+    if (state) {
+      try {
+        const details = getAttributeDetails(state, attr.id);
+        const unlockedCount = details.unlockedMilestones ? details.unlockedMilestones.length : 0;
+        const nextMilestone = details.nextMilestone;
+        const progressBar = nextMilestone
+          ? calculateMilestoneProgressBar(currentValue, nextMilestone.level, 12)
+          : "MAX";
+        milestoneData = { unlockedCount, nextMilestone, progressBar };
+      } catch (error) {
+        // Silently fail if getAttributeDetails throws
+      }
+    }
+
     return {
       id: attr.id,
       name: attr.name,
@@ -1361,7 +1392,10 @@ function getCharacterCardAttributeRows(view) {
       growthText: `+${formatTuiNumber(growthValue)}`,
       expText: upgradeRequired > 0 ? `${exp}/${upgradeRequired}` : "满级",
       expMeter: { id: "exp", label: "经验", percent: upgradePercent, color: "exp", width: 18, animated: upgradeRequired > 0 && activeAttributeExpIds.has(attr.id) },
-      progressText: `成长+加成 +${formatTuiNumber(growthValue)}`
+      progressText: `成长+加成 +${formatTuiNumber(growthValue)}`,
+      unlockedMilestones: milestoneData.unlockedCount,
+      nextMilestone: milestoneData.nextMilestone,
+      milestoneProgressBar: milestoneData.progressBar
     };
   });
 }
@@ -1784,8 +1818,7 @@ async function startTui() {
 
   function CharacterCardPanel({ view, budget }) {
     const card = view.characterCard;
-    const attributeRows = getCharacterCardAttributeRows(view);
-    const radarRows = getCharacterCardRadarRows(attributeRows);
+    const attributeRows = getCharacterCardAttributeRows(view, view.state);
     const learnedSkills = view.skillLevels
       .filter((skill) => skill.level > 0)
       .map((skill) => `${skill.name} ${skill.levelName}`);
@@ -1796,7 +1829,7 @@ async function startTui() {
     const detailWidth = budget.narrow ? mainWidth : Math.max(34, mainWidth - summaryWidth - 3);
     const attrBarWidth = Math.min(14, Math.max(6, Math.floor((detailWidth - 27) * 0.36)));
     const expBarWidth = Math.min(18, Math.max(8, detailWidth - attrBarWidth - 27));
-    const maxAttributeRows = Math.max(1, budget.mainHeight - (budget.narrow ? 8 : 4) - radarRows.length);
+    const maxAttributeRows = Math.max(1, budget.mainHeight - (budget.narrow ? 8 : 4));
     const summaryRows = [
       { color: THEME.muted, text: card.description },
       { color: THEME.muted, text: card.background || "" },
@@ -1821,21 +1854,32 @@ async function startTui() {
       h(Box, { gap: 1 },
         h(SectionTitle, { color: THEME.status.good }, "属性详情")
       ),
-      ...radarRows.map((row, index) => h(Text, { key: `radar-${index}`, color: index === 0 || index === radarRows.length - 1 ? THEME.status.info : THEME.muted },
-        trimText(row || " ", detailWidth)
-      )),
-      ...attributeRows.slice(0, maxAttributeRows).map((row) => h(Box, { key: row.id, gap: 1, height: 1, overflow: "hidden", overflowX: "hidden" },
-        h(Text, { color: THEME.text, bold: true }, trimText(row.label, 7).padEnd(7, " ")),
-        h(AttributeProgress, { row, width: attrBarWidth }),
-        h(Text, { color: THEME.status.good }, row.growthText),
-        h(Text, { color: THEME.muted }, row.expMeter.label),
-        h(Progress, {
-          percent: row.expMeter.percent,
-          width: Math.min(row.expMeter.width || 18, expBarWidth),
-          animated: row.expMeter.animated
-        }),
-        h(Text, { color: THEME.muted }, trimText(row.expText, Math.max(4, detailWidth - attrBarWidth - expBarWidth - 27)))
-      ))
+      ...attributeRows.slice(0, Math.floor(maxAttributeRows / 3)).flatMap((row) => [
+        // Line 1: Experience progress (original format)
+        h(Box, { key: `${row.id}-exp`, gap: 1, height: 1, overflow: "hidden", overflowX: "hidden" },
+          h(Text, { color: THEME.text, bold: true }, trimText(row.label, 7).padEnd(7, " ")),
+          h(AttributeProgress, { row, width: attrBarWidth }),
+          h(Text, { color: THEME.status.good }, row.growthText),
+          h(Text, { color: THEME.muted }, row.expMeter.label),
+          h(Progress, {
+            percent: row.expMeter.percent,
+            width: Math.min(row.expMeter.width || 18, expBarWidth),
+            animated: row.expMeter.animated
+          }),
+          h(Text, { color: THEME.muted }, trimText(row.expText, Math.max(4, detailWidth - attrBarWidth - expBarWidth - 27)))
+        ),
+        // Line 2: Unlocked milestones count
+        h(Box, { key: `${row.id}-unlocked`, gap: 1, height: 1, overflow: "hidden", overflowX: "hidden" },
+          h(Text, { color: THEME.muted }, `       已获得：${row.unlockedMilestones} 个里程碑`)
+        ),
+        // Line 3: Next milestone progress
+        h(Box, { key: `${row.id}-next`, gap: 1, height: 1, overflow: "hidden", overflowX: "hidden" },
+          h(Text, { color: THEME.muted }, "       下一个："),
+          row.nextMilestone
+            ? h(Text, { color: THEME.status.info }, `${row.milestoneProgressBar} ${row.nextMilestone.name}`)
+            : h(Text, { color: THEME.status.good }, "已达到最高里程碑")
+        )
+      ])
     );
 
     return h(Box, { borderStyle: "round", borderColor: THEME.panels.cards, paddingX: 1, flexDirection: budget.narrow ? "column" : "row", gap: budget.narrow ? 0 : 2, height: budget.mainHeight },
@@ -1933,6 +1977,34 @@ async function startTui() {
   }
 
   const MemoInfoPanel = React.memo(InfoPanel);
+
+  function AttributeGrowthPanel({ view, budget }) {
+    const state = view && view.state ? view.state : null;
+    const attributeRows = state ? getCharacterCardAttributeRows(view, state) : [];
+    const height = budget.infoWindowHeight || budget.logHeight;
+    const width = budget.attributeGrowthWidth || Math.max(24, Math.floor((budget.terminalColumns - 2) * 0.4));
+    const contentRows = Math.max(1, height - 2);
+    const attrBarWidth = 12;
+    const expBarWidth = 14;
+
+    return h(Box, { borderStyle: "single", borderColor: THEME.panel, paddingX: 1, flexDirection: "column", height, width },
+      h(SectionTitle, { color: THEME.title }, "属性成长"),
+      ...attributeRows.slice(0, Math.floor(contentRows / 2)).flatMap((row) => [
+        h(Box, { key: `${row.id}-growth`, gap: 1, height: 1, overflow: "hidden", overflowX: "hidden" },
+          h(Text, { color: THEME.text, bold: true }, trimText(row.name, 4).padEnd(4, " ")),
+          h(AttributeProgress, { row, width: attrBarWidth }),
+          h(Text, { color: THEME.status.good }, row.growthText),
+          h(Text, { color: THEME.muted }, "经验"),
+          h(Progress, {
+            percent: row.expMeter.percent,
+            width: expBarWidth,
+            animated: row.expMeter.animated
+          }),
+          h(Text, { color: THEME.muted }, trimText(row.expText, 10))
+        )
+      ])
+    );
+  }
 
   function Footer({ paused, creatingProfile, schedulePhase, dailyPlannerMode, view }) {
     function renderHints(hints) {
@@ -2328,15 +2400,29 @@ async function startTui() {
       );
     }
 
+    const showAttributeGrowthPanel = budget.terminalColumns > 100;
+    const adjustedBudget = showAttributeGrowthPanel
+      ? {
+          ...budget,
+          infoWindowWidth: Math.floor(budget.terminalColumns * 0.5),
+          attributeGrowthWidth: Math.floor(budget.terminalColumns * 0.4)
+        }
+      : budget;
+
     return h(Box, { flexDirection: "column", paddingX: 1 },
-      h(TopBar, { view, paused, budget }),
-      h(MemoInfoPanel, { ticker, logs, view, budget }),
+      h(TopBar, { view, paused, budget: adjustedBudget }),
+      showAttributeGrowthPanel
+        ? h(Box, { flexDirection: "row", gap: 1 },
+            h(MemoInfoPanel, { ticker, logs, view, budget: adjustedBudget }),
+            h(AttributeGrowthPanel, { view, budget: adjustedBudget })
+          )
+        : h(MemoInfoPanel, { ticker, logs, view, budget: adjustedBudget }),
       h(TabBar, { activePanel }),
       dailyPlannerMode
-        ? h(DailyPlannerPanel, { view, phaseId: schedulePhase, kind: dailyPlannerKind, options, selectedIndex, budget, paused })
+        ? h(DailyPlannerPanel, { view, phaseId: schedulePhase, kind: dailyPlannerKind, options, selectedIndex, budget: adjustedBudget, paused })
         : activePanel === "cards" && !needsInitialProfile
-        ? h(CharacterCardPanel, { view, budget })
-        : h(MainPanel, { activePanel, options, selectedIndex, budget, paused }),
+        ? h(CharacterCardPanel, { view, budget: adjustedBudget })
+        : h(MainPanel, { activePanel, options, selectedIndex, budget: adjustedBudget, paused }),
       h(Footer, { paused, creatingProfile, schedulePhase, dailyPlannerMode, view })
     );
   }
